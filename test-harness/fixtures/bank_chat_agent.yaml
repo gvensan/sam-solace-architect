@@ -1,0 +1,60 @@
+# Pattern 1 fixture — retail banking multi-system AI assistant.
+# Replayable discovery input for end-to-end testing.
+
+project_name: "retail-banking-chat-agent"
+project_type: "sam-integration"
+execution_mode: "auto"
+
+systems:
+  - name: "Core Banking Platform"
+    role: "Account data, balances, transactions"
+    protocol: "REST API (Java)"
+    volume: "500/sec balance checks"
+  - name: "Transaction Database"
+    role: "Transaction history"
+    protocol: "PostgreSQL"
+    volume: "100/sec queries"
+  - name: "CRM"
+    role: "Customer profiles, support tickets"
+    protocol: "Salesforce"
+    volume: "50/sec"
+  - name: "Knowledge Base"
+    role: "FAQ, product info, policies"
+    protocol: "Internal wiki"
+    volume: "200/sec"
+
+existing_messaging: "IBM MQ for core banking batch jobs"
+channels: ["web chat (React)", "mobile app (React Native)", "Slack"]
+vertical: "retail banking"
+
+regulatory: "PCI-DSS, SOC 2, data residency (US only)"
+audit: "7-year retention for financial transactions"
+
+requirements:
+  delivery_mode: "mixed"
+  ordering: "per-key"
+  processing_guarantee: "at-least-once"
+  latency_tier: "sub-second"
+  topology: "single-site"     # Phase 1; Phase 2 adds multi-region
+
+regions:
+  phase_1: "us-east-1"
+  phase_2: "eu-west-1 (GDPR)"
+
+team:
+  size: 6
+  composition: "2 platform engineers, 4 application developers"
+  solace_experience: "new to Solace"
+  observability: "Datadog"
+  cicd: "GitHub Actions"
+
+timeline: "MVP in 4 months"
+budget: "cloud-managed preferred"
+growth: "3x volume in 2 years"
+
+goals:
+  driver: "Customer demand for self-service banking"
+  preference: "Solace Cloud subscription"
+
+preferences:
+  provision_event_portal: false   # set true to exercise SAProvisioningAgent

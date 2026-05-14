@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "solace-architect-core"
+version = "0.1.0"
+description = "Shared tools, schemas, grounding docs, and default configs for the Solace Architect V2 plugin family"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Solace Architect Contributors" },
+]
+keywords = ["solace", "sam", "solace-agent-mesh", "event-driven-architecture"]
+dependencies = [
+  "pyyaml>=6.0",
+  "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+weasyprint = ["weasyprint>=60.0"]
+test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/solace_architect_core"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/solace_architect_core/grounding" = "solace_architect_core/grounding"
+"src/solace_architect_core/configs" = "solace_architect_core/configs"
+"src/solace_architect_core/schemas" = "solace_architect_core/schemas"

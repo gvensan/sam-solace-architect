@@ -1,0 +1,49 @@
+name: plugin/solace-architect-webui-entrypoint
+
+# Runs only when this plugin's files change — keeps PR CI focused.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/solace-architect-webui-entrypoint/**'
+      - 'solace-architect-core/**'
+  pull_request:
+    paths:
+      - 'plugins/solace-architect-webui-entrypoint/**'
+      - 'solace-architect-core/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install core + plugin (editable) + test deps
+        run: |
+          pip install -e ./solace-architect-core/
+          pip install -e './plugins/solace-architect-webui-entrypoint/[test]'
+      - name: Run per-plugin tests
+        working-directory: plugins/solace-architect-webui-entrypoint
+        run: pytest -v
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build wheel
+        working-directory: plugins/solace-architect-webui-entrypoint
+        run: |
+          pip install build
+          python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: solace-architect-webui-entrypoint-wheel
+          path: plugins/solace-architect-webui-entrypoint/dist/*.whl

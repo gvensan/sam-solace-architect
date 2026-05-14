@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      - run: ruff check solace-architect-core/ plugins/ tests/
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install core + plugins (editable)
+        run: |
+          pip install -e ./solace-architect-core/
+          for p in orchestrator discovery domain \
+                   reviewer-architect reviewer-developer reviewer-ops reviewer-security \
+                   validation blueprint provisioning webui-entrypoint; do
+            pip install -e "./plugins/solace-architect-${p}/"
+          done
+          pip install pytest pytest-asyncio
+      - name: Run unit + integration tests (skip slow + canonical_urls)
+        run: pytest -m "not slow and not canonical_urls"
+
+  canonical-urls:
+    # Nightly URL health check — runs on schedule, not on every PR
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          pip install -e ./solace-architect-core/ pytest
+          pytest -m canonical_urls

@@ -1,0 +1,65 @@
+# Pattern 2 fixture — real-time market data distribution.
+# Exercises mesh-design (multi-site DMR), protocol-select (MQTT + SMF),
+# topic-design (high-fan-out wildcards). Skips SAM design (no agent/chat system).
+
+project_name: "global-market-data-distribution"
+project_type: "new-build"
+execution_mode: "auto"
+
+systems:
+  - name: "Market Data Feed Handler (NYSE)"
+    role: "Publishes tick data"
+    protocol: "SMF (Solace native)"
+    volume: "500k msgs/sec peak"
+  - name: "Market Data Feed Handler (LSE)"
+    role: "Publishes tick data"
+    protocol: "SMF"
+    volume: "200k msgs/sec"
+  - name: "Market Data Feed Handler (TSE)"
+    role: "Publishes tick data"
+    protocol: "SMF"
+    volume: "300k msgs/sec"
+  - name: "Trading Desk Workstations"
+    role: "Subscribes to slices of market data via wildcards"
+    protocol: "MQTT 5"
+    volume: "5k subscribers, 5–50 msgs/sec each"
+  - name: "Analytics Cluster"
+    role: "Stream-processes full feed"
+    protocol: "SMF"
+    volume: "Full feed"
+
+existing_messaging: ""   # greenfield
+channels: ["trading workstation (web)", "back-office systems (Kafka bridge)"]
+vertical: "capital markets"
+
+regulatory: "MiFID II, FINRA"
+audit: "Time-stamped trade-data retention"
+
+requirements:
+  delivery_mode: "direct"
+  ordering: "per-key"
+  processing_guarantee: "best-effort"
+  latency_tier: "sub-millisecond"
+  topology: "multi-region"     # NYSE + LSE + TSE primary; DR replication
+
+regions:
+  phase_1: ["us-east-1", "eu-west-2", "ap-northeast-1"]
+  phase_2: ["us-east-1-dr"]
+
+team:
+  size: 12
+  composition: "8 platform engineers, 4 quant developers"
+  solace_experience: "existing Solace customer (Appliance)"
+  observability: "Solace Insights + Splunk"
+  cicd: "Jenkins"
+
+timeline: "12 months to production"
+budget: "no constraint — TCO-driven decision"
+growth: "2x volume in 5 years"
+
+goals:
+  driver: "Reduce tick-data latency below the current 800µs P99"
+  preference: "Software Event Broker on bare metal; consider Appliance for primary sites"
+
+preferences:
+  provision_event_portal: true

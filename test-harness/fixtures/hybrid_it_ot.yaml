@@ -1,0 +1,65 @@
+# Pattern 3 fixture — hybrid IT/OT manufacturing.
+# Exercises migration (legacy IBM MQ), integration (OT protocols MQTT/OPC-UA),
+# event-portal (governance for shared schemas across IT and OT teams).
+
+project_name: "factory-floor-event-mesh"
+project_type: "migration"
+execution_mode: "interactive"
+
+systems:
+  - name: "OPC-UA Servers (40 plants)"
+    role: "Source machine telemetry"
+    protocol: "OPC-UA → MQTT bridge"
+    volume: "10k msgs/sec aggregate"
+  - name: "SCADA HMI Workstations"
+    role: "Consumes telemetry + sends commands"
+    protocol: "MQTT 3.1.1"
+    volume: "500 endpoints"
+  - name: "MES (SAP ME)"
+    role: "Production order tracking"
+    protocol: "REST"
+    volume: "50/sec"
+  - name: "ERP (SAP ECC)"
+    role: "Inventory + finance"
+    protocol: "SAP IDoc"
+    volume: "5/sec"
+  - name: "Quality Analytics Platform"
+    role: "Stream processing for defect detection"
+    protocol: "Kafka"
+    volume: "Full telemetry feed"
+
+existing_messaging: "IBM MQ (15 years deployment), point-to-point connections proliferating"
+channels: ["plant operator workstations", "central NOC dashboards"]
+vertical: "manufacturing"
+
+regulatory: "ISA-95, GMP (for pharma plants)"
+audit: "10-year retention for batch records"
+
+requirements:
+  delivery_mode: "mixed"
+  ordering: "per-key"
+  processing_guarantee: "at-least-once"
+  latency_tier: "100ms"
+  topology: "hybrid-cloud"      # plant brokers on-prem, regional brokers on Solace Cloud
+
+regions:
+  phase_1: ["plant-cluster-na", "plant-cluster-eu"]
+  phase_2: ["plant-cluster-apac"]
+
+team:
+  size: 8
+  composition: "3 OT engineers, 3 IT integrators, 2 platform engineers"
+  solace_experience: "POC done; no production"
+  observability: "Grafana + Prometheus"
+  cicd: "GitLab CI"
+
+timeline: "phased — pilot plant in 6 months, full rollout in 24 months"
+budget: "OPEX-preferred; will phase capital purchases"
+growth: "+10 plants over 3 years"
+
+goals:
+  driver: "Retire IBM MQ; unify IT/OT messaging; enable analytics on telemetry"
+  preference: "Solace Cloud + Software Event Broker on plant edges"
+
+preferences:
+  provision_event_portal: true

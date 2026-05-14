@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "solace-architect-test-harness"
+version = "0.1.0"
+description = "Local SAM project for end-to-end testing the Solace Architect plugin family. NOT distributed."
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+
+# This harness has no published deps. The development workflow is:
+#   pip install -e ../solace-architect-core
+#   pip install -e ../plugins/solace-architect-orchestrator
+#   pip install -e ../plugins/solace-architect-discovery
+#   pip install -e ../plugins/solace-architect-domain
+#   pip install -e ../plugins/solace-architect-reviewer-architect
+#   pip install -e ../plugins/solace-architect-reviewer-developer
+#   pip install -e ../plugins/solace-architect-reviewer-ops
+#   pip install -e ../plugins/solace-architect-reviewer-security
+#   pip install -e ../plugins/solace-architect-validation
+#   pip install -e ../plugins/solace-architect-blueprint
+#   pip install -e ../plugins/solace-architect-webui-entrypoint
+#   # Provisioning is opt-in — install only if EP Designer MCP is configured:
+#   # pip install -e ../plugins/solace-architect-provisioning
+#   cp .env.example .env  # then edit
+#   sam run
+
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = []

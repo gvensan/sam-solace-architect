@@ -1,0 +1,36 @@
+# Default branding for Solace Architect HTML reports + dashboard.
+# Override via env vars or by passing branding_overrides to render_audience_pack.
+# v2spec §5.5.
+
+brand:
+  product_name: "Solace Architect"
+  version_label: "V2.0.0-alpha"
+
+colors:
+  primary: "#093B5F"        # Navy
+  accent: "#00C895"         # Green
+  text: "#1f2937"
+  muted: "#5A7A94"
+  background: "#ffffff"
+  surface: "#f8fafc"
+  border: "#e5e7eb"
+
+# Dark-mode palette (applied when data-theme="dark" on <body>)
+colors_dark:
+  primary: "#0a4a75"
+  accent: "#00d9a6"
+  text: "#e5e7eb"
+  muted: "#8BA4B8"
+  background: "#0a1a2a"
+  surface: "#0f2238"
+  border: "#1f3550"
+
+fonts:
+  body_family: "Figtree, sans-serif"
+  mono_family: "Space Mono, monospace"
+  google_fonts_url: "https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap"
+
+logo:
+  url: null              # null = render product wordmark
+  alt: "Solace Architect"
+  height_px: 28

@@ -1,0 +1,135 @@
+# Skill routing — v2spec §5.1
+#
+# Single source of truth for which design / review / validation / blueprint /
+# provisioning steps run for a given engagement.
+#
+# Consumed by:
+#   - solace_architect_core.tools.workflow_tools.get_engagement_plan
+#   - solace_architect_core.tools.intake_tools.compute_intake_preview
+#
+# Both readers MUST agree, so the intake form preview reflects what the
+# orchestrator will actually execute.
+#
+# Each step entry:
+#   step           — engagement step ID
+#   agent          — SAM agent class (or list of agents for parallel dispatch)
+#   scope          — for SADomainAgent multi-scope agent only
+#   dependencies   — step IDs that must complete first (or ">=1 design step")
+#   trigger        — "always" or "conditional"
+#   when           — list of clauses (ANDed); or `any_of:` block for OR
+#   skip_reason    — surfaced when a conditional step is excluded
+#
+# Operators: equals, in, not_in, contains_any, contains_all, not_empty,
+#            empty, matches, gt, lt, gte, lte
+# Field paths use dot notation with [*] for array projection (JSONPath-lite).
+
+version: 2
+refreshed: 2026-05-14
+
+routing:
+  - step: discovery
+    agent: SADiscoveryAgent
+    dependencies: []
+    trigger: always
+
+  - step: topic-design
+    agent: SADomainAgent
+    scope: topic-design
+    dependencies: [discovery]
+    trigger: always
+
+  - step: broker-select
+    agent: SADomainAgent
+    scope: broker-select
+    dependencies: [discovery]
+    trigger: always
+
+  - step: sam-design
+    agent: SADomainAgent
+    scope: sam-design
+    dependencies: [discovery]
+    trigger: conditional
+    when:
+      - field: systems[*].name
+        op: contains_any
+        value: [chat, assistant, agent, copilot, "AI"]
+    skip_reason: "No SAM / agent-mesh requirement detected in landscape"
+
+  - step: protocol-select
+    agent: SADomainAgent
+    scope: protocol-select
+    dependencies: [discovery, broker-select]
+    trigger: always
+
+  - step: mesh-design
+    agent: SADomainAgent
+    scope: mesh-design
+    dependencies: [discovery, broker-select]
+    trigger: conditional
+    when:
+      - field: requirements.topology
+        op: in
+        value: [multi-site, multi-region, hybrid-cloud]
+    skip_reason: "Single-site topology — DMR mesh not required"
+
+  - step: ha-dr
+    agent: SADomainAgent
+    scope: ha-dr
+    dependencies: [discovery, broker-select]
+    trigger: conditional
+    when:
+      - field: requirements.processing_guarantee
+        op: in
+        value: [at-least-once, exactly-once]
+      - field: requirements.delivery_mode
+        op: in
+        value: [guaranteed, mixed]
+    skip_reason: "Best-effort delivery only — HA/DR not required"
+
+  - step: migration
+    agent: SADomainAgent
+    scope: migration
+    dependencies: [discovery]
+    trigger: conditional
+    when:
+      - field: existing_messaging
+        op: not_empty
+    skip_reason: "Greenfield deployment — no migration required"
+
+  - step: integration
+    agent: SADomainAgent
+    scope: integration
+    dependencies: [discovery]
+    trigger: always
+
+  - step: event-portal
+    agent: SADomainAgent
+    scope: event-portal
+    dependencies: [discovery]
+    trigger: always
+
+  - step: review
+    agent: [SAArchitectReviewerAgent, SADeveloperReviewerAgent, SAOpsReviewerAgent, SASecurityReviewerAgent]
+    dependencies: [discovery, ">=1 design step"]
+    trigger: always
+    dispatch: parallel
+
+  - step: validation
+    agent: SAValidationAgent
+    dependencies: [discovery, ">=1 design step"]
+    trigger: always
+
+  - step: blueprint
+    agent: SABlueprintAgent
+    dependencies: [">=1 design step"]
+    trigger: always
+
+  - step: provisioning
+    agent: SAProvisioningAgent
+    dependencies: [event-portal, blueprint]
+    trigger: conditional
+    when:
+      - field: preferences.provision_event_portal
+        op: equals
+        value: true
+    skip_reason: "Provisioning not requested (preferences.provision_event_portal=false)"

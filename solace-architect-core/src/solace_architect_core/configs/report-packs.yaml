@@ -1,0 +1,187 @@
+# Audience packs — v2spec §5.5a
+#
+# Each pack filters the comprehensive Solace Blueprint into a focused subset
+# for a specific audience. Consumed by:
+#   - solace_architect_core.tools.blueprint_tools.filter_artifacts_for_pack
+#   - The solace-architect-webui-entrypoint Export view
+#
+# Per-pack fields (all at the top level of each pack — no nested 'filters:' key):
+#   id                      — internal identifier (used in URLs + render_audience_pack)
+#   label                   — display name on the tile and in the generated HTML title
+#   audience                — who this pack is for
+#   description             — 1-line description on the tile
+#   dirs / files / globs    — inclusion rules (any match → include)
+#   exclude_dirs / exclude_files / exclude_globs — subtract from inclusion
+#   top_sections            — ordered list of top-level sections in the rendered output
+#   decision_skills         — filter decisions to entries whose source_agent matches
+#                             (use V2 step names: 'topic-design', 'broker-select', etc.,
+#                             OR agent class names: 'SADomainAgent'). Empty list = hide.
+#   finding_skills          — filter findings to entries whose source_agent matches
+#                             (use reviewer-type short names: 'architect', 'developer',
+#                             'ops', 'security'). Empty list = hide.
+#   include_roi_calculator  — Executive pack only; ships the interactive ROI calculator
+
+version: 2
+refreshed: 2026-05-14
+
+packs:
+  - id: blueprint
+    label: "Solace Blueprint"
+    audience: "Architects, platform leads, project owners"
+    description: "Comprehensive engineering deliverable — full architecture, all artifacts."
+    include_roi_calculator: false
+    dirs:
+      - discovery/
+      - topic-design/
+      - broker-select/
+      - protocol-select/
+      - sam-design/
+      - mesh-design/
+      - ha-dr/
+      - migration/
+      - integration/
+      - event-portal/
+      - blueprint/
+      - validation/
+      - reviews/
+      - provisioning/
+    files: []
+    globs:
+      - "**/*.mermaid"
+    top_sections:
+      - "Executive Summary"
+      - "Scope & Inputs"
+      - "Decisions"
+      - "Connected Systems"
+      - "Discovery Brief"
+      - "Topic Design"
+      - "Broker Recommendation"
+      - "Protocol Map"
+      - "SAM Design"
+      - "Mesh Design"
+      - "HA/DR Design"
+      - "Migration Plan"
+      - "Integration Strategy"
+      - "Event Portal Model"
+      - "Provisioning Report"
+      - "Architecture Document"
+      - "Diagrams"
+      - "Operations Runbook"
+      - "Validation Report"
+      - "Reviews"
+    decision_skills: [discovery, topic-design, broker-select, protocol-select, sam-design,
+                      mesh-design, ha-dr, migration, integration, event-portal,
+                      blueprint, provisioning]
+    finding_skills: [architect, developer, ops, security]
+
+  - id: executive
+    label: "Executive Team"
+    audience: "CXO, business sponsors, investment committee"
+    description: "Business case, ROI, and recommendation in plain language."
+    include_roi_calculator: true
+    dirs:
+      - executive/
+    files:
+      - blueprint/architecture.md
+    globs:
+      - "executive/*.mermaid"
+    exclude_globs:
+      - "**/*-detail.md"
+      - "**/wildcard-subscriptions.md"
+      - "**/antipattern-report.md"
+    top_sections:
+      - "The Opportunity"
+      - "What the Business Gets"
+      - "What the Program Costs"
+      - "Risk Posture"
+      - "ROI Framework"
+      - "Decision Asked of Leadership"
+      - "Outcomes 12 Months From Now"
+      - "Cross-references"
+    decision_skills: [discovery, broker-select]
+    finding_skills: []
+
+  - id: admin-ops
+    label: "Admin & Ops"
+    audience: "Solace admin, SRE, on-call engineer"
+    description: "Provisioning, monitoring, runbooks — full operational depth."
+    include_roi_calculator: false
+    dirs:
+      - broker-select/
+      - ha-dr/
+      - mesh-design/
+      - blueprint/
+      - provisioning/
+    files:
+      - reviews/ops-review.yaml
+      - reviews/ops-review.md
+    globs:
+      - "blueprint/diagrams/*broker*.mermaid"
+      - "blueprint/diagrams/*ha*.mermaid"
+      - "blueprint/diagrams/*dr*.mermaid"
+      - "blueprint/diagrams/*topology*.mermaid"
+    top_sections:
+      - "Broker Recommendation"
+      - "HA/DR Design"
+      - "Mesh Topology"
+      - "Operations Runbook"
+      - "Provisioning Report"
+      - "Ops Review Findings"
+    decision_skills: [broker-select, ha-dr, mesh-design, provisioning]
+    finding_skills: [ops]
+
+  - id: security
+    label: "Security"
+    audience: "Security architect, compliance, infosec, audit"
+    description: "Auth, ACLs, encryption, audit, PII — full security posture."
+    include_roi_calculator: false
+    dirs:
+      - sam-design/
+    files:
+      - reviews/security-review.yaml
+      - reviews/security-review.md
+      - blueprint/architecture.md
+    globs:
+      - "**/security-*.md"
+      - "blueprint/diagrams/*security*.mermaid"
+      - "blueprint/diagrams/*auth*.mermaid"
+      - "**/antipattern-report*.md"
+    top_sections:
+      - "Security Posture Summary"
+      - "Authentication Model"
+      - "ACL Profiles"
+      - "Encryption (Transit + Rest)"
+      - "Audit and Compliance"
+      - "Security Review Findings"
+    decision_skills: [sam-design, broker-select]
+    finding_skills: [security]
+
+  - id: developers
+    label: "Developers"
+    audience: "Application engineers, SRE writing client code"
+    description: "Topics, schemas, protocols, client patterns — build correct clients."
+    include_roi_calculator: false
+    dirs:
+      - topic-design/
+      - protocol-select/
+      - integration/
+      - event-portal/
+    files:
+      - reviews/developer-review.yaml
+      - reviews/developer-review.md
+    globs:
+      - "**/*.asyncapi.yaml"
+      - "provisioning/asyncapi/*.yaml"
+      - "blueprint/diagrams/*topic*.mermaid"
+      - "blueprint/diagrams/*protocol*.mermaid"
+      - "blueprint/diagrams/*dlq*.mermaid"
+    top_sections:
+      - "Topic Taxonomy"
+      - "Wildcard Subscriptions"
+      - "Protocol Map"
+      - "Schema Inventory"
+      - "Integration Patterns"
+      - "AsyncAPI Specs"
+      - "Developer Review Findings"
+    decision_skills: [topic-design, protocol-select, integration, event-portal]
+    finding_skills: [developer]
