@@ -10,9 +10,10 @@ import re
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
-from importlib import resources
 from pathlib import Path
 from typing import Optional
+
+import solace_architect_core
 
 from .artifact_tools import ToolResult
 
@@ -39,8 +40,14 @@ _TOPIC_MAP: dict[str, tuple[str, Optional[str]]] = {
 
 
 def _grounding_dir() -> Path:
-    """Return the path to the package's grounding/ directory."""
-    return Path(str(resources.files("solace_architect_core.grounding")))
+    """Return the path to the package's grounding/ directory.
+
+    Uses ``__file__`` rather than ``importlib.resources.files`` because the latter
+    returns a ``MultiplexedPath`` whose ``str()`` is the wrapped repr, not the
+    underlying filesystem path — silently breaking every consumer that converts
+    it to ``pathlib.Path``.
+    """
+    return Path(solace_architect_core.__file__).parent / "grounding"
 
 
 def _extract_section(md_text: str, heading: str) -> str:
@@ -94,6 +101,18 @@ async def load_jargon_list() -> ToolResult:
     if not path.exists():
         return ToolResult(ok=False, error="grounding/jargon-list.json not found")
     return ToolResult(ok=True, data=json.loads(path.read_text(encoding="utf-8")))
+
+
+async def load_preamble() -> ToolResult:
+    """Load grounding/agent-preamble.md — the shared accuracy / voice / naming / working-style
+    discipline that every agent is bound by. Called once per agent session and prepended to
+    the role-specific system prompt. Single source of truth (Decision 83); editing this file
+    propagates the change to all agents without touching any agent's config.yaml."""
+    path = _grounding_dir() / "agent-preamble.md"
+    if not path.exists():
+        await record_grounding_gap(topic="agent-preamble", reason="agent-preamble.md missing", agent="load_preamble")
+        return ToolResult(ok=False, error="grounding/agent-preamble.md not found")
+    return ToolResult(ok=True, data=path.read_text(encoding="utf-8"))
 
 
 async def query_integration_hub(backend_system: str) -> ToolResult:

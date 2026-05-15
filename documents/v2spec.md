@@ -40,6 +40,7 @@ sam-solace-architect/                              # this repository (developmen
 │       │   └── ep_designer_mcp_tools.py
 │       ├── schemas/                               # YAML schemas: open-items, projects, feedback, provisioned
 │       ├── grounding/                             # Vendored grounding docs (read-only reference)
+│       │   ├── agent-preamble.md                  # Shared accuracy / voice / naming discipline, loaded by every agent
 │       │   ├── solace-platform-reference.md
 │       │   ├── solace-canonical-sources.md
 │       │   ├── solace-reference-architectures.md
@@ -224,6 +225,7 @@ To avoid repeating the same four tools in every agent YAML, all ten agents are c
 
 | Tool | Module | Purpose |
 |------|--------|---------|
+| `load_preamble` | `grounding_tools` | Loads `grounding/agent-preamble.md` — the shared accuracy / voice / naming / working-style discipline. Called as the agent's first tool action; result is prepended to the role-specific system prompt. Single source of truth (Decision 83) |
 | `load_jargon_list` | `grounding_tools` | Loads `grounding/jargon-list.json` so the agent's system prompt can gloss EDA/Solace terms on first use |
 | `record_step_timing` | `workflow_tools` | Captures `wall_sec`/`execution_sec`/`user_wait_sec`/per-question/per-substep at the end of each step; sole input source for dashboard timing views |
 | `record_grounding_gap` | `grounding_tools` | Called on `load_grounding`/`fetch_canonical_source` error paths so gaps surface in CI grounding maintenance |
@@ -601,8 +603,8 @@ agent_card:
 The system prompt must include:
 
 1. **Identity.** "You are the SAOrchestratorAgent for Solace Architect, a toolkit that guides architects from a business problem to a deployable Solace event-driven architecture blueprint."
-2. **Grounding discipline.** The full grounding rules section from V1's preamble (only assert what Solace docs support, never invent features, never borrow from other vendors).
-3. **Naming conventions.** The full naming conventions table from V1.
+2. **Shared preamble.** Loaded once at session start by calling `load_preamble()` (§3.0 baseline tool) — provides the full accuracy/grounding discipline, voice, and naming rules (Decision 83). The role-specific prompt below extends but never restates the preamble.
+3. **Role-specific naming.** Any naming behavior that goes beyond the shared preamble (e.g., orchestrator's choice of which agent name to surface in status messages) is specified here.
 4. **Voice directive.** Senior architect tone. No AI vocabulary. No vendor pitch. Short sentences. Decisions close with user impact.
 5. **Engagement overview.** The phases (Discovery → Design → Review → Validation → Blueprint) and what each phase produces.
 6. **Execution mode behavior.** Auto mode: chain agents without confirmation, pause only on Critical findings and validation failures. Interactive mode: present three-option routing after each agent completes (Continue / Skip / Pick different).
@@ -766,7 +768,7 @@ agent_card:
 **System prompt core content:**
 
 1. **Identity and scope.** Discovery agent for Solace Architect. Captures the full problem context before any design work begins.
-2. **Grounding discipline and naming conventions.** Same as orchestrator.
+2. **Shared preamble.** Loaded once at session start via `load_preamble()` (Decision 83). Same as orchestrator.
 3. **Voice.** Senior architect conducting a scoping conversation. Questions framed in outcome terms. Short sentences.
 4. **Interview structure.** The question flow from V1's `/solace-discovery`:
    - **Source-context import (new — offered first if other projects exist).** Calls `list_projects` and, if any active project shares the customer name, offers an AskUserQuestion: "Import landscape and constraints from [source project]? You'll only need to answer what's changed." If accepted, calls `import_source_context` and proceeds with the imported fields pre-populated — interview only asks about deltas.
@@ -903,7 +905,7 @@ agent_card:
 **System prompt core content:**
 
 1. **Identity.** Domain expert for Solace Architect. Every recommendation must be grounded in Solace documentation.
-2. **Grounding discipline and naming conventions.** Full rules and table.
+2. **Shared preamble.** Loaded once at session start via `load_preamble()` (Decision 83) — provides the full grounding discipline and naming rules.
 3. **Voice.** Senior architect writing design documentation. Jargon glossed on first use. Questions framed in outcome terms. Decisions close with user impact.
 4. **Scope routing.** "You will receive a task request specifying which design scope to activate. Each scope has specific inputs, outputs, and grounding requirements. Use the `load_grounding` tool to load the relevant platform reference sections before generating recommendations."
 5. **Per-scope instructions.** Summary-level instructions for each of the nine scopes, covering:
@@ -2612,7 +2614,7 @@ These decisions are baked into this specification. They are not open questions.
 | 57 | Copy-raw-source buttons | Every artifact preview (Mermaid/YAML/Markdown/JSON) has a Copy button next to its title | Matches V1; trivial frontend feature users will miss if absent |
 | 58 | Universal "On this page" TOC | Right-hand TOC present on ALL six dashboard views, not just Overview/Artifacts/Export | Consistent navigation across the dashboard |
 | 59 | Structured write_artifact validation outputs | `write_artifact` returns separate violation lists per check (path / terminology / naming / grounding) | Enables surfacing violations as actionable items rather than a flat error string |
-| 60 | `claude-instructions.md` grounding doc | **Superseded** by per-agent system prompts (§4.1–4.10); not ported into V2 grounding/ | Single source of truth — duplicating in grounding/ would create drift between the doc and the actual prompts |
+| 60 | `claude-instructions.md` grounding doc | **Superseded by Decision 83.** ~~Originally: baked into per-agent system prompts (§4.1–4.10); not ported into V2 grounding/.~~ Replaced by the shared `grounding/agent-preamble.md` + `load_preamble()` tool model. | Per-agent duplication would require editing 10 system prompts to fix a single wording bug. Shared preamble keeps one source of truth without restoring the cross-doc drift the original rationale warned against — `agent-preamble.md` IS the prompt content, not a parallel reference doc. |
 | 61 | `MAINTENANCE.md` operational doc | **Phase 2 deliverable** outside v2spec.md; for the maintainer team's grounding-refresh cadence | Not runtime behavior; doesn't belong in the SAM build spec |
 | 62 | Markdown intake download | `render_intake_markdown` tool + `GET /api/intake/download-markdown` route | Diff-friendly format for git-based async collaboration; trivial to add alongside YAML download |
 | 63 | Feedback collection (Phase 1 data layer) | `meta/feedback.yaml` schema + `record_feedback` / `read_feedback` tools + `POST /api/feedback` route | Data collection from Day 1; cross-project aggregation (→ IMPROVEMENTS.md) explicitly deferred to Phase 2 |
@@ -2627,6 +2629,15 @@ These decisions are baked into this specification. They are not open questions.
 | 72 | Plugin naming | `solace-architect-<role>` for plugins, `solace_architect_<role>` for Python packages (matches community convention: `tavily`, `send-grid`, etc.) | Distinct from earlier SA-prefix decision for agent class names — plugins use kebab-case dashed names |
 | 73 | Configs ownership | Default configs (`branding.yaml`, `skill-routing.yaml`, `report-packs.yaml`) ship inside `solace-architect-core`; consumers override by setting env vars or providing local overrides | Consumers don't have to clone the config files; they extend them |
 | 74 | Entrypoint vs gateway terminology | SAM has renamed the resource type from "gateway" to **"entrypoint"** in user-facing docs and naming conventions. Plugin directories use the `*-entrypoint` suffix (matching the existing `cli-entrypoint` plugin). HOWEVER, the `[tool.<name>.metadata] type` field VALUE in `pyproject.toml` is still `"gateway"` — SAM kept the metadata enum unchanged for backward compat. Mirror the cli-entrypoint plugin exactly | Reduces user confusion (docs say "entrypoint" everywhere); avoids breaking SAM's plugin manifest parser by keeping the underlying enum value stable |
+| 75 | Authentication strategy | **Local SQLite user/password store** managed by the WebUI entrypoint. Argon2id password hashing (`argon2-cffi`). Sessions are 256-bit random tokens stored server-side; cookies are `HttpOnly`, `SameSite=Lax`, `Secure` when over HTTPS. Failed-login rate limit: 5 failures / 5 minutes / username | Pragmatic for an internal architect tool. No IdP dependency. OIDC remains a future swap-in via `_extract_initial_claims` alone — agent layer stays unchanged. |
+| 76 | First-user bootstrap + signup model | **Self-signup ON by default; first user becomes admin.** `WEBUI_ENABLE_SIGNUP=false` disables further signups after rollout. Admin CLI (`python -m solace_architect_webui_entrypoint.admin`) handles password reset, make-admin, disable-user | Lowest onboarding friction; admin-only mode available for tightly-controlled deployments via env flag |
+| 77 | Auth bypass / dev mode | **`WEBUI_REQUIRE_AUTH=false`** bypasses auth entirely (every request becomes `anonymous`) | Preserves the Phase 1 development experience; production deployments should leave this unset (default `true`) |
+| 78 | User-identity propagation to agents | **`current_user` `contextvars.ContextVar`** in `solace-architect-core/_user_context.py` set by the auth middleware on every request. Downstream tools read it via `get_current_user()`. The same shape (`{id, name, email, groups, source, is_admin}`) flows out through `_extract_initial_claims` to A2A so agents see real identity | Minimizes tool-signature changes; one place to swap auth backends without touching agents |
+| 79 | Storage isolation | **Hybrid: per-user filesystem paths + owner-tagged registry.** Engagement artifacts live under `<SA_STORAGE_ROOT>/users/<user_id>/<engagement_id>/...` when an authenticated user is active. `__system__` engagement is shared (unscoped). `meta/projects.yaml` carries an `owner` field; `list_projects` filters by owner. Anonymous / dev-bypass mode keeps the legacy unscoped layout for back-compat | Hard filesystem isolation + queryable ownership for future sharing. One change point (`_storage.safe_artifact_path`) cascades to every tool |
+| 80 | UI routing model | **Route-based SPA with persistent sidebar.** Server serves the same `index.html` shell for `/`, `/projects/{id}/{view}`. Client-side router (`history.pushState`) handles view switching. `/intake/{new,edit/{id}}` is a separate static page. Bookmarkable URLs; back/forward browser buttons work | Cleaner than hash-routing; URLs are shareable within a team |
+| 81 | Edit semantics | **Project name + description editable in-place** via `PATCH /api/projects/{id}` — non-owners blocked unless admin. **Discovery brief is versioned via `POST /api/projects/{id}/clone`** — creates a new project seeded with the source's brief; decisions/findings do NOT carry over. **Decisions, findings, provisioning records are append-only** | Audit integrity (decisions immutable); safe rollback via versioning rather than destructive edits |
+| 82 | DB and CSRF settings | `users.db` lives at `${SA_STORAGE_ROOT}/__system__/users.db` (overridable via `WEBUI_USERS_DB`). CSRF secret: `WEBUI_CSRF_SECRET` env var (auto-generated per-startup if unset; set for cross-restart stability) | Plugin-managed state stays inside the artifact-store root; backup story is the same as for engagement artifacts |
+| 83 | Shared agent preamble | **The accuracy / grounding / voice / naming / working-style discipline from V1's `claude-instructions.md` lives once at `grounding/agent-preamble.md` and is loaded by every agent via the `load_preamble()` tool** (§3.0 baseline). Each agent's `config.yaml` system prompt carries only role-specific content; the preamble is fetched and prepended at session start. Supersedes Decision 60. | One edit point for shared discipline across 10 agents (vs. 10 copies to keep in sync); saves ~5K tokens per agent in static prompt budget that goes back to role-specific work; mockable in tests. The one risk — an agent forgetting to call `load_preamble()` — is mitigated by a CI test asserting every agent's role prompt issues the call before any other tool action. |
 
 ---
 

@@ -25,8 +25,15 @@ import yaml
 from pathlib import Path
 from typing import Any
 
+from ._user_context import get_current_user
+
 
 _LOCK = threading.RLock()
+
+# Engagements with these IDs are treated as shared infrastructure and are NOT
+# namespaced under any user. Used for cross-user system state (e.g., the
+# global users.db belongs to the auth plugin, not to any individual user).
+_SHARED_ENGAGEMENTS = frozenset({"__system__"})
 
 
 def storage_root() -> Path:
@@ -34,18 +41,47 @@ def storage_root() -> Path:
     return Path(os.environ.get("SA_STORAGE_ROOT", "./artifacts")).resolve()
 
 
+def _user_namespace() -> str | None:
+    """Return the current user's storage namespace, or None for anonymous/bypass.
+
+    Anonymous users keep the legacy layout (storage_root/<engagement_id>/...) so
+    dev mode (WEBUI_REQUIRE_AUTH=false) and the test-harness need no changes.
+    """
+    user_id = get_current_user().get("id")
+    if not user_id or user_id == "anonymous":
+        return None
+    if not re.match(r"^[a-zA-Z0-9_\-]+$", user_id):
+        # Defensive: never let a malformed user_id punch through to the filesystem
+        raise ValueError(f"unsafe user_id for storage namespacing: {user_id!r}")
+    return user_id
+
+
+def _engagement_root(engagement_id: str) -> Path:
+    """Resolve the parent directory for an engagement, respecting user namespacing."""
+    if engagement_id in _SHARED_ENGAGEMENTS:
+        return storage_root() / engagement_id
+    user_ns = _user_namespace()
+    if user_ns is None:
+        return storage_root() / engagement_id
+    return storage_root() / "users" / user_ns / engagement_id
+
+
 def safe_artifact_path(engagement_id: str, artifact_name: str) -> Path:
     """Validate + resolve an artifact path within an engagement's namespace.
 
-    Rejects: paths containing ``..``, absolute paths, paths escaping the engagement
-    namespace after normalization. Mirrors v2spec §6.1 path-traversal guard.
+    User-scoped: paths become ``<storage_root>/users/<user_id>/<engagement_id>/<artifact>``
+    when an authenticated user is active. ``__system__`` engagement is shared
+    (unscoped). Anonymous/dev-bypass mode also stays unscoped for back-compat.
+
+    Rejects: ``..`` segments, absolute paths, paths escaping the engagement namespace.
+    Mirrors v2spec §6.1 path-traversal guard.
     """
     if not re.match(r"^[a-zA-Z0-9_\-]+(/[a-zA-Z0-9_\-.]+)+$", artifact_name):
         raise ValueError(f"artifact_name must match 'category/filename' pattern: {artifact_name!r}")
     if ".." in artifact_name.split("/"):
         raise ValueError(f"artifact_name contains path traversal: {artifact_name!r}")
 
-    root = storage_root() / engagement_id
+    root = _engagement_root(engagement_id)
     resolved = (root / artifact_name).resolve()
     if not str(resolved).startswith(str(root.resolve()) + os.sep):
         raise ValueError(f"artifact_name escapes engagement namespace: {artifact_name!r}")
@@ -83,7 +119,7 @@ def write_yaml(engagement_id: str, artifact_name: str, data: Any) -> Path:
 
 def list_artifacts(engagement_id: str, category: str | None = None) -> list[str]:
     """List artifact paths (relative to engagement) under ``category`` or all."""
-    root = storage_root() / engagement_id
+    root = _engagement_root(engagement_id)
     if not root.exists():
         return []
     if category:

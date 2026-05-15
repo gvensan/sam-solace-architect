@@ -9,6 +9,7 @@ import pytest
 from solace_architect_core.tools import (
     artifact_tools, decision_tools, project_tools,
     intake_tools, dashboard_tools, validation_tools,
+    grounding_tools,
 )
 
 
@@ -163,3 +164,27 @@ async def test_trace_requirements_finds_mention():
     r = await validation_tools.trace_requirements(brief, ["topic-design/x.md"], eid)
     assert r.data["matrix"]["delivery_mode"] == ["topic-design/x.md"]
     assert not r.data["unaddressed"]
+
+
+# ---------- grounding_tools ----------
+
+@pytest.mark.asyncio
+async def test_load_preamble_returns_content_with_load_bearing_sections():
+    r = await grounding_tools.load_preamble()
+    assert r.ok, f"load_preamble failed: {r.error}"
+    body = r.data
+    assert isinstance(body, str) and len(body) > 0
+
+    for required_section in (
+        "Accuracy and grounding discipline",
+        "Inline citation",
+        "Strict grounding in Solace",
+        "Claim classification discipline",
+        "Voice and writing principles",
+        "Naming discipline",
+        "Working style",
+    ):
+        assert required_section in body, f"missing required section: {required_section!r}"
+
+    assert "Micro-Integration" in body
+    assert "[doc:" in body and "[inference]" in body and "[user]" in body
