@@ -30,13 +30,34 @@ def test_config_has_required_top_level(config_path):
         f"{config_path.parent.name}: must have 'apps' (SAM-standard) or 'agent' (legacy) top-level key"
 
 
+def _agent_block(data: dict) -> dict | None:
+    """Return the agent definition (name/agent_card/tools) from either config shape.
+
+    SAM ``apps:`` block puts agent metadata under ``apps[0].app_config``;
+    legacy local format uses a top-level ``agent:`` mapping. Returns None for
+    entrypoints (no agent metadata).
+    """
+    if "apps" in data and isinstance(data["apps"], list) and data["apps"]:
+        app = data["apps"][0]
+        if app.get("app_module", "").endswith("agent.sac.app"):
+            ac = app.get("app_config", {})
+            return {
+                "name": ac.get("agent_name"),
+                "agent_card": ac.get("agent_card", {}),
+                "tools": ac.get("tools", []),
+            }
+    if "agent" in data:
+        return data["agent"]
+    return None
+
+
 @pytest.mark.parametrize("config_path", PLUGINS, ids=lambda p: p.parent.name)
 def test_agent_config_has_name_and_skills(config_path):
     data = yaml.safe_load(config_path.read_text())
-    if "agent" not in data:
+    agent = _agent_block(data)
+    if agent is None:
         pytest.skip("entrypoint plugin")
-    agent = data["agent"]
-    assert agent.get("name"), f"{config_path.parent.name}: agent.name missing"
+    assert agent.get("name"), f"{config_path.parent.name}: agent name missing"
     assert agent.get("agent_card", {}).get("skills"), \
         f"{config_path.parent.name}: agent_card.skills missing"
 
@@ -45,9 +66,10 @@ def test_agent_config_has_name_and_skills(config_path):
 def test_tool_references_resolve(config_path):
     """Every component_module + function_name must point to a real function."""
     data = yaml.safe_load(config_path.read_text())
-    if "agent" not in data:
+    agent = _agent_block(data)
+    if agent is None:
         pytest.skip("entrypoint plugin (no tool list)")
-    for tool in (data["agent"].get("tools") or []):
+    for tool in (agent.get("tools") or []):
         if tool.get("tool_type") != "python":
             continue
         mod_name = tool["component_module"]
