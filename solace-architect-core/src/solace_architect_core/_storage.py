@@ -3,7 +3,12 @@
 This is a local backing store used in test-harness mode. In production deployment
 under SAM, the same interface will be implemented against SAM's ArtifactService.
 
-Layout under ``SA_STORAGE_ROOT`` (default: ./artifacts):
+Layout under ``SA_STORAGE_ROOT``:
+  - When run under SAM, the WebUI entrypoint sets ``SA_STORAGE_ROOT`` to its
+    configured ``artifact_service.base_path`` at startup, so SA's state and
+    SAM's filesystem artifact bytes share one root.
+  - When used directly (tests, scripts) without that bootstrap, the fallback
+    is ``./sa-artifacts`` relative to the current working directory.
 
     <engagement_id>/
         meta/
@@ -38,7 +43,7 @@ _SHARED_ENGAGEMENTS = frozenset({"__system__"})
 
 def storage_root() -> Path:
     """Resolve the root directory for engagement artifacts."""
-    return Path(os.environ.get("SA_STORAGE_ROOT", "./artifacts")).resolve()
+    return Path(os.environ.get("SA_STORAGE_ROOT", "./sa-artifacts")).resolve()
 
 
 def _user_namespace() -> str | None:
@@ -101,6 +106,41 @@ def write_text(engagement_id: str, artifact_name: str, content: str) -> Path:
     with _LOCK:
         path.write_text(content, encoding="utf-8")
     return path
+
+
+def append_jsonl(engagement_id: str, artifact_name: str, row: dict) -> Path:
+    """Append a single JSON object as a line to a JSONL artifact (creates parent dirs).
+
+    Concurrency-safe under the module ``_LOCK``. Used by telemetry writers where
+    every LLM call appends one row and a full read-modify-write would race.
+    """
+    import json as _json
+    path = safe_artifact_path(engagement_id, artifact_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = _json.dumps(row, separators=(",", ":"), sort_keys=False) + "\n"
+    with _LOCK:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+    return path
+
+
+def read_jsonl(engagement_id: str, artifact_name: str) -> list[dict]:
+    """Read a JSONL artifact, returning a list of parsed objects. Empty list if missing."""
+    import json as _json
+    try:
+        text = read_text(engagement_id, artifact_name)
+    except FileNotFoundError:
+        return []
+    rows = []
+    for ln in text.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            rows.append(_json.loads(ln))
+        except _json.JSONDecodeError:
+            continue
+    return rows
 
 
 def read_yaml(engagement_id: str, artifact_name: str, default: Any = None) -> Any:

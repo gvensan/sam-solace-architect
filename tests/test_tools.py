@@ -9,8 +9,9 @@ import pytest
 from solace_architect_core.tools import (
     artifact_tools, decision_tools, project_tools,
     intake_tools, dashboard_tools, validation_tools,
-    grounding_tools,
+    grounding_tools, telemetry_tools,
 )
+from solace_architect_core import agent_callbacks
 
 
 @pytest.fixture(autouse=True)
@@ -188,3 +189,209 @@ async def test_load_preamble_returns_content_with_load_bearing_sections():
 
     assert "Micro-Integration" in body
     assert "[doc:" in body and "[inference]" in body and "[user]" in body
+
+
+# ---------- telemetry_tools ----------
+
+@pytest.mark.asyncio
+async def test_record_then_read_token_usage_groups_by_agent():
+    eid = "eng-tel-1"
+    await telemetry_tools.record_token_usage(
+        eid, agent="SADiscoveryAgent", model="claude-sonnet-4-6",
+        input_tokens=100, output_tokens=20, cached_input_tokens=80, step_id="discovery",
+    )
+    await telemetry_tools.record_token_usage(
+        eid, agent="SADiscoveryAgent", model="claude-sonnet-4-6",
+        input_tokens=200, output_tokens=40, cached_input_tokens=150, step_id="discovery",
+    )
+    await telemetry_tools.record_token_usage(
+        eid, agent="SADomainAgent", model="claude-opus-4-7",
+        input_tokens=500, output_tokens=80, step_id="topic-design",
+    )
+
+    r = await telemetry_tools.read_token_usage(eid, group_by="agent")
+    assert r.ok
+    by_agent = {row["key"]: row for row in r.data["rows"]}
+
+    assert by_agent["SADiscoveryAgent"]["input_tokens"] == 300
+    assert by_agent["SADiscoveryAgent"]["output_tokens"] == 60
+    assert by_agent["SADiscoveryAgent"]["cached_input_tokens"] == 230
+    assert by_agent["SADiscoveryAgent"]["total_tokens"] == 360
+    assert by_agent["SADiscoveryAgent"]["calls"] == 2
+
+    assert by_agent["SADomainAgent"]["total_tokens"] == 580
+    assert by_agent["SADomainAgent"]["calls"] == 1
+
+    assert r.data["totals"]["input_tokens"] == 800
+    assert r.data["totals"]["output_tokens"] == 140
+    assert r.data["totals"]["total_tokens"] == 940
+    assert r.data["totals"]["calls"] == 3
+
+
+@pytest.mark.asyncio
+async def test_read_token_usage_groups_by_step_model_day():
+    eid = "eng-tel-2"
+    await telemetry_tools.record_token_usage(
+        eid, agent="A", model="m1", input_tokens=10, output_tokens=2, step_id="s1",
+        ts="2026-05-15T10:00:00.000Z",
+    )
+    await telemetry_tools.record_token_usage(
+        eid, agent="A", model="m2", input_tokens=20, output_tokens=4, step_id="s2",
+        ts="2026-05-15T11:00:00.000Z",
+    )
+    await telemetry_tools.record_token_usage(
+        eid, agent="A", model="m1", input_tokens=30, output_tokens=6, step_id=None,
+        ts="2026-05-16T10:00:00.000Z",
+    )
+
+    by_step = {r["key"]: r for r in (await telemetry_tools.read_token_usage(eid, group_by="step")).data["rows"]}
+    assert by_step["s1"]["calls"] == 1
+    assert by_step["s2"]["calls"] == 1
+    assert by_step["<no-step>"]["calls"] == 1
+
+    by_model = {r["key"]: r for r in (await telemetry_tools.read_token_usage(eid, group_by="model")).data["rows"]}
+    assert by_model["m1"]["total_tokens"] == 48
+    assert by_model["m2"]["total_tokens"] == 24
+
+    by_day = {r["key"]: r for r in (await telemetry_tools.read_token_usage(eid, group_by="day")).data["rows"]}
+    assert by_day["2026-05-15"]["calls"] == 2
+    assert by_day["2026-05-16"]["calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_read_token_usage_since_until_filtering():
+    from datetime import datetime, timezone
+    eid = "eng-tel-3"
+    await telemetry_tools.record_token_usage(
+        eid, agent="A", model="m", input_tokens=10, output_tokens=2,
+        ts="2026-05-14T10:00:00.000Z",
+    )
+    await telemetry_tools.record_token_usage(
+        eid, agent="A", model="m", input_tokens=20, output_tokens=4,
+        ts="2026-05-15T10:00:00.000Z",
+    )
+    await telemetry_tools.record_token_usage(
+        eid, agent="A", model="m", input_tokens=30, output_tokens=6,
+        ts="2026-05-16T10:00:00.000Z",
+    )
+
+    since = datetime(2026, 5, 15, 0, 0, tzinfo=timezone.utc)
+    until = datetime(2026, 5, 16, 0, 0, tzinfo=timezone.utc)
+    r = await telemetry_tools.read_token_usage(eid, group_by="day", since=since, until=until)
+    assert r.data["totals"]["calls"] == 1
+    assert r.data["totals"]["total_tokens"] == 24
+    assert r.data["rows"][0]["key"] == "2026-05-15"
+
+
+@pytest.mark.asyncio
+async def test_read_token_usage_empty_when_no_ledger():
+    r = await telemetry_tools.read_token_usage("eng-never-touched", group_by="agent")
+    assert r.ok
+    assert r.data["rows"] == []
+    assert r.data["totals"]["calls"] == 0
+    assert r.data["row_count_raw"] == 0
+
+
+# ---------- agent_callbacks ----------
+
+class _FakeUsageMetadata:
+    def __init__(self, prompt, candidates, cached=None):
+        self.prompt_token_count = prompt
+        self.candidates_token_count = candidates
+        if cached is not None:
+            class _D:  # noqa: D106
+                pass
+            d = _D()
+            d.cached_tokens = cached
+            self.prompt_tokens_details = d
+
+
+class _FakeLlmResponse:
+    def __init__(self, usage_metadata):
+        self.usage_metadata = usage_metadata
+
+
+@pytest.mark.asyncio
+async def test_record_llm_call_telemetry_extracts_usage_metadata():
+    eid = "eng-cb-1"
+    resp = _FakeLlmResponse(_FakeUsageMetadata(prompt=123, candidates=45, cached=100))
+    r = await agent_callbacks.record_llm_call_telemetry(
+        llm_response=resp,
+        agent="SADiscoveryAgent",
+        engagement_id=eid,
+        model="claude-sonnet-4-6",
+        step_id="discovery",
+        sam_task_id="task-xyz",
+    )
+    assert r.ok
+    rr = await telemetry_tools.read_token_usage(eid, group_by="agent")
+    assert rr.data["totals"]["input_tokens"] == 123
+    assert rr.data["totals"]["output_tokens"] == 45
+    assert rr.data["totals"]["cached_input_tokens"] == 100
+
+
+@pytest.mark.asyncio
+async def test_record_llm_call_telemetry_drops_when_engagement_id_missing():
+    resp = _FakeLlmResponse(_FakeUsageMetadata(prompt=10, candidates=2))
+    r = await agent_callbacks.record_llm_call_telemetry(
+        llm_response=resp, agent="X", engagement_id=None, model="m",
+    )
+    assert not r.ok
+    assert "engagement_id" in r.error
+
+
+@pytest.mark.asyncio
+async def test_record_llm_call_telemetry_drops_when_no_usage_metadata():
+    resp = _FakeLlmResponse(usage_metadata=None)
+    r = await agent_callbacks.record_llm_call_telemetry(
+        llm_response=resp, agent="X", engagement_id="eng-x", model="m",
+    )
+    assert not r.ok
+    assert "usage_metadata" in r.error
+
+
+@pytest.mark.asyncio
+async def test_read_user_token_usage_aggregates_across_projects():
+    p1 = await project_tools.create_project(name="alpha")
+    p2 = await project_tools.create_project(name="beta")
+    eid1, eid2 = p1.data["id"], p2.data["id"]
+
+    await telemetry_tools.record_token_usage(
+        eid1, agent="SADiscoveryAgent", model="m1",
+        input_tokens=100, output_tokens=20,
+    )
+    await telemetry_tools.record_token_usage(
+        eid1, agent="SADomainAgent", model="m1",
+        input_tokens=200, output_tokens=40,
+    )
+    await telemetry_tools.record_token_usage(
+        eid2, agent="SADiscoveryAgent", model="m2",
+        input_tokens=500, output_tokens=80,
+    )
+
+    r = await telemetry_tools.read_user_token_usage(group_by="project")
+    assert r.ok
+    by_proj = {row["key"]: row for row in r.data["rows"]}
+    assert by_proj[eid1]["total_tokens"] == 360
+    assert by_proj[eid1]["label"] == "alpha"
+    assert by_proj[eid1]["calls"] == 2
+    assert by_proj[eid2]["total_tokens"] == 580
+    assert by_proj[eid2]["label"] == "beta"
+    assert r.data["totals"]["calls"] == 3
+    assert r.data["totals"]["total_tokens"] == 940
+    assert r.data["project_count"] == 2
+
+    r2 = await telemetry_tools.read_user_token_usage(group_by="agent")
+    by_agent = {row["key"]: row for row in r2.data["rows"]}
+    assert by_agent["SADiscoveryAgent"]["calls"] == 2
+    assert by_agent["SADiscoveryAgent"]["total_tokens"] == 700
+    assert by_agent["SADomainAgent"]["calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_read_user_token_usage_empty_when_no_projects():
+    r = await telemetry_tools.read_user_token_usage(group_by="project")
+    assert r.ok
+    assert r.data["rows"] == []
+    assert r.data["totals"]["calls"] == 0
+    assert r.data["project_count"] == 0
