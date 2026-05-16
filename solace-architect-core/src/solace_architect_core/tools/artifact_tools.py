@@ -77,6 +77,11 @@ async def read_artifact(engagement_id: str, artifact_name: str,
 
     Returns ToolResult(ok=True, data=content) or ToolResult(ok=False, error=...).
     """
+    import logging
+    logging.getLogger(__name__).warning(
+        "[read_artifact] called eid=%r artifact=%r user_id=%r",
+        engagement_id, artifact_name, user_id,
+    )
     try:
         with _scoped_user(user_id):
             content = _read_text(engagement_id, artifact_name)
