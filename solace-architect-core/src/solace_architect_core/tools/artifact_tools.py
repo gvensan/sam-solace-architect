@@ -7,8 +7,9 @@ The same interface will be re-implemented against SAM's ArtifactService.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterator
 
 from .._storage import (
     list_artifacts as _list_artifacts,
@@ -16,6 +17,27 @@ from .._storage import (
     safe_artifact_path,
     write_text as _write_text,
 )
+from .._user_context import current_user
+
+
+@contextmanager
+def _scoped_user(user_id: str | None) -> Iterator[None]:
+    """Temporarily bind current_user to ``user_id`` for storage namespacing.
+
+    Agents run in a separate process from the WebUI, so the request-bound
+    ContextVar isn't populated. Tools accept an optional ``user_id`` arg the
+    caller (LLM) lifts from the message header and we set it here so
+    ``_user_namespace()`` resolves the user-scoped path the WebUI wrote under.
+    """
+    if not user_id or user_id == "anonymous":
+        yield
+        return
+    token = current_user.set({"id": user_id, "name": user_id, "email": None,
+                              "groups": [], "source": "agent_header", "is_admin": False})
+    try:
+        yield
+    finally:
+        current_user.reset(token)
 
 
 # Forbidden terms (v2spec §3.1 forbidden-term list, normalized to lowercase)
@@ -45,13 +67,19 @@ class ToolResult:
 
 # ---------- read_artifact ----------
 
-async def read_artifact(engagement_id: str, artifact_name: str) -> ToolResult:
+async def read_artifact(engagement_id: str, artifact_name: str,
+                        user_id: str | None = None) -> ToolResult:
     """Read an artifact via the storage layer.
+
+    ``user_id`` is optional and used by agent-side callers to scope to the same
+    user namespace the WebUI wrote under (lift it from the [Active engagement:
+    ..., user_id=<uuid>] message header).
 
     Returns ToolResult(ok=True, data=content) or ToolResult(ok=False, error=...).
     """
     try:
-        content = _read_text(engagement_id, artifact_name)
+        with _scoped_user(user_id):
+            content = _read_text(engagement_id, artifact_name)
         return ToolResult(ok=True, data=content)
     except FileNotFoundError:
         return ToolResult(ok=False, error=f"artifact not found: {artifact_name}")
@@ -91,43 +119,56 @@ def _check_grounding(content: str) -> ValidationResult:
     return ValidationResult(ok=True, violations=[])
 
 
-async def write_artifact(engagement_id: str, artifact_name: str, content: str) -> ToolResult:
+async def write_artifact(engagement_id: str, artifact_name: str, content: str,
+                         user_id: str | None = None) -> ToolResult:
     """Write an artifact with structured pre-write validation (v2spec §3.1).
+
+    ``user_id`` is optional and used by agent-side callers to scope to the same
+    user namespace the WebUI wrote under (lift it from the [Active engagement:
+    ..., user_id=<uuid>] message header).
 
     On failure, ``error_detail`` carries per-check violation lists so the agent can
     surface them as actionable items rather than a flat error string.
     """
-    path_check = _check_path(engagement_id, artifact_name)
-    if not path_check.ok:
-        return ToolResult(ok=False, error=path_check.error or "invalid artifact path",
-                          error_detail={"path_check": {"ok": False, "error": path_check.error}})
+    with _scoped_user(user_id):
+        path_check = _check_path(engagement_id, artifact_name)
+        if not path_check.ok:
+            return ToolResult(ok=False, error=path_check.error or "invalid artifact path",
+                              error_detail={"path_check": {"ok": False, "error": path_check.error}})
 
-    terminology_check = _check_terminology(content)
-    naming_check = _check_naming(content)
-    grounding_check = _check_grounding(content)
+        terminology_check = _check_terminology(content)
+        naming_check = _check_naming(content)
+        grounding_check = _check_grounding(content)
 
-    if not (terminology_check.ok and naming_check.ok and grounding_check.ok):
-        return ToolResult(
-            ok=False,
-            error="pre-write validation failed",
-            error_detail={
-                "path_check": {"ok": True, "error": None},
-                "terminology_check": {"ok": terminology_check.ok, "violations": terminology_check.violations},
-                "naming_check": {"ok": naming_check.ok, "violations": naming_check.violations},
-                "grounding_check": {"ok": grounding_check.ok, "violations": grounding_check.violations},
-            },
-        )
+        if not (terminology_check.ok and naming_check.ok and grounding_check.ok):
+            return ToolResult(
+                ok=False,
+                error="pre-write validation failed",
+                error_detail={
+                    "path_check": {"ok": True, "error": None},
+                    "terminology_check": {"ok": terminology_check.ok, "violations": terminology_check.violations},
+                    "naming_check": {"ok": naming_check.ok, "violations": naming_check.violations},
+                    "grounding_check": {"ok": grounding_check.ok, "violations": grounding_check.violations},
+                },
+            )
 
-    _write_text(engagement_id, artifact_name, content)
+        _write_text(engagement_id, artifact_name, content)
     return ToolResult(ok=True, data={"artifact_name": artifact_name, "bytes": len(content)})
 
 
 # ---------- list_artifacts ----------
 
-async def list_artifacts(engagement_id: str, category: str | None = None) -> ToolResult:
-    """List artifacts under ``category`` or all artifacts for the engagement."""
+async def list_artifacts(engagement_id: str, category: str | None = None,
+                         user_id: str | None = None) -> ToolResult:
+    """List artifacts under ``category`` or all artifacts for the engagement.
+
+    ``user_id`` is optional and used by agent-side callers to scope to the same
+    user namespace the WebUI wrote under (lift it from the [Active engagement:
+    ..., user_id=<uuid>] message header).
+    """
     try:
-        names = _list_artifacts(engagement_id, category=category)
+        with _scoped_user(user_id):
+            names = _list_artifacts(engagement_id, category=category)
         return ToolResult(ok=True, data=names)
     except Exception as e:  # pragma: no cover
         return ToolResult(ok=False, error=str(e))
