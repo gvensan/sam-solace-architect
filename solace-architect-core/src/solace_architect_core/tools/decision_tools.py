@@ -6,6 +6,7 @@ from dataclasses import asdict
 from typing import Optional
 
 from .._storage import next_id, read_yaml, write_yaml
+from .._user_context import scoped_user as _scoped_user
 from ..schemas import (
     DecisionEntry,
     FindingEntry,
@@ -104,26 +105,35 @@ async def update_finding_status(
 async def record_open_item(
     engagement_id: str, *, severity: str, source: str, description: str,
     affecting_step: Optional[str] = None, affected_artifact: Optional[str] = None,
-    source_agent: str = "",
+    source_agent: str = "", user_id: Optional[str] = None,
 ) -> ToolResult:
-    data = read_yaml(engagement_id, "meta/open-items.yaml", default={"open_items": []})
-    existing_ids = [q["id"] for q in data["open_items"]]
-    entry = OpenItemEntry(
-        id=next_id(existing_ids, "Q"),
-        severity=severity, source=source, description=description,
-        affecting_step=affecting_step, affected_artifact=affected_artifact,
-        source_agent=source_agent,
-    )
-    data["open_items"].append(entry.to_dict())
-    write_yaml(engagement_id, "meta/open-items.yaml", data)
+    """Record an open item. ``user_id`` (optional) scopes storage to the
+    user namespace the WebUI wrote under — lift it from the [Active
+    engagement: ..., user_id=<uuid>] message header on the agent side."""
+    with _scoped_user(user_id):
+        data = read_yaml(engagement_id, "meta/open-items.yaml", default={"open_items": []})
+        existing_ids = [q["id"] for q in data["open_items"]]
+        entry = OpenItemEntry(
+            id=next_id(existing_ids, "Q"),
+            severity=severity, source=source, description=description,
+            affecting_step=affecting_step, affected_artifact=affected_artifact,
+            source_agent=source_agent,
+        )
+        data["open_items"].append(entry.to_dict())
+        write_yaml(engagement_id, "meta/open-items.yaml", data)
     return ToolResult(ok=True, data=entry.to_dict())
 
 
 async def read_open_items(
     engagement_id: str, status: Optional[str] = None,
     severity: Optional[str] = None, source: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> ToolResult:
-    data = read_yaml(engagement_id, "meta/open-items.yaml", default={"open_items": []})
+    """Read open items. ``user_id`` (optional) scopes storage to the
+    user namespace the WebUI wrote under — lift it from the [Active
+    engagement: ..., user_id=<uuid>] message header on the agent side."""
+    with _scoped_user(user_id):
+        data = read_yaml(engagement_id, "meta/open-items.yaml", default={"open_items": []})
     items = data["open_items"]
     if status:
         items = [q for q in items if q.get("status") == status]
@@ -153,19 +163,23 @@ async def update_open_item_status(
 
 async def record_feedback(
     engagement_id: str, *, scope: str, rating: int, category: str, note: str,
-    recorded_by: str = "anonymous",
+    recorded_by: str = "anonymous", user_id: Optional[str] = None,
 ) -> ToolResult:
+    """Record feedback. ``user_id`` (optional) scopes storage to the user
+    namespace the WebUI wrote under — lift it from the [Active engagement:
+    ..., user_id=<uuid>] message header on the agent side."""
     if not 1 <= rating <= 5:
         return ToolResult(ok=False, error="rating must be 1-5")
-    data = read_yaml(engagement_id, "meta/feedback.yaml", default={"feedback": []})
-    existing_ids = [fb["id"] for fb in data["feedback"]]
-    entry = FeedbackEntry(
-        id=next_id(existing_ids, "FB"),
-        scope=scope, rating=rating, category=category, note=note,
-        recorded_by=recorded_by,
-    )
-    data["feedback"].append(entry.to_dict())
-    write_yaml(engagement_id, "meta/feedback.yaml", data)
+    with _scoped_user(user_id):
+        data = read_yaml(engagement_id, "meta/feedback.yaml", default={"feedback": []})
+        existing_ids = [fb["id"] for fb in data["feedback"]]
+        entry = FeedbackEntry(
+            id=next_id(existing_ids, "FB"),
+            scope=scope, rating=rating, category=category, note=note,
+            recorded_by=recorded_by,
+        )
+        data["feedback"].append(entry.to_dict())
+        write_yaml(engagement_id, "meta/feedback.yaml", data)
     return ToolResult(ok=True, data=entry.to_dict())
 
 

@@ -7,9 +7,8 @@ The same interface will be re-implemented against SAM's ArtifactService.
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any
 
 from .._storage import (
     list_artifacts as _list_artifacts,
@@ -17,27 +16,7 @@ from .._storage import (
     safe_artifact_path,
     write_text as _write_text,
 )
-from .._user_context import current_user
-
-
-@contextmanager
-def _scoped_user(user_id: str | None) -> Iterator[None]:
-    """Temporarily bind current_user to ``user_id`` for storage namespacing.
-
-    Agents run in a separate process from the WebUI, so the request-bound
-    ContextVar isn't populated. Tools accept an optional ``user_id`` arg the
-    caller (LLM) lifts from the message header and we set it here so
-    ``_user_namespace()`` resolves the user-scoped path the WebUI wrote under.
-    """
-    if not user_id or user_id == "anonymous":
-        yield
-        return
-    token = current_user.set({"id": user_id, "name": user_id, "email": None,
-                              "groups": [], "source": "agent_header", "is_admin": False})
-    try:
-        yield
-    finally:
-        current_user.reset(token)
+from .._user_context import scoped_user as _scoped_user
 
 
 # Forbidden terms (v2spec §3.1 forbidden-term list, normalized to lowercase)
@@ -77,11 +56,6 @@ async def read_artifact(engagement_id: str, artifact_name: str,
 
     Returns ToolResult(ok=True, data=content) or ToolResult(ok=False, error=...).
     """
-    import logging
-    logging.getLogger(__name__).warning(
-        "[read_artifact] called eid=%r artifact=%r user_id=%r",
-        engagement_id, artifact_name, user_id,
-    )
     try:
         with _scoped_user(user_id):
             content = _read_text(engagement_id, artifact_name)

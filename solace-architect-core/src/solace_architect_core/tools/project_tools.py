@@ -9,7 +9,7 @@ import re
 from typing import Optional
 
 from .._storage import read_yaml, write_yaml
-from .._user_context import get_current_user
+from .._user_context import get_current_user, scoped_user as _scoped_user
 from ..schemas import ProjectEntry, _now
 from .artifact_tools import ToolResult
 
@@ -28,14 +28,23 @@ def _current_owner() -> str:
     return get_current_user().get("id") or "anonymous"
 
 
-async def list_projects(include_archived: bool = False) -> ToolResult:
+async def list_projects(
+    include_archived: bool = False, user_id: Optional[str] = None,
+) -> ToolResult:
     """List projects owned by the current user.
 
     Anonymous users see the legacy global registry; authenticated users see only
     projects where ``owner`` matches their ID.
+
+    ``user_id`` (optional) lets agent-side callers identify the authenticated
+    user — lift it from the [Active engagement: ..., user_id=<uuid>] message
+    header. Without it, owner falls back to the empty ContextVar and the
+    listing returns the unfiltered global view, which is wrong for an agent
+    running on behalf of a specific browser user.
     """
-    data = read_yaml(_SYSTEM_ENGAGEMENT, _PROJECTS_ARTIFACT, default={"projects": []})
-    owner = _current_owner()
+    with _scoped_user(user_id):
+        data = read_yaml(_SYSTEM_ENGAGEMENT, _PROJECTS_ARTIFACT, default={"projects": []})
+        owner = _current_owner()
     projects = data["projects"]
     if owner != "anonymous":
         projects = [p for p in projects if p.get("owner") == owner]
