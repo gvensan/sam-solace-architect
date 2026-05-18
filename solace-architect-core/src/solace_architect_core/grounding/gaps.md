@@ -239,3 +239,6 @@ Format:
 
 - **~~MCP specification URL~~:** URL present in solace-canonical-sources.md.
   - Resolved: 2026-04-30
+
+- **2026-05-18T16:47:39+00:00** — topic=`ask_user_question tool - options parameter` agent=`SADiscoveryAgent` reason: The ask_user_question tool consistently returns error='options must be a list' regardless of JSON formatting attempts (compact JSON, pretty JSON, escaped quotes, minimal options). Schema declares options as type:string but implementation appears to expect a Python list object, not a JSON string. Unable to use single_choice or multi_choice question kinds.
+  suggested fix: Either: (1) Update tool schema to correctly declare options parameter type as array/list, or (2) Update tool implementation to parse JSON string into list, or (3) Provide working example of correct options parameter format in agent documentation
