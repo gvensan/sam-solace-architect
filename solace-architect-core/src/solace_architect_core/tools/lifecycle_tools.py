@@ -38,6 +38,14 @@ from .._user_context import resolve_user_id as _resolve_user_id, scoped_user as 
 from .artifact_tools import ToolResult
 
 
+def _iso_to_dt(iso: str) -> datetime | None:
+    """Parse a `_now_iso()`-style timestamp; tolerate trailing 'Z' or offset."""
+    try:
+        return datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
 _STATUS_VALUES = ("DONE", "DONE_WITH_CONCERNS", "BLOCKED", "NEEDS_CONTEXT", "NOT_STARTED")
 _STATUS_FILE = "meta/engagement-status.yaml"
 
@@ -89,14 +97,38 @@ async def set_step_status(
         data = read_yaml(engagement_id, _STATUS_FILE, default={"steps": {}}) or {"steps": {}}
         if "steps" not in data or not isinstance(data["steps"], dict):
             data["steps"] = {}
+        now_iso = _now_iso()
+        prev = data["steps"].get(step) or {}
+        started_at = prev.get("started_at") or now_iso
         data["steps"][step] = {
             "status": status,
-            "updated_at": _now_iso(),
+            "started_at": started_at,
+            "updated_at": now_iso,
             "agent": agent or "",
             "note": note or "",
         }
         write_yaml(engagement_id, _STATUS_FILE, data)
-    return ToolResult(ok=True, data={"step": step, "status": status})
+
+        # When a step completes, mirror the duration into meta/session.yaml's
+        # timing_data so compute_timeline / Stats view reflect it. Never break
+        # the status write if the timing append fails.
+        if status in ("DONE", "DONE_WITH_CONCERNS"):
+            try:
+                started_dt = _iso_to_dt(started_at) or datetime.now(timezone.utc)
+                wall_sec = max(0, int((datetime.now(timezone.utc) - started_dt).total_seconds()))
+                session = read_yaml(engagement_id, "meta/session.yaml", default={}) or {}
+                timing = dict(session.get("timing_data", {}) or {})
+                timing[step] = {
+                    "wall_sec": wall_sec,
+                    "execution_sec": wall_sec,
+                    "user_wait_sec": 0,
+                    "recorded_at": now_iso,
+                }
+                session["timing_data"] = timing
+                write_yaml(engagement_id, "meta/session.yaml", session)
+            except Exception:
+                pass
+    return ToolResult(ok=True, data={"step": step, "status": status, "started_at": started_at})
 
 
 async def get_engagement_status(
