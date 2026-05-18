@@ -43,10 +43,10 @@ def _validate_options(kind: str, options: Optional[list]) -> Optional[str]:
         if opt["id"] in seen_ids:
             return f"options[{i}].id={opt['id']!r} is duplicated"
         seen_ids.add(opt["id"])
-    if kind == "single_choice" and not (2 <= len(options) <= 4):
-        return f"single_choice expects 2-4 options, got {len(options)}"
-    if kind == "multi_choice" and not (2 <= len(options) <= 8):
-        return f"multi_choice expects 2-8 options, got {len(options)}"
+    if kind == "single_choice" and not (2 <= len(options) <= 8):
+        return f"single_choice expects 2-8 options, got {len(options)}"
+    if kind == "multi_choice" and not (2 <= len(options) <= 10):
+        return f"multi_choice expects 2-10 options, got {len(options)}"
     return None
 
 
