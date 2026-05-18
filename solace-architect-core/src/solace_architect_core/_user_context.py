@@ -39,6 +39,35 @@ def get_current_user() -> dict[str, Any]:
     return current_user.get()
 
 
+def resolve_user_id(user_id: str | None, tool_context: Any = None) -> str | None:
+    """Pick the user_id to scope storage with, in this order of preference:
+
+    1. Explicit ``user_id`` arg — kept for back-compat with the legacy LLM-
+       extracts-the-header path and tests that pass it directly.
+    2. ``tool_context.state["a2a_context"]["user_id"]`` — SAM populates this
+       from the A2A task's user_identity, so the LLM no longer has to
+       remember to lift it from the [Active engagement: ...] header.
+    3. ``None`` — preserves the unscoped layout for anonymous / dev-bypass.
+
+    The ``tool_context`` arg is duck-typed (kept as ``Any``) to avoid
+    importing google.adk into the core; SAM excludes parameters named
+    ``tool_context`` from the LLM-visible schema and auto-injects them
+    (see solace_agent_mesh.agent.tools.dynamic_tool._get_schema_from_signature).
+    """
+    if user_id and user_id != "anonymous":
+        return user_id
+    if tool_context is None:
+        return user_id
+    try:
+        a2a_ctx = tool_context.state.get("a2a_context") or {}
+        uid = a2a_ctx.get("user_id")
+        if uid and uid != "anonymous":
+            return uid
+    except (AttributeError, TypeError):
+        pass
+    return user_id
+
+
 @contextmanager
 def scoped_user(user_id: str | None) -> Iterator[None]:
     """Temporarily bind ``current_user`` to ``user_id`` for storage namespacing.

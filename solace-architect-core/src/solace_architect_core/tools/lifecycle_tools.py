@@ -31,10 +31,10 @@ Stored shape (one file per engagement, under engagement-scoped storage)::
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from .._storage import read_yaml, write_yaml
-from .._user_context import scoped_user as _scoped_user
+from .._user_context import resolve_user_id as _resolve_user_id, scoped_user as _scoped_user
 from .artifact_tools import ToolResult
 
 
@@ -50,6 +50,7 @@ async def set_step_status(
     engagement_id: str, step: str, status: str,
     note: Optional[str] = None, agent: Optional[str] = None,
     user_id: Optional[str] = None,
+    tool_context: Any = None,
 ) -> ToolResult:
     """Persist a step's Completion Status to ``meta/engagement-status.yaml``.
 
@@ -84,7 +85,7 @@ async def set_step_status(
     if not step or not isinstance(step, str):
         return ToolResult(ok=False, error="step must be a non-empty string")
 
-    with _scoped_user(user_id):
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
         data = read_yaml(engagement_id, _STATUS_FILE, default={"steps": {}}) or {"steps": {}}
         if "steps" not in data or not isinstance(data["steps"], dict):
             data["steps"] = {}
@@ -100,15 +101,18 @@ async def set_step_status(
 
 async def get_engagement_status(
     engagement_id: str, user_id: Optional[str] = None,
+    tool_context: Any = None,
 ) -> ToolResult:
     """Read all step statuses for an engagement.
+
+    ``user_id`` auto-resolves from ``tool_context``.
 
     Returns ``{"steps": {step_id: {status, updated_at, agent, note}}}``.
     Missing steps are NOT defaulted to NOT_STARTED here — the caller
     treats absence as NOT_STARTED for free, and we want to keep the
     file shape honest about what's been recorded.
     """
-    with _scoped_user(user_id):
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
         data = read_yaml(engagement_id, _STATUS_FILE, default={"steps": {}}) or {"steps": {}}
     if "steps" not in data or not isinstance(data["steps"], dict):
         data["steps"] = {}
@@ -117,9 +121,13 @@ async def get_engagement_status(
 
 async def clear_step_status(
     engagement_id: str, step: str, user_id: Optional[str] = None,
+    tool_context: Any = None,
 ) -> ToolResult:
-    """Remove a step's status (used by the hard-reset flow). No-op if absent."""
-    with _scoped_user(user_id):
+    """Remove a step's status (used by the hard-reset flow). No-op if absent.
+
+    ``user_id`` auto-resolves from ``tool_context``.
+    """
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
         data = read_yaml(engagement_id, _STATUS_FILE, default={"steps": {}}) or {"steps": {}}
         steps = data.get("steps", {})
         if step in steps:

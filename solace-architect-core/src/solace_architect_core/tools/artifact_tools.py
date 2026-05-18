@@ -16,7 +16,7 @@ from .._storage import (
     safe_artifact_path,
     write_text as _write_text,
 )
-from .._user_context import scoped_user as _scoped_user
+from .._user_context import resolve_user_id as _resolve_user_id, scoped_user as _scoped_user
 
 
 # Forbidden terms (v2spec §3.1 forbidden-term list, normalized to lowercase)
@@ -47,17 +47,19 @@ class ToolResult:
 # ---------- read_artifact ----------
 
 async def read_artifact(engagement_id: str, artifact_name: str,
-                        user_id: str | None = None) -> ToolResult:
+                        user_id: str | None = None,
+                        tool_context: Any = None) -> ToolResult:
     """Read an artifact via the storage layer.
 
-    ``user_id`` is optional and used by agent-side callers to scope to the same
-    user namespace the WebUI wrote under (lift it from the [Active engagement:
-    ..., user_id=<uuid>] message header).
+    ``user_id`` may be passed explicitly; otherwise it is auto-resolved from
+    ``tool_context.state["a2a_context"]["user_id"]`` (SAM excludes
+    ``tool_context`` from the LLM-visible schema and injects it). See
+    ``_user_context.resolve_user_id``.
 
     Returns ToolResult(ok=True, data=content) or ToolResult(ok=False, error=...).
     """
     try:
-        with _scoped_user(user_id):
+        with _scoped_user(_resolve_user_id(user_id, tool_context)):
             content = _read_text(engagement_id, artifact_name)
         return ToolResult(ok=True, data=content)
     except FileNotFoundError:
@@ -99,17 +101,16 @@ def _check_grounding(content: str) -> ValidationResult:
 
 
 async def write_artifact(engagement_id: str, artifact_name: str, content: str,
-                         user_id: str | None = None) -> ToolResult:
+                         user_id: str | None = None,
+                         tool_context: Any = None) -> ToolResult:
     """Write an artifact with structured pre-write validation (v2spec §3.1).
 
-    ``user_id`` is optional and used by agent-side callers to scope to the same
-    user namespace the WebUI wrote under (lift it from the [Active engagement:
-    ..., user_id=<uuid>] message header).
+    ``user_id`` auto-resolves from ``tool_context`` when not passed explicitly.
 
     On failure, ``error_detail`` carries per-check violation lists so the agent can
     surface them as actionable items rather than a flat error string.
     """
-    with _scoped_user(user_id):
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
         path_check = _check_path(engagement_id, artifact_name)
         if not path_check.ok:
             return ToolResult(ok=False, error=path_check.error or "invalid artifact path",
@@ -138,15 +139,14 @@ async def write_artifact(engagement_id: str, artifact_name: str, content: str,
 # ---------- list_artifacts ----------
 
 async def list_artifacts(engagement_id: str, category: str | None = None,
-                         user_id: str | None = None) -> ToolResult:
+                         user_id: str | None = None,
+                         tool_context: Any = None) -> ToolResult:
     """List artifacts under ``category`` or all artifacts for the engagement.
 
-    ``user_id`` is optional and used by agent-side callers to scope to the same
-    user namespace the WebUI wrote under (lift it from the [Active engagement:
-    ..., user_id=<uuid>] message header).
+    ``user_id`` auto-resolves from ``tool_context`` when not passed explicitly.
     """
     try:
-        with _scoped_user(user_id):
+        with _scoped_user(_resolve_user_id(user_id, tool_context)):
             names = _list_artifacts(engagement_id, category=category)
         return ToolResult(ok=True, data=names)
     except Exception as e:  # pragma: no cover

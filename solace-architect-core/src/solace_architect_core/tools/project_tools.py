@@ -6,10 +6,14 @@ Stored under the reserved ``__system__`` engagement so it survives across SAM se
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from .._storage import read_yaml, write_yaml
-from .._user_context import get_current_user, scoped_user as _scoped_user
+from .._user_context import (
+    get_current_user,
+    resolve_user_id as _resolve_user_id,
+    scoped_user as _scoped_user,
+)
 from ..schemas import ProjectEntry, _now
 from .artifact_tools import ToolResult
 
@@ -30,19 +34,15 @@ def _current_owner() -> str:
 
 async def list_projects(
     include_archived: bool = False, user_id: Optional[str] = None,
+    tool_context: Any = None,
 ) -> ToolResult:
     """List projects owned by the current user.
 
     Anonymous users see the legacy global registry; authenticated users see only
-    projects where ``owner`` matches their ID.
-
-    ``user_id`` (optional) lets agent-side callers identify the authenticated
-    user — lift it from the [Active engagement: ..., user_id=<uuid>] message
-    header. Without it, owner falls back to the empty ContextVar and the
-    listing returns the unfiltered global view, which is wrong for an agent
-    running on behalf of a specific browser user.
+    projects where ``owner`` matches their ID. ``user_id`` auto-resolves from
+    ``tool_context`` when not passed explicitly.
     """
-    with _scoped_user(user_id):
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
         data = read_yaml(_SYSTEM_ENGAGEMENT, _PROJECTS_ARTIFACT, default={"projects": []})
         owner = _current_owner()
     projects = data["projects"]

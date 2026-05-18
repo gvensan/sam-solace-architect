@@ -13,7 +13,7 @@ import yaml
 
 from .._routing import evaluate_when
 from .._storage import read_yaml, write_yaml
-from .._user_context import scoped_user as _scoped_user
+from .._user_context import resolve_user_id as _resolve_user_id, scoped_user as _scoped_user
 from .artifact_tools import ToolResult
 
 
@@ -161,14 +161,13 @@ async def render_intake_markdown(intake_dict: dict) -> ToolResult:
 async def export_intake_from_project(
     source_engagement_id: str, include_decisions: bool = True, include_open_items: bool = False,
     user_id: Optional[str] = None,
+    tool_context: Any = None,
 ) -> ToolResult:
     """Reconstruct a YAML intake from a completed project (handoff / replay / regression).
 
-    ``user_id`` (optional) scopes storage to the user namespace the WebUI wrote
-    under — lift it from the [Active engagement: ..., user_id=<uuid>] message
-    header on the agent side.
+    ``user_id`` auto-resolves from ``tool_context``.
     """
-    with _scoped_user(user_id):
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
         brief = read_yaml(source_engagement_id, "discovery/discovery-brief.yaml")
         if not brief:
             return ToolResult(ok=False, error=f"no discovery-brief.yaml found in {source_engagement_id}")
@@ -189,14 +188,13 @@ async def export_intake_from_project(
 
 async def import_source_context(
     source_project_id: str, sections: list[str], user_id: Optional[str] = None,
+    tool_context: Any = None,
 ) -> ToolResult:
     """Copy selected sections from a source project's brief.
 
-    ``user_id`` (optional) scopes storage to the user namespace the WebUI wrote
-    under — lift it from the [Active engagement: ..., user_id=<uuid>] message
-    header on the agent side.
+    ``user_id`` auto-resolves from ``tool_context``.
     """
-    with _scoped_user(user_id):
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
         brief = read_yaml(source_project_id, "discovery/discovery-brief.yaml")
     if not brief:
         return ToolResult(ok=False, error=f"no discovery-brief.yaml in {source_project_id}")
