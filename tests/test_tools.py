@@ -162,7 +162,7 @@ async def test_trace_requirements_finds_mention():
     await artifact_tools.write_artifact(eid, "topic-design/x.md",
                                         "## Delivery mode\nWe use guaranteed messaging for orders.")
     brief = {"requirements": {"delivery_mode": "guaranteed"}}
-    r = await validation_tools.trace_requirements(brief, ["topic-design/x.md"], eid)
+    r = await validation_tools.trace_requirements(eid, brief, ["topic-design/x.md"])
     assert r.data["matrix"]["delivery_mode"] == ["topic-design/x.md"]
     assert not r.data["unaddressed"]
 

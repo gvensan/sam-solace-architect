@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import hashlib
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from .._storage import read_yaml, write_yaml
+from .._user_context import resolve_user_id as _resolve_user_id, scoped_user as _scoped_user
 from ..schemas import ProvisionedObjectEntry
 from .artifact_tools import ToolResult
 
@@ -82,14 +83,21 @@ async def export_application_asyncapi(application_id: str) -> ToolResult: return
 async def record_provisioning_state(
     engagement_id: str, *, layer: str, name: str, ep_id: str, created: bool,
     metadata: Optional[dict] = None,
+    user_id: Optional[str] = None,
+    tool_context: Any = None,
 ) -> ToolResult:
-    """Append a row to provisioning/provisioned.yaml."""
-    data = read_yaml(engagement_id, "provisioning/provisioned.yaml",
-                     default={"provisioned": {"layers": {}, "errors": [], "status": "in-progress"}})
-    layers = data["provisioned"].setdefault("layers", {})
-    layers.setdefault(layer, []).append(
-        ProvisionedObjectEntry(layer=layer, name=name, ep_id=ep_id, created=created,
-                               metadata=metadata or {}).to_dict()
-    )
-    write_yaml(engagement_id, "provisioning/provisioned.yaml", data)
+    """Append a row to provisioning/provisioned.yaml.
+
+    ``user_id`` auto-resolves from ``tool_context`` so writes hit the
+    correct ``users/<uid>/<engagement>/`` namespace.
+    """
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
+        data = read_yaml(engagement_id, "provisioning/provisioned.yaml",
+                         default={"provisioned": {"layers": {}, "errors": [], "status": "in-progress"}})
+        layers = data["provisioned"].setdefault("layers", {})
+        layers.setdefault(layer, []).append(
+            ProvisionedObjectEntry(layer=layer, name=name, ep_id=ep_id, created=created,
+                                   metadata=metadata or {}).to_dict()
+        )
+        write_yaml(engagement_id, "provisioning/provisioned.yaml", data)
     return ToolResult(ok=True, data={"layer": layer, "name": name, "ep_id": ep_id, "created": created})

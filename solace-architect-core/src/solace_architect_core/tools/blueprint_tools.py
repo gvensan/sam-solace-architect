@@ -14,11 +14,12 @@ import io
 import zipfile
 from importlib import resources
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import yaml
 
 from .._storage import list_artifacts, read_text, safe_artifact_path, storage_root
+from .._user_context import resolve_user_id as _resolve_user_id, scoped_user as _scoped_user
 from .artifact_tools import ToolResult
 
 
@@ -42,9 +43,18 @@ _DIAGRAM_REQUIREMENTS: dict[str, list[str]] = {
 }
 
 
-async def check_diagram_availability(engagement_id: str) -> ToolResult:
-    """Which diagrams can be generated given current artifacts."""
-    existing = set(list_artifacts(engagement_id))
+async def check_diagram_availability(
+    engagement_id: str,
+    user_id: Optional[str] = None,
+    tool_context: Any = None,
+) -> ToolResult:
+    """Which diagrams can be generated given current artifacts.
+
+    ``user_id`` auto-resolves from ``tool_context`` so authenticated
+    users get the right ``users/<uid>/<engagement>/`` namespace.
+    """
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
+        existing = set(list_artifacts(engagement_id))
     available = []
     missing = []
     for diagram, requirements in _DIAGRAM_REQUIREMENTS.items():
@@ -110,8 +120,15 @@ def register_renderer(fn: Callable) -> None:
 async def render_audience_pack(
     engagement_id: str, audience: str, format: str = "html",
     branding_overrides: Optional[dict] = None,
+    user_id: Optional[str] = None,
+    tool_context: Any = None,
 ) -> ToolResult:
-    """Render an audience pack via the registered renderer."""
+    """Render an audience pack via the registered renderer.
+
+    ``user_id`` auto-resolves from ``tool_context``. Both the artifact
+    filtering (which reads the engagement's namespace) and the
+    downstream renderer write under that namespace.
+    """
     if _RENDERER is None:
         return ToolResult(ok=False, error=(
             "no renderer registered — install solace-architect-blueprint plugin "
@@ -122,38 +139,49 @@ async def render_audience_pack(
     if format not in ("html", "pdf", "both"):
         return ToolResult(ok=False, error=f"unknown format: {format!r}")
 
-    artifacts = filter_artifacts_for_pack(engagement_id, audience)
-    return await _RENDERER(
-        engagement_id=engagement_id, audience=audience, format=format,
-        artifacts=artifacts, branding_overrides=branding_overrides or {},
-    )
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
+        artifacts = filter_artifacts_for_pack(engagement_id, audience)
+        return await _RENDERER(
+            engagement_id=engagement_id, audience=audience, format=format,
+            artifacts=artifacts, branding_overrides=branding_overrides or {},
+        )
 
 
-async def assemble_zip(engagement_id: str, include_rendered_packs: bool = True) -> ToolResult:
-    """Package the engagement into a zip with V1-compatible layout + manifest."""
-    root = storage_root() / engagement_id
-    if not root.exists():
-        return ToolResult(ok=False, error=f"engagement {engagement_id} not found")
+async def assemble_zip(
+    engagement_id: str, include_rendered_packs: bool = True,
+    user_id: Optional[str] = None,
+    tool_context: Any = None,
+) -> ToolResult:
+    """Package the engagement into a zip with V1-compatible layout + manifest.
 
-    artifacts = list_artifacts(engagement_id)
-    if not include_rendered_packs:
-        artifacts = [a for a in artifacts if not a.startswith("exports/")]
+    ``user_id`` auto-resolves from ``tool_context`` so the zip is read
+    AND written under the same ``users/<uid>/<engagement>/`` namespace.
+    """
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
+        # storage_root() doesn't account for user-scoping; resolve the
+        # actual engagement root via safe_artifact_path's prefix instead.
+        probe = safe_artifact_path(engagement_id, "_probe").parent
+        if not probe.exists():
+            return ToolResult(ok=False, error=f"engagement {engagement_id} not found")
 
-    buffer = io.BytesIO()
-    manifest = []
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for art in artifacts:
-            content = read_text(engagement_id, art)
-            zf.writestr(f"{engagement_id}/{art}", content)
-            manifest.append({"path": art, "size": len(content.encode("utf-8"))})
-        zf.writestr(f"{engagement_id}/manifest.yaml",
-                    yaml.safe_dump({"engagement_id": engagement_id, "files": manifest},
-                                   default_flow_style=False, sort_keys=False))
+        artifacts = list_artifacts(engagement_id)
+        if not include_rendered_packs:
+            artifacts = [a for a in artifacts if not a.startswith("exports/")]
 
-    # Write the zip into the engagement's exports/ namespace too
-    out_path = safe_artifact_path(engagement_id, "exports/engagement-package.zip")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(buffer.getvalue())
+        buffer = io.BytesIO()
+        manifest = []
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for art in artifacts:
+                content = read_text(engagement_id, art)
+                zf.writestr(f"{engagement_id}/{art}", content)
+                manifest.append({"path": art, "size": len(content.encode("utf-8"))})
+            zf.writestr(f"{engagement_id}/manifest.yaml",
+                        yaml.safe_dump({"engagement_id": engagement_id, "files": manifest},
+                                       default_flow_style=False, sort_keys=False))
+
+        out_path = safe_artifact_path(engagement_id, "exports/engagement-package.zip")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(buffer.getvalue())
 
     return ToolResult(ok=True, data={
         "zip_path": str(out_path),

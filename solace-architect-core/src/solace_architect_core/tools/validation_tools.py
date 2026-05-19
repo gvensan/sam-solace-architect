@@ -6,9 +6,10 @@ Requirement tracing via keyword + section-heading matching against artifact cont
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Optional
 
 from .._storage import read_text
+from .._user_context import resolve_user_id as _resolve_user_id, scoped_user as _scoped_user
 from .artifact_tools import ToolResult
 
 
@@ -25,8 +26,22 @@ _REQUIREMENT_KEYWORDS: dict[str, list[str]] = {
 }
 
 
-async def trace_requirements(discovery_brief: dict, artifact_names: list[str], engagement_id: str) -> ToolResult:
-    """For each requirement in the brief, list the artifacts that address it."""
+async def trace_requirements(
+    engagement_id: str,
+    discovery_brief: dict,
+    artifact_names: list[str],
+    user_id: Optional[str] = None,
+    tool_context: Any = None,
+) -> ToolResult:
+    """For each requirement in the brief, list the artifacts that address it.
+
+    ``user_id`` auto-resolves from ``tool_context`` — same plumbing as
+    the storage-scoped tools — so authenticated users hit the right
+    ``users/<uid>/<engagement>/`` namespace.
+
+    The engagement_id parameter is positional-first so the LLM gets the
+    binding order right when emitting positional args.
+    """
     requirements: dict[str, Any] = discovery_brief.get("requirements", {}) or {}
     # Also pull regulatory/audit/data-residency from constraints if present at the top.
     for top in ("regulatory", "audit"):
@@ -36,13 +51,14 @@ async def trace_requirements(discovery_brief: dict, artifact_names: list[str], e
     matrix: dict[str, list[str]] = {req: [] for req in requirements}
     unaddressed: list[str] = []
 
-    # Pre-load artifact contents
+    # Pre-load artifact contents under the resolved user's namespace.
     artifact_text: dict[str, str] = {}
-    for name in artifact_names:
-        try:
-            artifact_text[name] = read_text(engagement_id, name)
-        except (FileNotFoundError, ValueError):
-            continue
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
+        for name in artifact_names:
+            try:
+                artifact_text[name] = read_text(engagement_id, name)
+            except (FileNotFoundError, ValueError):
+                continue
 
     for req_key in requirements:
         keywords = _REQUIREMENT_KEYWORDS.get(req_key, [req_key.replace("_", " ")])
