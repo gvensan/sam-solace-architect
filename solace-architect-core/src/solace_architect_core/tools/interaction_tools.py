@@ -24,6 +24,25 @@ _KINDS = ("single_choice", "yes_no", "multi_choice", "free_text")
 _SEVERITIES = ("blocking", "advisory", "info")
 
 
+def _coerce_options(options: Any) -> Any:
+    """Tolerate JSON-string options.
+
+    SAM's schema extractor (dynamic_tool._get_schema_from_signature) maps
+    Optional[list[dict]] to ADK Schema.STRING when the parameterised
+    type doesn't hit its type_map directly, so the LLM ends up sending
+    options as a JSON-encoded string. Reject path was "options must be
+    a list" — a real bug that bit Discovery on 2026-05-18. Coerce here
+    so callers (LLM or Python) can pass either shape.
+    """
+    if isinstance(options, str):
+        try:
+            import json
+            return json.loads(options)
+        except (json.JSONDecodeError, ValueError):
+            return options  # let the downstream isinstance check fail with the original list-error
+    return options
+
+
 def _validate_options(kind: str, options: Optional[list]) -> Optional[str]:
     """Return an error message if options don't satisfy the kind's contract."""
     if kind == "yes_no":
@@ -33,7 +52,7 @@ def _validate_options(kind: str, options: Optional[list]) -> Optional[str]:
     if not options:
         return f"kind={kind!r} requires options"
     if not isinstance(options, list):
-        return "options must be a list"
+        return "options must be a list (or a JSON-encoded list of dicts)"
     seen_ids: set[str] = set()
     for i, opt in enumerate(options):
         if not isinstance(opt, dict):
@@ -138,6 +157,7 @@ async def ask_user_question(
     if recommended is not None and kind != "single_choice":
         return ToolResult(ok=False, error="recommended is only meaningful for single_choice")
 
+    options = _coerce_options(options)
     err = _validate_options(kind, options)
     if err:
         return ToolResult(ok=False, error=err)

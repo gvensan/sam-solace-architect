@@ -22,16 +22,21 @@ from .artifact_tools import ToolResult
 _TOPIC_MAP: dict[str, tuple[str, Optional[str]]] = {
     "topic-architecture": ("solace-platform-reference.md", "Smart Topic Architecture"),
     "topics": ("solace-platform-reference.md", "Smart Topic Architecture"),
+    "topic-design": ("solace-platform-reference.md", "Smart Topic Architecture"),  # SADomainAgent scope-name alias
     "dmr": ("solace-platform-reference.md", "Dynamic Message Routing"),
     "mesh": ("solace-platform-reference.md", "Dynamic Message Routing"),
+    "mesh-design": ("solace-platform-reference.md", "Dynamic Message Routing"),  # SADomainAgent scope-name alias
     "micro-integrations": ("solace-platform-reference.md", "Micro-Integrations"),
     "integrations": ("solace-platform-reference.md", "Micro-Integrations"),
+    "integration": ("solace-platform-reference.md", "Micro-Integrations"),  # SADomainAgent scope-name alias
     "sam": ("solace-platform-reference.md", "Solace Agent Mesh"),
     "agent-mesh": ("solace-platform-reference.md", "Solace Agent Mesh"),
+    "sam-design": ("solace-platform-reference.md", "Solace Agent Mesh"),  # SADomainAgent scope-name alias
     "event-portal": ("solace-platform-reference.md", "Event Portal"),
     "security": ("solace-platform-reference.md", "Security and access control"),
     "ha-dr": ("solace-platform-reference.md", "HA and DR"),
     "protocols": ("solace-platform-reference.md", "Protocols"),
+    "protocol-select": ("solace-platform-reference.md", "Protocols"),  # SADomainAgent scope-name alias
     "antipatterns": ("antipatterns.md", None),
     "reference-architectures": ("solace-reference-architectures.md", None),
     "naming-conventions": ("naming-conventions.md", None),
@@ -179,19 +184,30 @@ async def fetch_canonical_source(url_or_topic: str, timeout: int = 30) -> ToolRe
 
 
 async def record_grounding_gap(*, topic: str, reason: str, agent: str, suggested_fix: Optional[str] = None) -> ToolResult:
-    """Append a gap entry to grounding/gaps.md."""
-    path = _grounding_dir() / "gaps.md"
+    """Append a gap entry to ``__system__/meta/grounding-gaps.jsonl``.
+
+    The curated knowledge-gap inventory lives in
+    ``grounding/gaps.md`` (read-only at runtime, hand-edited by humans
+    as part of product planning). Runtime gaps that agents detect get
+    appended to the system-scoped JSONL ledger instead — separate
+    concerns, separate storage. Cross-engagement because gaps are about
+    the project's grounding library, not any one engagement.
+    """
+    from .._storage import append_jsonl
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    entry = f"\n- **{ts}** — topic=`{topic}` agent=`{agent}` reason: {reason}"
+    row = {
+        "recorded_at": ts,
+        "topic": topic,
+        "agent": agent,
+        "reason": reason,
+    }
     if suggested_fix:
-        entry += f"\n  suggested fix: {suggested_fix}"
-    # Append (best-effort; if package is read-only, swallow the error)
+        row["suggested_fix"] = suggested_fix
     try:
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(entry)
+        append_jsonl("__system__", "meta/grounding-gaps.jsonl", row)
         return ToolResult(ok=True, data={"recorded_at": ts, "topic": topic})
     except OSError as e:
-        return ToolResult(ok=False, error=f"could not write gaps.md: {e}")
+        return ToolResult(ok=False, error=f"could not record grounding gap: {e}")
 
 
 async def check_canonical_urls() -> ToolResult:
