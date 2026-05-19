@@ -227,4 +227,24 @@ def install() -> None:
 
     setattr(patched_init, _PATCH_SENTINEL, True)
     _sam_setup.initialize_adk_agent = patched_init
+
+    # The consumer module `solace_agent_mesh.agent.sac.component` does
+    # `from solace_agent_mesh.agent.adk.setup import initialize_adk_agent`
+    # at import time — that binds the ORIGINAL function as a local name,
+    # so the call site at component.py:3619 ignores our monkey-patch of
+    # setup.initialize_adk_agent unless we ALSO replace the bound symbol
+    # in the consumer module. Without this second patch the wrapper was
+    # silently installed but never reached → after_model_callback chain
+    # never ran → llm-calls.jsonl stays empty → Usage view shows zero
+    # tokens even after the agents have been running for an hour.
+    try:
+        from solace_agent_mesh.agent.sac import component as _sam_component
+        _sam_component.initialize_adk_agent = patched_init
+        log.info("[SA telemetry] initialize_adk_agent patched in both setup and component modules")
+    except Exception as e:
+        log.warning(
+            "[SA telemetry] could not patch component.initialize_adk_agent (%s) — "
+            "telemetry may not capture LLM calls",
+            e,
+        )
     log.info("[SA telemetry] installed monkey-patch on initialize_adk_agent")

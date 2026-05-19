@@ -68,15 +68,18 @@ packs:
       - "**/*-detail.md"
       - "**/wildcard-subscriptions.md"
       - "**/antipattern-report.md"
+    # Structural sections rendered in the report (matches the
+    # _pack_includes_section() vocabulary in render.py). The list above
+    # of "The Opportunity" / "What the Business Gets" etc. lived here
+    # earlier and is the CONTENT TOC the Executive Summary agent writes
+    # INSIDE its markdown — NOT the structural sections the renderer
+    # decides whether to show. They are different concepts.
     top_sections:
-      - "The Opportunity"
-      - "What the Business Gets"
-      - "What the Program Costs"
-      - "Risk Posture"
-      - "ROI Framework"
-      - "Decision Asked of Leadership"
-      - "Outcomes 12 Months From Now"
-      - "Cross-references"
+      - summary
+      - scope
+      - open-items
+      - roi
+      - artifacts
     decision_skills: [discovery, broker-select]
     finding_skills: []
 
@@ -100,12 +103,13 @@ packs:
       - "blueprint/diagrams/*dr*.mermaid"
       - "blueprint/diagrams/*topology*.mermaid"
     top_sections:
-      - "Broker Recommendation"
-      - "HA/DR Design"
-      - "Mesh Topology"
-      - "Operations Runbook"
-      - "Provisioning Report"
-      - "Ops Review Findings"
+      - summary
+      - scope
+      - decisions
+      - findings
+      - open-items
+      - connected-systems
+      - artifacts
     decision_skills: [broker-select, ha-dr, mesh-design, provisioning]
     finding_skills: [ops]
 
@@ -126,12 +130,12 @@ packs:
       - "blueprint/diagrams/*auth*.mermaid"
       - "**/antipattern-report*.md"
     top_sections:
-      - "Security Posture Summary"
-      - "Authentication Model"
-      - "ACL Profiles"
-      - "Encryption (Transit + Rest)"
-      - "Audit and Compliance"
-      - "Security Review Findings"
+      - summary
+      - scope
+      - decisions
+      - findings
+      - open-items
+      - artifacts
     decision_skills: [sam-design, broker-select]
     finding_skills: [security]
 
@@ -155,12 +159,12 @@ packs:
       - "blueprint/diagrams/*protocol*.mermaid"
       - "blueprint/diagrams/*dlq*.mermaid"
     top_sections:
-      - "Topic Taxonomy"
-      - "Wildcard Subscriptions"
-      - "Protocol Map"
-      - "Schema Inventory"
-      - "Integration Patterns"
-      - "AsyncAPI Specs"
-      - "Developer Review Findings"
+      - summary
+      - scope
+      - decisions
+      - findings
+      - open-items
+      - connected-systems
+      - artifacts
     decision_skills: [topic-design, protocol-select, integration, event-portal]
     finding_skills: [developer]

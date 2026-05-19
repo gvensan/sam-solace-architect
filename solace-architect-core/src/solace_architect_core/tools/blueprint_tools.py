@@ -11,6 +11,7 @@ local renderer at plugin load time.
 from __future__ import annotations
 
 import io
+import os
 import zipfile
 from importlib import resources
 from pathlib import Path
@@ -117,9 +118,45 @@ def register_renderer(fn: Callable) -> None:
     _RENDERER = fn
 
 
+def _pack_outputs(engagement_id: str, audience: str, format: str) -> list[Path]:
+    """Resolve the on-disk paths a render would produce for this format."""
+    targets: list[Path] = []
+    if format in ("html", "both"):
+        targets.append(safe_artifact_path(engagement_id, f"exports/{audience}.html"))
+    if format in ("pdf", "both"):
+        targets.append(safe_artifact_path(engagement_id, f"exports/{audience}.pdf"))
+    return targets
+
+
+def _max_source_mtime(engagement_id: str, artifacts: list[str]) -> float:
+    """Latest mtime across the pack's source artifacts + report-packs.yaml.
+
+    Used to decide whether a previously-rendered output is still fresh.
+    Returns 0.0 if no source has a readable mtime (fallback = always render).
+    """
+    latest = 0.0
+    for art in artifacts:
+        try:
+            path = safe_artifact_path(engagement_id, art)
+            if path.exists():
+                latest = max(latest, path.stat().st_mtime)
+        except (ValueError, OSError):
+            continue
+    # Pack config itself — packed inside solace_architect_core; if it
+    # changes, the cached file should be invalidated too.
+    try:
+        cfg_path = Path(str(resources.files("solace_architect_core.configs") / "report-packs.yaml"))
+        if cfg_path.exists():
+            latest = max(latest, cfg_path.stat().st_mtime)
+    except Exception:
+        pass
+    return latest
+
+
 async def render_audience_pack(
     engagement_id: str, audience: str, format: str = "html",
     branding_overrides: Optional[dict] = None,
+    force: bool = False,
     user_id: Optional[str] = None,
     tool_context: Any = None,
 ) -> ToolResult:
@@ -128,6 +165,15 @@ async def render_audience_pack(
     ``user_id`` auto-resolves from ``tool_context``. Both the artifact
     filtering (which reads the engagement's namespace) and the
     downstream renderer write under that namespace.
+
+    Freshness cache: if every requested output file already exists AND
+    is newer than the latest source artifact + the report-packs.yaml
+    config, skip the renderer entirely and return the existing paths.
+    Pass ``force=True`` (or set the SA_REPORTS_FORCE_RENDER env var) to
+    bypass the cache — useful when the renderer's code changed but no
+    engagement artifact did. Rendering a single pack with Mermaid
+    pre-rendering can take 5-30s; the cache short-circuit avoids that
+    when nothing's changed.
     """
     if _RENDERER is None:
         return ToolResult(ok=False, error=(
@@ -141,6 +187,22 @@ async def render_audience_pack(
 
     with _scoped_user(_resolve_user_id(user_id, tool_context)):
         artifacts = filter_artifacts_for_pack(engagement_id, audience)
+
+        # Freshness cache check.
+        force_env = bool(os.environ.get("SA_REPORTS_FORCE_RENDER"))
+        if not force and not force_env:
+            targets = _pack_outputs(engagement_id, audience, format)
+            if targets and all(t.exists() for t in targets):
+                latest_source = _max_source_mtime(engagement_id, artifacts)
+                oldest_output = min(t.stat().st_mtime for t in targets)
+                if oldest_output >= latest_source:
+                    return ToolResult(ok=True, data={
+                        "paths": [str(t) for t in targets],
+                        "audience": audience,
+                        "format": format,
+                        "cache_hit": True,
+                    })
+
         return await _RENDERER(
             engagement_id=engagement_id, audience=audience, format=format,
             artifacts=artifacts, branding_overrides=branding_overrides or {},
@@ -158,10 +220,14 @@ async def assemble_zip(
     AND written under the same ``users/<uid>/<engagement>/`` namespace.
     """
     with _scoped_user(_resolve_user_id(user_id, tool_context)):
-        # storage_root() doesn't account for user-scoping; resolve the
-        # actual engagement root via safe_artifact_path's prefix instead.
-        probe = safe_artifact_path(engagement_id, "_probe").parent
-        if not probe.exists():
+        # Resolve the engagement root via safe_artifact_path of a known-shape
+        # path (the regex requires "<category>/<filename>"). The "exports/.zip"
+        # target itself is a valid shape — use its parent's parent.
+        try:
+            engagement_root = safe_artifact_path(engagement_id, "exports/_probe").parent.parent
+        except (ValueError, OSError) as e:
+            return ToolResult(ok=False, error=f"invalid engagement: {e}")
+        if not engagement_root.exists():
             return ToolResult(ok=False, error=f"engagement {engagement_id} not found")
 
         artifacts = list_artifacts(engagement_id)
@@ -172,9 +238,19 @@ async def assemble_zip(
         manifest = []
         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for art in artifacts:
-                content = read_text(engagement_id, art)
-                zf.writestr(f"{engagement_id}/{art}", content)
-                manifest.append({"path": art, "size": len(content.encode("utf-8"))})
+                try:
+                    path = safe_artifact_path(engagement_id, art)
+                except (ValueError, OSError):
+                    continue
+                if not path.exists():
+                    continue
+                # Binary-safe read so PDFs / ZIPs / images inside the engagement
+                # don't blow up the UTF-8 decoder. read_text crashes on rendered
+                # exports (audience-pack PDFs, the engagement-package zip from a
+                # prior run, etc.) — read_bytes works for all file types.
+                data = path.read_bytes()
+                zf.writestr(f"{engagement_id}/{art}", data)
+                manifest.append({"path": art, "size": len(data)})
             zf.writestr(f"{engagement_id}/manifest.yaml",
                         yaml.safe_dump({"engagement_id": engagement_id, "files": manifest},
                                        default_flow_style=False, sort_keys=False))
