@@ -48,31 +48,10 @@ packs:
     files: []
     globs:
       - "**/*.mermaid"
-    top_sections:
-      - "Executive Summary"
-      - "Scope & Inputs"
-      - "Decisions"
-      - "Connected Systems"
-      - "Discovery Brief"
-      - "Topic Design"
-      - "Broker Recommendation"
-      - "Protocol Map"
-      - "SAM Design"
-      - "Mesh Design"
-      - "HA/DR Design"
-      - "Migration Plan"
-      - "Integration Strategy"
-      - "Event Portal Model"
-      - "Provisioning Report"
-      - "Architecture Document"
-      - "Diagrams"
-      - "Operations Runbook"
-      - "Validation Report"
-      - "Reviews"
-    decision_skills: [discovery, topic-design, broker-select, protocol-select, sam-design,
-                      mesh-design, ha-dr, migration, integration, event-portal,
-                      blueprint, provisioning]
-    finding_skills: [architect, developer, ops, security]
+    # Blueprint = comprehensive — show every section + every decision/finding.
+    # (Omitting top_sections / decision_skills / finding_skills entirely means
+    # "no filter", per the semantics in render.py's _pack_includes_section /
+    # _filter_decisions / _filter_findings.)
 
   - id: executive
     label: "Executive Team"
