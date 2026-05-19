@@ -167,3 +167,95 @@ async def clear_step_status(
             data["steps"] = steps
             write_yaml(engagement_id, _STATUS_FILE, data)
     return ToolResult(ok=True, data={"step": step, "cleared": True})
+
+
+_SCOPE_STATUS_VALUES = ("DONE", "DONE_WITH_CONCERNS", "BLOCKED", "NEEDS_CONTEXT")
+
+
+async def record_scope_progress(
+    engagement_id: str,
+    step: str,
+    current_scope: str,
+    status: str,
+    next_scope: Optional[str] = None,
+    scopes_done: Optional[list] = None,
+    note: Optional[str] = None,
+    user_id: Optional[str] = None,
+    tool_context: Any = None,
+) -> ToolResult:
+    """Record progress through a multi-scope step (e.g. Design's 5 scopes).
+
+    Each scope is dispatched as its own A2A task so the LLM-calls-per-task
+    cap (default 30) doesn't bite mid-step. At end of each scope the agent
+    calls this tool so the frontend's Auto-mode loop knows what to dispatch
+    next; if ``next_scope`` is null the multi-scope step is done and the
+    agent should ALSO call ``set_step_status(step, DONE)``.
+
+    Stored shape under ``meta/engagement-status.yaml``::
+
+        steps:
+          design:
+            status: NEEDS_CONTEXT     # step-level (unchanged)
+            scope_progress:
+              current: broker-select
+              status: DONE_WITH_CONCERNS
+              next: protocol-select
+              done: [topic-design, broker-select]
+              updated_at: "..."
+              note: "auto-mode: ..."
+
+    Parameters
+    ----------
+    engagement_id : str
+        The active engagement.
+    step : str
+        Top-level lifecycle step (e.g. ``"design"``).
+    current_scope : str
+        Scope that just finished (e.g. ``"topic-design"``).
+    status : str
+        How the scope landed: DONE / DONE_WITH_CONCERNS / BLOCKED / NEEDS_CONTEXT.
+    next_scope : str | None
+        Scope to dispatch next; null if this was the final applicable scope.
+    scopes_done : list[str] | None
+        Full list of scopes completed so far (helps the frontend skip already-
+        done scopes if the agent gets re-dispatched). The agent passes the
+        running list; we don't merge — the agent is the source of truth.
+    note : str | None
+        Optional one-liner (e.g. ``"auto-mode: picked Direct for fanout"``).
+    user_id : str | None
+        Same user-namespace plumbing as other storage-scoped tools.
+    """
+    if status not in _SCOPE_STATUS_VALUES:
+        return ToolResult(
+            ok=False,
+            error=f"status must be one of {_SCOPE_STATUS_VALUES}, got {status!r}",
+        )
+    if not step or not isinstance(step, str):
+        return ToolResult(ok=False, error="step must be a non-empty string")
+    if not current_scope or not isinstance(current_scope, str):
+        return ToolResult(ok=False, error="current_scope must be a non-empty string")
+
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
+        data = read_yaml(engagement_id, _STATUS_FILE, default={"steps": {}}) or {"steps": {}}
+        if "steps" not in data or not isinstance(data["steps"], dict):
+            data["steps"] = {}
+        step_entry = data["steps"].get(step) or {}
+        step_entry["scope_progress"] = {
+            "current": current_scope,
+            "status": status,
+            "next": next_scope or None,
+            "done": list(scopes_done or []),
+            "updated_at": _now_iso(),
+            "note": note or "",
+        }
+        data["steps"][step] = step_entry
+        write_yaml(engagement_id, _STATUS_FILE, data)
+    return ToolResult(
+        ok=True,
+        data={
+            "step": step,
+            "current_scope": current_scope,
+            "status": status,
+            "next_scope": next_scope or None,
+        },
+    )

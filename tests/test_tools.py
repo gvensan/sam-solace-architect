@@ -9,7 +9,7 @@ import pytest
 from solace_architect_core.tools import (
     artifact_tools, decision_tools, project_tools,
     intake_tools, dashboard_tools, validation_tools,
-    grounding_tools, telemetry_tools,
+    grounding_tools, telemetry_tools, lifecycle_tools,
 )
 from solace_architect_core import agent_callbacks
 
@@ -395,3 +395,99 @@ async def test_read_user_token_usage_empty_when_no_projects():
     assert r.data["rows"] == []
     assert r.data["totals"]["calls"] == 0
     assert r.data["project_count"] == 0
+
+
+# ---------- lifecycle_tools.record_scope_progress ----------
+
+@pytest.mark.asyncio
+async def test_record_scope_progress_writes_progress_block():
+    eid = "scope-eng-1"
+    r = await lifecycle_tools.record_scope_progress(
+        engagement_id=eid,
+        step="design",
+        current_scope="topic-design",
+        status="DONE_WITH_CONCERNS",
+        next_scope="broker-select",
+        scopes_done=["topic-design"],
+        note="auto-mode: GDPR favours region-at-root",
+    )
+    assert r.ok
+    assert r.data == {
+        "step": "design",
+        "current_scope": "topic-design",
+        "status": "DONE_WITH_CONCERNS",
+        "next_scope": "broker-select",
+    }
+
+    status = await lifecycle_tools.get_engagement_status(engagement_id=eid)
+    sp = status.data["steps"]["design"]["scope_progress"]
+    assert sp["current"] == "topic-design"
+    assert sp["status"] == "DONE_WITH_CONCERNS"
+    assert sp["next"] == "broker-select"
+    assert sp["done"] == ["topic-design"]
+    assert sp["note"] == "auto-mode: GDPR favours region-at-root"
+    assert sp["updated_at"]
+
+
+@pytest.mark.asyncio
+async def test_record_scope_progress_final_scope_marks_next_null():
+    eid = "scope-eng-2"
+    r = await lifecycle_tools.record_scope_progress(
+        engagement_id=eid,
+        step="design",
+        current_scope="event-portal",
+        status="DONE",
+        next_scope=None,
+        scopes_done=["topic-design", "broker-select", "protocol-select",
+                     "integration", "mesh-design", "ha-dr", "event-portal"],
+    )
+    assert r.ok
+    assert r.data["next_scope"] is None
+    status = await lifecycle_tools.get_engagement_status(engagement_id=eid)
+    sp = status.data["steps"]["design"]["scope_progress"]
+    assert sp["next"] is None
+    assert len(sp["done"]) == 7
+
+
+@pytest.mark.asyncio
+async def test_record_scope_progress_preserves_step_status():
+    """scope_progress writes must NOT clobber the top-level step.status field."""
+    eid = "scope-eng-3"
+    # First, set the step-level status.
+    await lifecycle_tools.set_step_status(
+        engagement_id=eid, step="design", status="NEEDS_CONTEXT",
+        note="mid-design", agent="SADomainAgent",
+    )
+    # Then, record scope progress.
+    await lifecycle_tools.record_scope_progress(
+        engagement_id=eid, step="design",
+        current_scope="topic-design", status="DONE",
+        next_scope="broker-select", scopes_done=["topic-design"],
+    )
+    status = await lifecycle_tools.get_engagement_status(engagement_id=eid)
+    entry = status.data["steps"]["design"]
+    assert entry["status"] == "NEEDS_CONTEXT"
+    assert entry["note"] == "mid-design"
+    assert entry["scope_progress"]["current"] == "topic-design"
+    assert entry["scope_progress"]["next"] == "broker-select"
+
+
+@pytest.mark.asyncio
+async def test_record_scope_progress_rejects_bad_status():
+    r = await lifecycle_tools.record_scope_progress(
+        engagement_id="scope-eng-4", step="design",
+        current_scope="topic-design", status="MOSTLY_OK",
+        next_scope="broker-select",
+    )
+    assert not r.ok
+    assert "status must be one of" in r.error
+
+
+@pytest.mark.asyncio
+async def test_record_scope_progress_rejects_empty_scope():
+    r = await lifecycle_tools.record_scope_progress(
+        engagement_id="scope-eng-5", step="design",
+        current_scope="", status="DONE", next_scope="broker-select",
+    )
+    assert not r.ok
+    assert "current_scope" in r.error
