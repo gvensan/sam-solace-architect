@@ -43,6 +43,15 @@ _TOPIC_MAP: dict[str, tuple[str, Optional[str]]] = {
     "canonical-sources": ("solace-canonical-sources.md", None),
 }
 
+# Known-but-uncurated scopes — load_grounding short-circuits these to a
+# directive "use fetch_canonical_source(URL)" error instead of logging a
+# runtime gap every call. When the curated grounding is added, move the
+# topic into _TOPIC_MAP and remove its entry here.
+_KNOWN_FALLBACK_TOPICS: dict[str, str] = {
+    "broker-select": "https://docs.solace.com/Solace-Cloud/event-broker-services.htm",
+    "migration": "https://docs.solace.com/Messaging/Migration/migrating.htm",
+}
+
 
 def _grounding_dir() -> Path:
     """Return the path to the package's grounding/ directory.
@@ -78,8 +87,29 @@ def _extract_section(md_text: str, heading: str) -> str:
 
 
 async def load_grounding(topic: str) -> ToolResult:
-    """Extract a section of a grounding document by topic key."""
+    """Extract a section of a grounding document by topic key.
+
+    Two paths when ``topic`` isn't in ``_TOPIC_MAP``:
+
+    1. **Known-fallback topics** (`_KNOWN_FALLBACK_TOPICS`) — scopes /
+       categories we know have no curated grounding by design. Skip the
+       runtime gap log (we already know it's a gap; logging every call
+       is noise) and return a directive error pointing the LLM at the
+       canonical docs.solace.com URL to use via ``fetch_canonical_source``.
+    2. **Genuinely unmapped, unknown topic** — log to
+       ``__system__/meta/grounding-gaps.jsonl`` and return the error
+       listing available topics. These misses are signal worth keeping.
+    """
     if topic not in _TOPIC_MAP:
+        if topic in _KNOWN_FALLBACK_TOPICS:
+            url = _KNOWN_FALLBACK_TOPICS[topic]
+            return ToolResult(
+                ok=False,
+                error=(
+                    f"no curated grounding for {topic!r}. "
+                    f"Call fetch_canonical_source({url!r}) for live Solace docs on this topic."
+                ),
+            )
         available = sorted(_TOPIC_MAP)
         await record_grounding_gap(topic=topic, reason="topic not in topic-map", agent="load_grounding")
         return ToolResult(ok=False, error=f"unknown topic {topic!r}; available: {available}")
