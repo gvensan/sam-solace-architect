@@ -55,7 +55,7 @@ class FindingEntry:
 # ---------- Open items ----------
 
 OpenItemSeverity = Literal["blocking", "advisory"]
-OpenItemSource = Literal["intake", "discovery", "review-deferred", "validation", "provisioning"]
+OpenItemSource = Literal["intake", "discovery", "domain", "review-deferred", "validation", "event-portal"]
 OpenItemStatus = Literal["open", "resolved"]
 
 
@@ -112,25 +112,6 @@ class ProjectEntry:
     description: Optional[str] = None
     created_at: str = field(default_factory=_now)
     last_active_at: str = field(default_factory=_now)
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-# ---------- EP provisioning state ----------
-
-ProvisioningStatus = Literal["complete", "partial", "failed"]
-
-
-@dataclass
-class ProvisionedObjectEntry:
-    """Single EP object created or reused."""
-    layer: str                           # application_domains | schemas | events | applications
-    name: str
-    ep_id: str
-    created: bool                         # True = created; False = reused
-    metadata: dict = field(default_factory=dict)
-    created_at: str = field(default_factory=_now)
 
     def to_dict(self) -> dict:
         return asdict(self)

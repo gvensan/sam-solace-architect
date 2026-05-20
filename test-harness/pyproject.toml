@@ -21,8 +21,8 @@ license = { text = "Apache-2.0" }
 #   pip install -e ../plugins/solace-architect-validation
 #   pip install -e ../plugins/solace-architect-blueprint
 #   pip install -e ../plugins/solace-architect-webui-entrypoint
-#   # Provisioning is opt-in — install only if EP Designer MCP is configured:
-#   # pip install -e ../plugins/solace-architect-ep-provisioning
+#   # Live Event Portal provisioning is opt-in — install only if EP Designer MCP + SOLACE_API_TOKEN are configured:
+#   # pip install -e ../plugins/solace-architect-event-portal
 #   cp .env.example .env  # then edit
 #   sam run
 

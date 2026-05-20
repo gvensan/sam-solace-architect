@@ -1,7 +1,7 @@
 # Skill routing — v2spec §5.1
 #
-# Single source of truth for which design / review / validation / blueprint /
-# provisioning steps run for a given engagement.
+# Single source of truth for which design / review / validation /
+# event-portal / blueprint steps run for a given engagement.
 #
 # Consumed by:
 #   - solace_architect_core.tools.workflow_tools.get_engagement_plan
@@ -102,7 +102,7 @@ routing:
     dependencies: [discovery]
     trigger: always
 
-  - step: event-portal
+  - step: event-portal-design
     agent: SADomainAgent
     scope: event-portal
     dependencies: [discovery]
@@ -119,17 +119,17 @@ routing:
     dependencies: [discovery, ">=1 design step"]
     trigger: always
 
-  - step: blueprint
-    agent: SABlueprintAgent
-    dependencies: [">=1 design step"]
-    trigger: always
-
-  - step: provisioning
-    agent: SAEPProvisioningAgent
-    dependencies: [event-portal, blueprint]
+  - step: event-portal
+    agent: SAEventPortalAgent
+    dependencies: [event-portal-design, validation]
     trigger: conditional
     when:
       - field: preferences.provision_event_portal
         op: equals
         value: true
-    skip_reason: "Provisioning not requested (preferences.provision_event_portal=false)"
+    skip_reason: "Event Portal provisioning not requested (preferences.provision_event_portal=false)"
+
+  - step: blueprint
+    agent: SABlueprintAgent
+    dependencies: [">=1 design step"]
+    trigger: always

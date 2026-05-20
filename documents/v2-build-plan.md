@@ -34,7 +34,7 @@
 | 2 | Default configs: `branding.yaml`, `skill-routing.yaml`, `report-packs.yaml` | Static enough to build first |
 | 3 | Schemas: open-items, projects, feedback, provisioned, decisions, findings (Pydantic or dataclasses) | Used everywhere |
 | 4 | Shared tools (§3 + §5) — `artifact_tools`, `decision_tools` (incl. open-items + feedback), `session_tools`, `workflow_tools` (incl. `record_step_timing`), `grounding_tools` (incl. `load_jargon_list`, `fetch_canonical_source`, `record_grounding_gap`), `validation_tools`, `intake_tools` (incl. `compute_intake_preview`, `export_intake_from_project`, `import_source_context`, `render_intake_markdown`), `project_tools`, `dashboard_tools` (incl. `compute_active_step`, STATUS_RANK dedup, effective-skipped) | No LLM calls; pure plumbing; testable in isolation |
-| 5 | `ep_designer_mcp_tools` skeleton (wrappers can be stubs; real MCP calls deferred to Phase 5) | — |
+| 5 | ~~`ep_designer_mcp_tools` skeleton~~ — superseded by direct MCP integration (`tool_type: mcp`) in `solace-architect-event-portal/config.yaml` after Path A consolidation. No Python wrapper layer in `solace-architect-core`. | — |
 | 6 | `blueprint_tools` skeleton — `render_audience_pack` calling into the report-generator (which lives in the blueprint plugin per §10) | The tool dispatches into the plugin's renderer |
 | 7 | Unit tests: `test_tools.py`, `test_skill_routing.py` (operator vocabulary), `test_token_budgets.py` skeleton | — |
 
@@ -77,7 +77,7 @@ Sequenced for dependency, but most can parallelize across developers:
 | Audience packs | Extend `solace-architect-blueprint` to all 5 packs (Executive incl. ROI calculator, Admin & Ops, Security, Developers) | Frontend-leaning dev |
 | PDF rendering | WeasyPrint integration in `solace-architect-blueprint` | Same dev as audience packs |
 | Zip export | `assemble_zip` tool in core | Generalist |
-| Tests | Wire up `test_report_packs_isolation.py`, `test_ep_provisioning.py` (skeleton), `test_roi_calculator.py`, `test_path_traversal.py`, `test_canonical_urls.py` | QA / generalist |
+| Tests | Wire up `test_report_packs_isolation.py`, `test_roi_calculator.py`, `test_path_traversal.py`, `test_canonical_urls.py`, and EP opt-in semantics in `plugins/solace-architect-webui-entrypoint/tests/test_routes.py` | QA / generalist |
 
 **Exit criterion:** Full bank chat fixture runs end-to-end through REST entrypoint, producing all 5 audience packs (HTML + PDF) + zip. All non-EP-provisioning tests pass.
 
@@ -109,10 +109,10 @@ Sequenced for dependency, but most can parallelize across developers:
 
 | Step | Build |
 |---|---|
-| 1 | `solace-architect-ep-provisioning` plugin: system prompt, opt-in gate, `verify_tenant_access` guard |
-| 2 | EP Designer MCP wrappers in `solace-architect-core/ep_designer_mcp_tools.py`: list/create per layer, AsyncAPI export, reuse-by-content-match |
+| 1 | `solace-architect-event-portal` plugin: dual-mode system prompt (direct query + lifecycle phase), opt-in gate, validation gate, MCP tenant probe |
+| 2 | EP Designer MCP loaded directly via `tool_type: mcp` (no Python wrapper layer); MCP tools (`getApplicationDomains`, `createApplicationDomain`, `createSchema`, `createSchemaVersion`, `createEvent`, `createEventVersion`, `createApplication`, `createApplicationVersion`, `getAsyncApiForApplicationVersion`, …) auto-discovered from the upstream OpenAPI-driven FastMCP manifest |
 | 3 | `provisioned.yaml` state recording + `provisioning-report.md` summary generation |
-| 4 | `test_ep_provisioning.py` (full three-way contract: opt-in, MCP-unavailable halt, never silently skip) |
+| 4 | EP opt-in/halt contract covered in `plugins/solace-architect-webui-entrypoint/tests/test_routes.py::test_intake_preview_returns_routing_decision` (opt-in skips when `provision_event_portal=false`) + the agent prompt's pre-flight gates (MCP-unavailable halt, never silently skip) |
 | 5 | README documenting EP Designer MCP install + `SOLACE_API_TOKEN` setup |
 
 **Exit criterion:** Bank chat fixture with `preferences.provision_event_portal: true` provisions into a Solace Cloud dev tenant without errors. Three-way contract tests pass.

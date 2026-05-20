@@ -36,9 +36,8 @@ sam-solace-architect/                              # this repository (developmen
 │       │   ├── blueprint_tools.py
 │       │   ├── session_tools.py
 │       │   ├── project_tools.py
-│       │   ├── dashboard_tools.py
-│       │   └── ep_designer_mcp_tools.py
-│       ├── schemas/                               # YAML schemas: open-items, projects, feedback, provisioned
+│       │   └── dashboard_tools.py
+│       ├── schemas/                               # YAML schemas: open-items, projects, feedback
 │       ├── grounding/                             # Vendored grounding docs (read-only reference)
 │       │   ├── agent-preamble.md                  # Shared accuracy / voice / naming discipline, loaded by every agent
 │       │   ├── solace-platform-reference.md
@@ -80,10 +79,13 @@ sam-solace-architect/                              # this repository (developmen
 │   │           ├── static/                        # CSS, fonts, ROI calculator JS
 │   │           └── render.py
 │   │
-│   ├── solace-architect-ep-provisioning/             # SAEPProvisioningAgent plugin (opt-in)
-│   │   ├── config.yaml
-│   │   ├── pyproject.toml                         # Documents EP Designer MCP requirement
-│   │   └── src/solace_architect_ep_provisioning/
+│   ├── solace-architect-event-portal/             # SAEventPortalAgent plugin (opt-in, MCP-backed)
+│   │   ├── config.yaml                            # Loads the EP Designer MCP server via tool_type: mcp
+│   │   ├── pyproject.toml                         # Documents uvx + EP Designer MCP requirement
+│   │   └── src/solace_architect_event_portal/
+│   │       ├── __init__.py
+│   │       ├── lifecycle.py
+│   │       └── prompt.py                          # Mirror of the dual-mode (direct + lifecycle) prompt
 │   │
 │   └── solace-architect-webui-entrypoint/                    # WebUI entrypoint plugin (also exposes REST API)
 │       ├── config.yaml                            # SAM entrypoint config; [tool.x.metadata] type = "gateway" (legacy metadata field value — SAM has not renamed the metadata key even though the resource type is now called "entrypoint")
@@ -111,7 +113,6 @@ sam-solace-architect/                              # this repository (developmen
     ├── test_terminology.py                        # Forbidden term scan across all plugins
     ├── test_tools.py                              # Unit tests for solace-architect-core tools
     ├── test_report_packs_isolation.py             # Audience-pack filter rules honored
-    ├── test_ep_provisioning.py                    # EP provisioning opt-in/MCP-unavailable contract
     ├── test_token_budgets.py                      # Per-agent prompt size ceilings
     ├── test_roi_calculator.py                     # Auto-fill rules + sensitivity sliders
     ├── test_skill_routing.py                      # Operator vocabulary
@@ -209,7 +210,7 @@ SAM's A2A protocol prescribes the topic structure. The ten agents are addressabl
 | SASecurityReviewerAgent | `${NAMESPACE}/a2a/v1/agent/request/sa-review-security` |
 | SAValidationAgent | `${NAMESPACE}/a2a/v1/agent/request/sa-validation` |
 | SABlueprintAgent | `${NAMESPACE}/a2a/v1/agent/request/sa-blueprint` |
-| SAEPProvisioningAgent | `${NAMESPACE}/a2a/v1/agent/request/sa-ep-provisioning` |
+| SAEventPortalAgent | `${NAMESPACE}/a2a/v1/agent/request/sa-event-portal` |
 
 These follow the SAM convention `{namespace}/a2a/v1/agent/request/{agent_name}`. The `sa-` prefix on each agent_name segment keeps Solace Architect agents distinct from any co-resident agents that share the SAM install. Do not modify the topic structure beyond the prefix.
 
@@ -248,7 +249,7 @@ Provides read, write, and list operations on the engagement artifact store. All 
 # artifact_name must match pattern: category/filename (e.g., "topic-design/topic-taxonomy.yaml")
 
 # Tool: write_artifact
-# Used by: SADomainAgent, SABlueprintAgent, SAOrchestratorAgent (for applied fixes), SAEPProvisioningAgent
+# Used by: SADomainAgent, SABlueprintAgent, SAOrchestratorAgent (for applied fixes), SAEventPortalAgent
 # Signature: async def write_artifact(artifact_name: str, content: str, ...) -> ToolResult
 # Behavior: Writes (overwrites) a named artifact. Runs three independent pre-write checks
 #   and returns structured violation lists per check, NOT just a flat error string:
@@ -1343,17 +1344,23 @@ The Executive audience pack ships with an **interactive HTML ROI calculator** (r
 
 ---
 
-### 4.10 SAEPProvisioningAgent
+### 4.10 SAEventPortalAgent
 
-**File:** `configs/agents/sa-provisioning.yaml`
+**File:** `plugins/solace-architect-event-portal/config.yaml`
 
-**Purpose:** Provisions the Event Portal model designed by SADomainAgent's `event-portal` scope into a **live Solace Cloud tenant** via the EP Designer MCP. This is the **only** Solace Architect agent with side-effecting external API calls. Strictly opt-in (intake `preferences.provision_event_portal: true`). Idempotent by content match — never duplicates existing tenant objects.
+**Purpose:** The single EP-touching agent in the Solace Architect mesh. Wraps the upstream `solace-event-portal-designer-mcp` MCP server (launched via `uvx`) and exposes its tools to SAM as a discoverable peer. Serves two callers:
+
+1. **Direct user query** (no engagement context) — ad-hoc EP questions in chat: *"list domains"*, *"show events in OrderMgmt"*, *"export AsyncAPI for application X"*. Conversational round-trips against a live tenant.
+2. **Lifecycle phase** ("Phase: event-portal" in the kickoff) — the gated, side-effecting provisioning phase that materializes the Event Portal model designed by SADomainAgent's `event-portal` scope into a live Solace Cloud tenant. Strictly opt-in (`intake.preferences.provision_event_portal: true`). Idempotent by content match — never duplicates existing tenant objects.
+
+The agent branches on the first message: if it starts with `Phase: event-portal`, it runs the lifecycle workflow; otherwise it answers conversationally.
 
 **Why a separate agent (not a DomainAgent scope):**
 - Side-effect isolation: every other Solace Architect agent produces inert artifacts; this one mutates a tenant.
 - Different permission model: requires MCP write access and a tenant API token.
 - Different opt-in behavior: skipped entirely if the intake gate is off.
 - Different failure semantics: partial provisioning may need rollback or replay.
+- **MCP-backed**: the tools surface is auto-discovered from the upstream MCP server's manifest, not hand-written Python wrappers — a thinner integration with less code to drift.
 
 **Agent Card:**
 
@@ -1368,9 +1375,12 @@ agent_card:
   defaultInputModes: ["text/plain", "application/json"]
   defaultOutputModes: ["text/plain", "application/json", "file"]
   skills:
-    - id: "verify_tenant_access"
+    - id: "direct_query"
+      name: "Ad-hoc Event Portal Query"
+      description: "Conversational EP queries against a live tenant via MCP — list domains, show events in a domain, export AsyncAPI on demand. No engagement context required."
+    - id: "verify_tenant"
       name: "Tenant Access Verification"
-      description: "Verifies EP Designer MCP availability and tenant API token scope before any write."
+      description: "Pre-flight probe (read-only MCP call) that confirms the SOLACE_API_TOKEN works and the tenant is reachable before any write."
     - id: "provision_domains"
       name: "Application Domain Provisioning"
       description: "Creates application domains from the EP model, reusing existing domains by name match."
@@ -1388,72 +1398,42 @@ agent_card:
       description: "Exports one AsyncAPI spec per provisioned application."
 ```
 
-**System prompt core content:**
+**System prompt core content (lifecycle mode):**
 
-1. **Identity.** Provisioning agent. Side-effects only happen with explicit user approval.
-2. **Opt-in gating.** Refuse to run if `intake.preferences.provision_event_portal != true`. Refuse to run if EP Designer MCP is unavailable or the API token lacks `Designer Read+Write` scope (verified via `verify_tenant_access`).
-3. **Reuse-by-content-match.** For every object, first call the MCP list operation; match by name (domains, applications), name+version (schemas, events), or content hash (schema content). Only create when no match.
-4. **Per-layer user gating.** Present a confirmation to the user between layers (domains → schemas → events → applications → AsyncAPI export) in interactive mode. In auto mode, proceed unless an error occurs.
-5. **Failure semantics.** On MCP error: record what was provisioned, what failed, and the recommended remediation. Do NOT silently skip — that contract is enforced by `test_ep_provision_gating.py`.
-6. **State recording.** After every successful create, append to `provisioning/provisioned.yaml` with: layer, object name, EP object ID, content hash, created_at. After every reuse (match), record with `reused: true`.
-7. **Naming conventions and grounding discipline.** Same as other agents.
+1. **Identity.** The single EP-touching agent. Side-effects only happen with explicit user approval.
+2. **Pre-flight gates** (in order; each can short-circuit with DONE_WITH_CONCERNS or BLOCKED):
+   - **Opt-in check.** Read `discovery/discovery-brief.yaml`. If `preferences.provision_event_portal != true`, return DONE_WITH_CONCERNS — Event Portal was not requested.
+   - **Read EP model.** Read `event-portal/event-portal-model.yaml` (produced by SADomainAgent's `event-portal` design scope). If absent, return BLOCKED naming the missing artifact.
+   - **Verify tenant access.** Call any read-only MCP tool (e.g. `list_application_domains` with a small limit) to confirm the `SOLACE_API_TOKEN` works. If it fails, return BLOCKED with the upstream error.
+   - **Validation gate.** Read `meta/engagement-status.yaml`. If `steps.validation.status` is not `DONE` / `DONE_WITH_CONCERNS`, return BLOCKED — Event Portal must not run on an un-validated design.
+3. **Dry-run plan.** For each layer [domains → schemas → events → applications], list existing tenant objects and decide create-vs-reuse: domains/applications by name match, schemas by name + content hash, events by name + version + schema_version_id. Write `event-portal/plan.yaml`.
+4. **User confirmation** (Interactive default). `ask_user_question` with the plan summary; in Auto mode (`Mode: auto` in kickoff) skip and proceed.
+5. **Per-layer creation.** For each `action=create` item, call the matching MCP tool. Narrate `✓ Created <layer>/<name>` on success, `↺ Reused <layer>/<name>` on reuse, `✗ Failed: <layer>/<name>: <err>` on error. In Interactive mode, pause between layers.
+6. **AsyncAPI export.** For each provisioned application, call `getAsyncApiForApplicationVersion` and write `event-portal/asyncapi/<app-name>.yaml`.
+7. **Final outputs.** `event-portal/plan.yaml`, `event-portal/provisioned.yaml`, `event-portal/provisioning-report.md`, `event-portal/asyncapi/*.yaml`. Then `set_step_status(step="event-portal", status=...)` per the rule.
+8. **Idempotency + rollback.** Re-running against a partially-provisioned tenant skips items already created (via reuse-by-content-match). The agent does NOT delete existing EP objects; manual cleanup in EP Designer + re-run is the rollback story.
+9. **Naming conventions and grounding discipline.** Same as other agents.
 
 **Tools:**
 
 ```yaml
 tools:
-  # MCP wrappers (verify/list/create per layer)
-  - tool_type: python
-    component_module: "sa_solace_architect.tools.ep_designer_mcp_tools"
-    function_name: "verify_tenant_access"
-
-  - tool_type: python
-    component_module: "sa_solace_architect.tools.ep_designer_mcp_tools"
-    function_name: "list_application_domains"
-
-  - tool_type: python
-    component_module: "sa_solace_architect.tools.ep_designer_mcp_tools"
-    function_name: "create_application_domain"
-
-  - tool_type: python
-    component_module: "sa_solace_architect.tools.ep_designer_mcp_tools"
-    function_name: "list_schemas"
-
-  - tool_type: python
-    component_module: "sa_solace_architect.tools.ep_designer_mcp_tools"
-    function_name: "create_schema"
-
-  - tool_type: python
-    component_module: "sa_solace_architect.tools.ep_designer_mcp_tools"
-    function_name: "create_schema_version"
-
-  - tool_type: python
-    component_module: "sa_solace_architect.tools.ep_designer_mcp_tools"
-    function_name: "list_events"
-
-  - tool_type: python
-    component_module: "sa_solace_architect.tools.ep_designer_mcp_tools"
-    function_name: "create_event"
-
-  - tool_type: python
-    component_module: "sa_solace_architect.tools.ep_designer_mcp_tools"
-    function_name: "create_event_version"
-
-  - tool_type: python
-    component_module: "sa_solace_architect.tools.ep_designer_mcp_tools"
-    function_name: "list_applications"
-
-  - tool_type: python
-    component_module: "sa_solace_architect.tools.ep_designer_mcp_tools"
-    function_name: "create_application"
-
-  - tool_type: python
-    component_module: "sa_solace_architect.tools.ep_designer_mcp_tools"
-    function_name: "export_application_asyncapi"
-
-  - tool_type: python
-    component_module: "sa_solace_architect.tools.ep_designer_mcp_tools"
-    function_name: "record_provisioning_state"
+  # EP Designer MCP server — auto-discovers all EP tools from the OpenAPI-driven
+  # FastMCP server (getApplicationDomains, createApplicationDomain, createSchema,
+  # createSchemaVersion, createEvent, createEventVersion, createApplication,
+  # createApplicationVersion, getAsyncApiForApplicationVersion, etc. — names
+  # match the EP REST API operationIds).
+  - tool_type: mcp
+    connection_params:
+      type: stdio
+      command: "uvx"
+      args:
+        - "--from"
+        - "solace-event-portal-designer-mcp"
+        - "solace-ep-designer-mcp"
+    environment_variables:
+      SOLACE_API_TOKEN: ${SOLACE_API_TOKEN}
+      SOLACE_API_BASE_URL: ${SOLACE_API_BASE_URL, ""}
 
   # Artifacts
   - tool_type: python
@@ -1526,7 +1506,7 @@ errors: []
 
 **Workflow position:** Runs *after* SABlueprintAgent and only when `intake.preferences.provision_event_portal == true`. Skipped explicitly (with skip_reason="provisioning not requested in intake") otherwise. The skip is surfaced in the Overview dashboard tile `ep_provisioning_status` ("not-requested" | "pending" | "live").
 
-**Task request from orchestrator:** Must include `engagement_id`, confirmation that `verify_tenant_access` has succeeded, `event_portal_model_path` (artifact name), and the execution mode (auto | interactive).
+**Task request from orchestrator:** Must include `engagement_id`, `event_portal_model_path` (artifact name pointing at `event-portal/event-portal-model.yaml`), and the execution mode (`Mode: auto` or `Mode: interactive`). The agent runs its own pre-flight gates (opt-in check, model read, MCP tenant probe, validation gate) before any side-effecting call.
 
 ---
 
@@ -1645,7 +1625,7 @@ routing:
     trigger: always
 
   - step: provisioning
-    agent: SAEPProvisioningAgent
+    agent: SAEventPortalAgent
     dependencies: [event-portal, blueprint]
     trigger: conditional
     when:
@@ -2137,39 +2117,15 @@ The report generator emits stable anchors so any pack can link to any artifact, 
 
 Links use `class="xref-link"` (dashed underline, transitions to brand accent on hover — matches V1 styling).
 
-### 5.6 ep_designer_mcp_tools.py (~400 lines)
+### 5.6 EP Designer MCP integration
 
-Thin Python wrappers over the EP Designer MCP server tools. Each function adds: opt-in guard (checks `intake.preferences.provision_event_portal`), reuse-by-content-match logic, structured error mapping (MCP error → `ToolResult` with remediation hints), and `provisioned.yaml` state updates.
+SAEventPortalAgent talks to the EP Designer MCP server **directly** via SAM's `tool_type: mcp` configuration — no Python wrapper layer in `solace-architect-core`. SAM's `MCPToolset` launches the upstream server (`uvx --from solace-event-portal-designer-mcp solace-ep-designer-mcp`), auto-discovers tools from its manifest, and exposes them under the same names the EP REST API uses (`getApplicationDomains`, `createApplicationDomain`, `createSchema`, `createSchemaVersion`, `createEvent`, `createEventVersion`, `createApplication`, `createApplicationVersion`, `getAsyncApiForApplicationVersion`, etc.).
 
-```python
-# Tool: verify_tenant_access
-# Used by: SAEPProvisioningAgent (always called first)
-# Input: none
-# Output: {available: bool, token_scope: str, base_url: str, error: str|None}
-# Logic: Calls a benign MCP read operation (list_application_domains with limit=1).
-#        Verifies the configured SOLACE_API_TOKEN has Designer Read+Write scope.
-#        On failure, returns a structured error with remediation hint.
+The wrapper-layer alternative was tried (Path A, Phase 1): each EP operation got a hand-written `async def` in `ep_designer_mcp_tools.py`. The wrappers added stub returns + structured error mapping, but introduced a maintenance gap — the EP Designer model has two-layer entity-version semantics (`createApplication` then `createApplicationVersion`, `createEvent` then `createEventVersion`) that flattened wrappers obscured. Direct MCP integration matches the live tenant's actual shape with no translation layer.
 
-# Tool: list_application_domains / create_application_domain
-# Tool: list_schemas / create_schema / create_schema_version
-# Tool: list_events / create_event / create_event_version
-# Tool: list_applications / create_application
-# Tool: export_application_asyncapi
-# All: thin MCP wrappers. Each create_* function FIRST calls the matching list_*
-#      and matches by:
-#        - domains, applications: exact name match
-#        - schemas: name + content hash match (uses canonical JSON-stable hash)
-#        - events: name + version match, plus schema_version_id consistency
-#      Returns {ep_id, created: bool, reused: bool, action_taken: str}.
+**Workflow logic lives in the agent prompt**, not the tools layer. Reuse-by-content-match, opt-in gating, dry-run plan, and per-layer Auto/Interactive checkpoints are all instructed in the system prompt (see §4.10). The agent calls MCP tools, observes results, writes artifacts via `write_artifact`, and gates on `set_step_status`.
 
-# Tool: record_provisioning_state
-# Used by: SAEPProvisioningAgent (after every create or reuse decision)
-# Input: layer (str), name (str), ep_id (str), created (bool), metadata (dict)
-# Output: confirmation
-# Logic: Appends to provisioning/provisioned.yaml.
-```
-
-**Error handling contract.** If the EP Designer MCP is unavailable, `verify_tenant_access` returns `available: False` and the agent halts before any side-effects. If a create_* call fails partway through provisioning, the agent records what was committed in `provisioned.yaml` with `status: partial`, writes the failing object's remediation hint into `provisioning-report.md`, and records a blocking open-item with source="provisioning". **The agent does NOT silently skip on MCP unavailability** — this contract is enforced by `tests/test_ep_provisioning.py`.
+**Error handling contract.** If `SOLACE_API_TOKEN` is unset, the upstream MCP server fails to launch and the agent reports BLOCKED before any side-effects. If a create call fails partway, the agent narrates `✗ Failed: <layer>/<name>: <err>`, records what was committed in `event-portal/provisioned.yaml`, records a blocking open-item with `source="event-portal"`, and returns BLOCKED. **The agent does NOT silently skip on MCP unavailability** — this contract is enforced by the test suite under `plugins/solace-architect-webui-entrypoint/tests/test_routes.py` (intake-preview opt-in semantics) and validated end-to-end via `test_e2e_bank_chat.py`.
 
 ---
 
@@ -2382,7 +2338,7 @@ Phase 2 deferral: per-user theme persistence via the entrypoint (so theme follow
 - `jinja2` (used by the ported report generator's template engine)
 
 **Optional dependencies (only required when EP provisioning is opted in):**
-- **EP Designer MCP server** — install per Solace EP Designer MCP documentation; register with the SAM runtime so SAEPProvisioningAgent's tools are routable. Without it, SAEPProvisioningAgent's `verify_tenant_access` returns `available: false` and the agent halts before any side-effects.
+- **EP Designer MCP server** — installed on demand by `uvx` via SAM's `tool_type: mcp` configuration in `solace-architect-event-portal/config.yaml`. Requires `uvx` (ships with `uv`) on `$PATH`. If `SOLACE_API_TOKEN` is unset, the MCP child process exits immediately and SAEventPortalAgent reports BLOCKED before any side-effects.
 - `SOLACE_API_TOKEN` env var with `Designer Read+Write` scope
 - `SOLACE_API_BASE_URL` env var (region-specific; defaults to US)
 
@@ -2400,11 +2356,12 @@ pip install -e ./solace-architect-core/
 
 # 3. Install plugins in editable mode (any subset under active development)
 for plugin in orchestrator discovery domain reviewer-architect reviewer-developer \
-              reviewer-ops reviewer-security validation blueprint webui; do
+              reviewer-ops reviewer-security validation blueprint webui-entrypoint; do
   pip install -e "./plugins/solace-architect-${plugin}/"
 done
-# Provisioning is opt-in; install only if EP Designer MCP is configured:
-pip install -e ./plugins/solace-architect-ep-provisioning/
+# Event Portal live provisioning is opt-in; install only if EP Designer MCP
+# + SOLACE_API_TOKEN are configured:
+pip install -e ./plugins/solace-architect-event-portal/
 
 # 4. Initialize the test-harness SAM project
 cd test-harness/
@@ -2444,7 +2401,6 @@ python -m pytest tests/test_terminology.py              # Forbidden term scan
 python -m pytest tests/test_tools.py                    # Tool unit tests
 python -m pytest tests/test_token_budgets.py            # Per-agent prompt size ceilings
 python -m pytest tests/test_report_packs_isolation.py   # Audience-pack content isolation
-python -m pytest tests/test_ep_provisioning.py          # EP provisioning opt-in/MCP-unavailable gating
 python -m pytest tests/test_roi_calculator.py           # Auto-fill rules, sensitivity sliders, PDF preservation
 python -m pytest tests/test_skill_routing.py            # Operator vocabulary + matchers against fixtures
 python -m pytest tests/test_path_traversal.py           # Entrypoint artifact-path safety
@@ -2460,7 +2416,7 @@ python -m pytest tests/test_canonical_urls.py           # CI-only: URL health-ch
 | `test_tools.py` | Unit tests for every tool in §3 and §5; uses fakes for SAM ArtifactService/SessionService |
 | `test_token_budgets.py` | Each agent's system prompt is ≤40K tokens; total across all agents ≤200K. Mirrors V1's `test/skill-token-budget.test.ts`. Fails CI if a prompt grows beyond budget |
 | `test_report_packs_isolation.py` | For each of 5 audience packs: (a) only artifacts whose paths match the pack's filter rules appear; (b) `decision_skills` filter is honored; (c) `finding_skills` filter is honored; (d) Executive pack contains no technical detail leakage (no `topic-taxonomy`, `wildcard-subscriptions`, `antipattern-report`, etc.) |
-| `test_ep_provisioning.py` | Three contracts: (a) SAEPProvisioningAgent refuses to run when `preferences.provision_event_portal != true`, (b) when MCP is unavailable, `verify_tenant_access` returns `available: false` AND the agent halts — does NOT silently skip, (c) opt-in skip is visible in dashboard `skip_reasons` |
+| `plugins/.../tests/test_routes.py` | Intake-preview opt-in semantics for SAEventPortalAgent (event-portal step skipped when `provision_event_portal: false`); reset-cascade order through the lifecycle |
 | `test_roi_calculator.py` | (a) 5 sensitivity sliders render with correct labels and ranges, (b) auto-fill: V1=90%×C1, V2=80%×C2, V4=100%×C4, V6=95%×C3, (c) combined-scenario card recalculates correctly, (d) PDF rendering preserves all numeric values at default state |
 | `test_skill_routing.py` | (a) Every operator (equals/in/contains_any/not_empty/etc.) evaluates correctly against fixture inputs, (b) AND across `when` clauses, (c) OR via `any_of` block, (d) skip_reason is populated when a step is excluded |
 | `test_path_traversal.py` | Entrypoint artifact endpoints reject paths that escape the engagement's artifact namespace (`../`, absolute paths, symbolic links). See path-traversal guard requirement below |
@@ -2587,7 +2543,7 @@ These decisions are baked into this specification. They are not open questions.
 | 28 | Browser support | Modern evergreen (Chrome, Safari, Firefox, Edge — last 2 versions); no IE; mobile best-effort | Dashboard is desktop-focused |
 | 29 | Accessibility | WCAG 2.1 AA "best effort" for HTML reports and dashboard; not certified | Reasonable bar without certification cost |
 | 30 | Phase 2 deferrals | Git push delivery, email/Slack delivery, dark-mode persistence per user (toggle is Phase 1), per-engagement OIDC identity | Lower-priority polish or integrations |
-| 31 | EP Provisioning agent design | Separate SAEPProvisioningAgent (10th agent), not a SADomainAgent scope | Side-effect isolation: runtime tenant mutations need separate permissions, opt-in gating, and failure semantics from design-only agents |
+| 31 | EP Provisioning agent design | Separate SAEventPortalAgent (10th agent), not a SADomainAgent scope | Side-effect isolation: runtime tenant mutations need separate permissions, opt-in gating, and failure semantics from design-only agents |
 | 32 | EP Designer MCP integration | Mandatory dependency only when EP provisioning is opted in; agent halts on MCP-unavailable, never silently skips | V1's three-way contract preserved; safer default |
 | 33 | Conditional skill routing | `configs/skill-routing.yaml` with operator vocabulary (equals, in, contains_any, not_empty, etc.) | V1's hardcoded dependency_map is too thin; YAML config is shared between orchestrator and intake-form preview |
 | 34 | Audience-pack filters | `configs/report-packs.yaml` as single source of truth (dirs, files, globs, top_sections, decision_skills, finding_skills per pack) | Ported verbatim from V1; required for audience-pack isolation tests |
@@ -2657,7 +2613,7 @@ These decisions are baked into this specification. They are not open questions.
 **Per-deliverable detail:**
 
 1. **`solace-architect-core` PyPI package** — every tool from §3 + §5, all YAML schemas, vendored grounding docs (including `jargon-list.json` and `gaps.md`), default `branding.yaml` / `skill-routing.yaml` / `report-packs.yaml`. Type-hinted, async signatures, `ToolResult` returns. Semver-versioned. Published to PyPI.
-2. **Ten agent plugins** (one per agent in §4.1–§4.10), each with `config.yaml` (SAM agent config with sa-prefixed agent class, complete system prompt, Agent Card, tool configurations), `pyproject.toml` (depends on `solace-architect-core`), `src/solace_architect_<name>/lifecycle.py`, `README.md`. SAEPProvisioningAgent plugin is opt-in (gated by intake `preferences.provision_event_portal`) and adds EP Designer MCP as a documented requirement.
+2. **Ten agent plugins** (one per agent in §4.1–§4.10), each with `config.yaml` (SAM agent config with sa-prefixed agent class, complete system prompt, Agent Card, tool configurations), `pyproject.toml` (depends on `solace-architect-core`), `src/solace_architect_<name>/lifecycle.py`, `README.md`. SAEventPortalAgent plugin is opt-in (gated by intake `preferences.provision_event_portal`) and adds EP Designer MCP as a documented requirement.
 3. **All custom Python tools** per sections 3 and 5, with type hints, docstrings, async signatures, and `ToolResult` return types. New modules:
    - `project_tools.py` (project registry: list/create/archive/switch)
    - `dashboard_tools.py` (compute Overview/Timeline/Stats data)
@@ -2692,7 +2648,7 @@ These decisions are baked into this specification. They are not open questions.
 15. **`configs/report-packs.yaml`** ported verbatim from V1's `scripts/report-packs.yaml`, with per-audience filter rules.
 16. **`configs/branding.yaml`** with Solace defaults; customer-skinnable.
 17. **Grounding additions**: `grounding/jargon-list.json` (68 terms) and `grounding/gaps.md` (runtime gap tracker).
-18. **EP Designer MCP integration** under `src/sa_solace_architect/tools/ep_designer_mcp_tools.py`: verify_tenant_access + per-layer list/create + AsyncAPI export + state recording in `provisioning/provisioned.yaml`.
+18. **EP Designer MCP integration** via SAM's `tool_type: mcp` block in `solace-architect-event-portal/config.yaml`. Launches the upstream `solace-event-portal-designer-mcp` server through `uvx`; tools (`getApplicationDomains`, `createApplicationDomain`, `createSchema`, `createSchemaVersion`, `createEvent`, `createEventVersion`, `createApplication`, `createApplicationVersion`, `getAsyncApiForApplicationVersion`, …) auto-discovered from the OpenAPI-driven FastMCP manifest. Workflow logic (reuse-by-content-match, AsyncAPI export, state recording in `event-portal/provisioned.yaml`) lives in the agent prompt, not a wrapper layer.
 19. **Cross-cutting protocols** baked into agent system prompts: Completion Status, Confusion, Context-Health, Resume/Restart/Review on load, open-item gating, finding resolution.
 20. **Dashboard fidelity**: live status bar (2s poll), STATUS_RANK dedup, effective-skipped logic, cross-reference anchor schema, full V1 ROI calculator (5 sliders + combined-scenario + auto-fill rules) in the Executive pack.
 21. **Path-traversal guard** on every entrypoint artifact endpoint; `Cache-Control: no-store` on all `/api/*` responses.
@@ -2721,7 +2677,7 @@ V2 is **not a monolithic SAM project**. It is a family of SAM plugins targeting 
 | 8 | `solace-architect-reviewer-security` | SAM plugin (agent) | Community plugins repo | §4.7 |
 | 9 | `solace-architect-validation` | SAM plugin (agent) | Community plugins repo | §4.8 |
 | 10 | `solace-architect-blueprint` | SAM plugin (agent) | Community plugins repo | §4.9 + ported V1 report generator + WeasyPrint dep |
-| 11 | `solace-architect-ep-provisioning` | SAM plugin (agent) | Community plugins repo | §4.10 + EP Designer MCP dep (opt-in) |
+| 11 | `solace-architect-event-portal` | SAM plugin (agent) | Community plugins repo | §4.10 + EP Designer MCP dep (opt-in) |
 | 12 | `solace-architect-webui-entrypoint` | SAM plugin (gateway) | Community plugins repo | §6 — HTTP-SSE + REST routes, all 6 dashboard views, intake form, audience-pack viewer |
 
 ### 10.2 Plugin layout (per-plugin)

@@ -57,4 +57,4 @@ goals:
   preference: "Solace Cloud subscription"
 
 preferences:
-  provision_event_portal: false   # set true to exercise SAEPProvisioningAgent
+  provision_event_portal: false   # set true to exercise SAEventPortalAgent's live provisioning phase

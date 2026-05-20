@@ -51,8 +51,8 @@ def _phase_of(step: dict) -> str:
         return "validation"
     if agent == "SABlueprintAgent":
         return "blueprint"
-    if agent == "SAEPProvisioningAgent":
-        return "provisioning"
+    if agent == "SAEventPortalAgent":
+        return "event-portal"
     if scope:
         return "design"
     return "other"
@@ -123,7 +123,7 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
 def _ep_status(brief: dict, completed: set) -> str:
     if not (brief.get("preferences") or {}).get("provision_event_portal"):
         return "not-requested"
-    if "provisioning" in completed:
+    if "event-portal" in completed:
         return "live"
     return "pending"
 

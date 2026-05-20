@@ -134,7 +134,7 @@ Don't open 11 PRs at once. Sequence:
 4. **`solace-architect-blueprint`** (output side of the vertical slice)
 5. **4 reviewer plugins** (open as a batch — same template)
 6. **`solace-architect-validation`**
-7. **`solace-architect-ep-provisioning`** (opt-in; needs EP MCP — last)
+7. **`solace-architect-event-portal`** (opt-in; needs EP Designer MCP via `uvx` + `SOLACE_API_TOKEN` — last)
 
 Each PR depends on the previous ones being installable, so wait for merges (or use a `--plugin-source path` workaround for parallel review).
 

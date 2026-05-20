@@ -11,5 +11,4 @@ Modules map to v2spec.md sections:
 - intake_tools       — §5.3 (parse, preview, export, source-context import)
 - validation_tools   — §5.4
 - blueprint_tools    — §5.5 (render_audience_pack, assemble_zip)
-- ep_designer_mcp_tools — §5.6 (opt-in, EP Designer MCP wrappers)
 """

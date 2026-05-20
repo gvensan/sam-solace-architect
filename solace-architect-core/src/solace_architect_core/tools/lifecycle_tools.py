@@ -74,7 +74,7 @@ async def set_step_status(
         The active engagement.
     step : str
         Lifecycle step id — e.g. ``"discovery"``, ``"design"``,
-        ``"review"``, ``"validation"``, ``"blueprint"``, ``"provisioning"``.
+        ``"review"``, ``"validation"``, ``"event-portal"``, ``"blueprint"``.
     status : str
         One of: DONE, DONE_WITH_CONCERNS, BLOCKED, NEEDS_CONTEXT,
         NOT_STARTED.

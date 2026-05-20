@@ -14,8 +14,8 @@ for p in orchestrator discovery domain reviewer-architect reviewer-developer \
   pip install -e "../plugins/solace-architect-${p}/"
 done
 
-# 3. Optional: provisioning plugin (requires EP Designer MCP)
-# pip install -e ../plugins/solace-architect-ep-provisioning/
+# 3. Optional: live Event Portal provisioning plugin (requires EP Designer MCP + SOLACE_API_TOKEN)
+# pip install -e ../plugins/solace-architect-event-portal/
 
 # 4. Configure env
 cp .env.example .env
