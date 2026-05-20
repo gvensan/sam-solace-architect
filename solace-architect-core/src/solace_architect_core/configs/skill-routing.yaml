@@ -125,7 +125,7 @@ routing:
     trigger: always
 
   - step: provisioning
-    agent: SAProvisioningAgent
+    agent: SAEPProvisioningAgent
     dependencies: [event-portal, blueprint]
     trigger: conditional
     when:

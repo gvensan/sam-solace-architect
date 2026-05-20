@@ -20,7 +20,7 @@ sam-solace-architect/
 │   ├── solace-architect-reviewer-security/
 │   ├── solace-architect-validation/
 │   ├── solace-architect-blueprint/
-│   ├── solace-architect-provisioning/   # opt-in
+│   ├── solace-architect-ep-provisioning/   # opt-in
 │   └── solace-architect-webui-entrypoint/
 ├── test-harness/                        # Local SAM project for end-to-end testing (not distributed)
 └── tests/                               # Cross-plugin integration tests

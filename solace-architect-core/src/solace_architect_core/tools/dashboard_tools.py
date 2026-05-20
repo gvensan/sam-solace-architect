@@ -51,7 +51,7 @@ def _phase_of(step: dict) -> str:
         return "validation"
     if agent == "SABlueprintAgent":
         return "blueprint"
-    if agent == "SAProvisioningAgent":
+    if agent == "SAEPProvisioningAgent":
         return "provisioning"
     if scope:
         return "design"

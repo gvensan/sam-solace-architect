@@ -122,6 +122,7 @@ Thumbs.db
 # Custom
 # ============================================================================
 projects/
+projects1/
 gaps.md
 
 # Default fallback when SA_STORAGE_ROOT is unset (auth DB + telemetry land

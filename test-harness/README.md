@@ -15,7 +15,7 @@ for p in orchestrator discovery domain reviewer-architect reviewer-developer \
 done
 
 # 3. Optional: provisioning plugin (requires EP Designer MCP)
-# pip install -e ../plugins/solace-architect-provisioning/
+# pip install -e ../plugins/solace-architect-ep-provisioning/
 
 # 4. Configure env
 cp .env.example .env

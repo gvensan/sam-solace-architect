@@ -80,10 +80,10 @@ sam-solace-architect/                              # this repository (developmen
 │   │           ├── static/                        # CSS, fonts, ROI calculator JS
 │   │           └── render.py
 │   │
-│   ├── solace-architect-provisioning/             # SAProvisioningAgent plugin (opt-in)
+│   ├── solace-architect-ep-provisioning/             # SAEPProvisioningAgent plugin (opt-in)
 │   │   ├── config.yaml
 │   │   ├── pyproject.toml                         # Documents EP Designer MCP requirement
-│   │   └── src/solace_architect_provisioning/
+│   │   └── src/solace_architect_ep_provisioning/
 │   │
 │   └── solace-architect-webui-entrypoint/                    # WebUI entrypoint plugin (also exposes REST API)
 │       ├── config.yaml                            # SAM entrypoint config; [tool.x.metadata] type = "gateway" (legacy metadata field value — SAM has not renamed the metadata key even though the resource type is now called "entrypoint")
@@ -209,7 +209,7 @@ SAM's A2A protocol prescribes the topic structure. The ten agents are addressabl
 | SASecurityReviewerAgent | `${NAMESPACE}/a2a/v1/agent/request/sa-review-security` |
 | SAValidationAgent | `${NAMESPACE}/a2a/v1/agent/request/sa-validation` |
 | SABlueprintAgent | `${NAMESPACE}/a2a/v1/agent/request/sa-blueprint` |
-| SAProvisioningAgent | `${NAMESPACE}/a2a/v1/agent/request/sa-provisioning` |
+| SAEPProvisioningAgent | `${NAMESPACE}/a2a/v1/agent/request/sa-ep-provisioning` |
 
 These follow the SAM convention `{namespace}/a2a/v1/agent/request/{agent_name}`. The `sa-` prefix on each agent_name segment keeps Solace Architect agents distinct from any co-resident agents that share the SAM install. Do not modify the topic structure beyond the prefix.
 
@@ -248,7 +248,7 @@ Provides read, write, and list operations on the engagement artifact store. All 
 # artifact_name must match pattern: category/filename (e.g., "topic-design/topic-taxonomy.yaml")
 
 # Tool: write_artifact
-# Used by: SADomainAgent, SABlueprintAgent, SAOrchestratorAgent (for applied fixes), SAProvisioningAgent
+# Used by: SADomainAgent, SABlueprintAgent, SAOrchestratorAgent (for applied fixes), SAEPProvisioningAgent
 # Signature: async def write_artifact(artifact_name: str, content: str, ...) -> ToolResult
 # Behavior: Writes (overwrites) a named artifact. Runs three independent pre-write checks
 #   and returns structured violation lists per check, NOT just a flat error string:
@@ -1343,7 +1343,7 @@ The Executive audience pack ships with an **interactive HTML ROI calculator** (r
 
 ---
 
-### 4.10 SAProvisioningAgent
+### 4.10 SAEPProvisioningAgent
 
 **File:** `configs/agents/sa-provisioning.yaml`
 
@@ -1645,7 +1645,7 @@ routing:
     trigger: always
 
   - step: provisioning
-    agent: SAProvisioningAgent
+    agent: SAEPProvisioningAgent
     dependencies: [event-portal, blueprint]
     trigger: conditional
     when:
@@ -2143,7 +2143,7 @@ Thin Python wrappers over the EP Designer MCP server tools. Each function adds: 
 
 ```python
 # Tool: verify_tenant_access
-# Used by: SAProvisioningAgent (always called first)
+# Used by: SAEPProvisioningAgent (always called first)
 # Input: none
 # Output: {available: bool, token_scope: str, base_url: str, error: str|None}
 # Logic: Calls a benign MCP read operation (list_application_domains with limit=1).
@@ -2163,7 +2163,7 @@ Thin Python wrappers over the EP Designer MCP server tools. Each function adds: 
 #      Returns {ep_id, created: bool, reused: bool, action_taken: str}.
 
 # Tool: record_provisioning_state
-# Used by: SAProvisioningAgent (after every create or reuse decision)
+# Used by: SAEPProvisioningAgent (after every create or reuse decision)
 # Input: layer (str), name (str), ep_id (str), created (bool), metadata (dict)
 # Output: confirmation
 # Logic: Appends to provisioning/provisioned.yaml.
@@ -2382,7 +2382,7 @@ Phase 2 deferral: per-user theme persistence via the entrypoint (so theme follow
 - `jinja2` (used by the ported report generator's template engine)
 
 **Optional dependencies (only required when EP provisioning is opted in):**
-- **EP Designer MCP server** — install per Solace EP Designer MCP documentation; register with the SAM runtime so SAProvisioningAgent's tools are routable. Without it, SAProvisioningAgent's `verify_tenant_access` returns `available: false` and the agent halts before any side-effects.
+- **EP Designer MCP server** — install per Solace EP Designer MCP documentation; register with the SAM runtime so SAEPProvisioningAgent's tools are routable. Without it, SAEPProvisioningAgent's `verify_tenant_access` returns `available: false` and the agent halts before any side-effects.
 - `SOLACE_API_TOKEN` env var with `Designer Read+Write` scope
 - `SOLACE_API_BASE_URL` env var (region-specific; defaults to US)
 
@@ -2404,7 +2404,7 @@ for plugin in orchestrator discovery domain reviewer-architect reviewer-develope
   pip install -e "./plugins/solace-architect-${plugin}/"
 done
 # Provisioning is opt-in; install only if EP Designer MCP is configured:
-pip install -e ./plugins/solace-architect-provisioning/
+pip install -e ./plugins/solace-architect-ep-provisioning/
 
 # 4. Initialize the test-harness SAM project
 cd test-harness/
@@ -2460,7 +2460,7 @@ python -m pytest tests/test_canonical_urls.py           # CI-only: URL health-ch
 | `test_tools.py` | Unit tests for every tool in §3 and §5; uses fakes for SAM ArtifactService/SessionService |
 | `test_token_budgets.py` | Each agent's system prompt is ≤40K tokens; total across all agents ≤200K. Mirrors V1's `test/skill-token-budget.test.ts`. Fails CI if a prompt grows beyond budget |
 | `test_report_packs_isolation.py` | For each of 5 audience packs: (a) only artifacts whose paths match the pack's filter rules appear; (b) `decision_skills` filter is honored; (c) `finding_skills` filter is honored; (d) Executive pack contains no technical detail leakage (no `topic-taxonomy`, `wildcard-subscriptions`, `antipattern-report`, etc.) |
-| `test_ep_provisioning.py` | Three contracts: (a) SAProvisioningAgent refuses to run when `preferences.provision_event_portal != true`, (b) when MCP is unavailable, `verify_tenant_access` returns `available: false` AND the agent halts — does NOT silently skip, (c) opt-in skip is visible in dashboard `skip_reasons` |
+| `test_ep_provisioning.py` | Three contracts: (a) SAEPProvisioningAgent refuses to run when `preferences.provision_event_portal != true`, (b) when MCP is unavailable, `verify_tenant_access` returns `available: false` AND the agent halts — does NOT silently skip, (c) opt-in skip is visible in dashboard `skip_reasons` |
 | `test_roi_calculator.py` | (a) 5 sensitivity sliders render with correct labels and ranges, (b) auto-fill: V1=90%×C1, V2=80%×C2, V4=100%×C4, V6=95%×C3, (c) combined-scenario card recalculates correctly, (d) PDF rendering preserves all numeric values at default state |
 | `test_skill_routing.py` | (a) Every operator (equals/in/contains_any/not_empty/etc.) evaluates correctly against fixture inputs, (b) AND across `when` clauses, (c) OR via `any_of` block, (d) skip_reason is populated when a step is excluded |
 | `test_path_traversal.py` | Entrypoint artifact endpoints reject paths that escape the engagement's artifact namespace (`../`, absolute paths, symbolic links). See path-traversal guard requirement below |
@@ -2587,7 +2587,7 @@ These decisions are baked into this specification. They are not open questions.
 | 28 | Browser support | Modern evergreen (Chrome, Safari, Firefox, Edge — last 2 versions); no IE; mobile best-effort | Dashboard is desktop-focused |
 | 29 | Accessibility | WCAG 2.1 AA "best effort" for HTML reports and dashboard; not certified | Reasonable bar without certification cost |
 | 30 | Phase 2 deferrals | Git push delivery, email/Slack delivery, dark-mode persistence per user (toggle is Phase 1), per-engagement OIDC identity | Lower-priority polish or integrations |
-| 31 | EP Provisioning agent design | Separate SAProvisioningAgent (10th agent), not a SADomainAgent scope | Side-effect isolation: runtime tenant mutations need separate permissions, opt-in gating, and failure semantics from design-only agents |
+| 31 | EP Provisioning agent design | Separate SAEPProvisioningAgent (10th agent), not a SADomainAgent scope | Side-effect isolation: runtime tenant mutations need separate permissions, opt-in gating, and failure semantics from design-only agents |
 | 32 | EP Designer MCP integration | Mandatory dependency only when EP provisioning is opted in; agent halts on MCP-unavailable, never silently skips | V1's three-way contract preserved; safer default |
 | 33 | Conditional skill routing | `configs/skill-routing.yaml` with operator vocabulary (equals, in, contains_any, not_empty, etc.) | V1's hardcoded dependency_map is too thin; YAML config is shared between orchestrator and intake-form preview |
 | 34 | Audience-pack filters | `configs/report-packs.yaml` as single source of truth (dirs, files, globs, top_sections, decision_skills, finding_skills per pack) | Ported verbatim from V1; required for audience-pack isolation tests |
@@ -2657,7 +2657,7 @@ These decisions are baked into this specification. They are not open questions.
 **Per-deliverable detail:**
 
 1. **`solace-architect-core` PyPI package** — every tool from §3 + §5, all YAML schemas, vendored grounding docs (including `jargon-list.json` and `gaps.md`), default `branding.yaml` / `skill-routing.yaml` / `report-packs.yaml`. Type-hinted, async signatures, `ToolResult` returns. Semver-versioned. Published to PyPI.
-2. **Ten agent plugins** (one per agent in §4.1–§4.10), each with `config.yaml` (SAM agent config with sa-prefixed agent class, complete system prompt, Agent Card, tool configurations), `pyproject.toml` (depends on `solace-architect-core`), `src/solace_architect_<name>/lifecycle.py`, `README.md`. SAProvisioningAgent plugin is opt-in (gated by intake `preferences.provision_event_portal`) and adds EP Designer MCP as a documented requirement.
+2. **Ten agent plugins** (one per agent in §4.1–§4.10), each with `config.yaml` (SAM agent config with sa-prefixed agent class, complete system prompt, Agent Card, tool configurations), `pyproject.toml` (depends on `solace-architect-core`), `src/solace_architect_<name>/lifecycle.py`, `README.md`. SAEPProvisioningAgent plugin is opt-in (gated by intake `preferences.provision_event_portal`) and adds EP Designer MCP as a documented requirement.
 3. **All custom Python tools** per sections 3 and 5, with type hints, docstrings, async signatures, and `ToolResult` return types. New modules:
    - `project_tools.py` (project registry: list/create/archive/switch)
    - `dashboard_tools.py` (compute Overview/Timeline/Stats data)
@@ -2721,7 +2721,7 @@ V2 is **not a monolithic SAM project**. It is a family of SAM plugins targeting 
 | 8 | `solace-architect-reviewer-security` | SAM plugin (agent) | Community plugins repo | §4.7 |
 | 9 | `solace-architect-validation` | SAM plugin (agent) | Community plugins repo | §4.8 |
 | 10 | `solace-architect-blueprint` | SAM plugin (agent) | Community plugins repo | §4.9 + ported V1 report generator + WeasyPrint dep |
-| 11 | `solace-architect-provisioning` | SAM plugin (agent) | Community plugins repo | §4.10 + EP Designer MCP dep (opt-in) |
+| 11 | `solace-architect-ep-provisioning` | SAM plugin (agent) | Community plugins repo | §4.10 + EP Designer MCP dep (opt-in) |
 | 12 | `solace-architect-webui-entrypoint` | SAM plugin (gateway) | Community plugins repo | §6 — HTTP-SSE + REST routes, all 6 dashboard views, intake form, audience-pack viewer |
 
 ### 10.2 Plugin layout (per-plugin)

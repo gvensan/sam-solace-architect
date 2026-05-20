@@ -78,14 +78,22 @@ def test_tool_references_resolve(config_path):
         assert hasattr(module, fn_name), f"{mod_name}.{fn_name} missing"
 
 
-def test_all_11_plugin_configs_present():
+def test_all_12_plugin_configs_present():
+    """All 12 SA plugins are present + named consistently.
+
+    Was 11 until SAEventPortalAgent (MCP-backed live Event Portal Designer)
+    was added between Validation and Blueprint in the lifecycle. If the
+    count changes again, update this list AND the lifecycle banner
+    + PHASE_NEXT in the WebUI's app.js.
+    """
     expected = {
         "solace-architect-orchestrator", "solace-architect-discovery",
         "solace-architect-domain",
         "solace-architect-reviewer-architect", "solace-architect-reviewer-developer",
         "solace-architect-reviewer-ops", "solace-architect-reviewer-security",
-        "solace-architect-validation", "solace-architect-blueprint",
-        "solace-architect-provisioning", "solace-architect-webui-entrypoint",
+        "solace-architect-validation", "solace-architect-event-portal",
+        "solace-architect-blueprint",
+        "solace-architect-ep-provisioning", "solace-architect-webui-entrypoint",
     }
     actual = {p.parent.name for p in PLUGINS}
     assert actual == expected, f"missing or extra plugins: {actual ^ expected}"

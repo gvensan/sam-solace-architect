@@ -16,7 +16,7 @@
 
 | V1 capability | V2 spec status | Severity | Detail |
 |---|---|---|---|
-| `/solace-ep-provision` skill | ✅ Applied — §4.10 SAProvisioningAgent (new 10th agent), §5.6 `ep_designer_mcp_tools.py`, §7.1 MCP install requirement, §7.3 `test_ep_provisioning.py` | 🔴 critical | Side-effect-isolated separate agent; opt-in via `intake.preferences.provision_event_portal`; reuse-by-content-match; per-application AsyncAPI export; "never silently skip" contract |
+| `/solace-ep-provision` skill | ✅ Applied — §4.10 SAEPProvisioningAgent (new 10th agent), §5.6 `ep_designer_mcp_tools.py`, §7.1 MCP install requirement, §7.3 `test_ep_provisioning.py` | 🔴 critical | Side-effect-isolated separate agent; opt-in via `intake.preferences.provision_event_portal`; reuse-by-content-match; per-application AsyncAPI export; "never silently skip" contract |
 | `/solace-executive` skill | ✅ Applied — §4.9a Executive pack ROI calculator full spec; §5.5a `report-packs.yaml` Executive pack filters | 🟠 important | 6-section ROI framework now explicit; auto-fill rules baked in |
 | `/solace-diagrams` skill | 🔶 Partial — covered by SABlueprintAgent's `generate_diagrams` skill but split-rule logic (per-region splits, `*-detail.md` companion files) not explicit | 🟡 advisory | See "Advisory residuals" below |
 | `/solace-help`, `/solace-projects` | ✅ Covered — orchestrator + §3.3 project_tools | — | — |
@@ -89,7 +89,7 @@
 
 | V1 integration | V2 spec status | Severity | Detail |
 |---|---|---|---|
-| **Solace Event Portal Designer MCP** | ✅ Applied — §4.10 SAProvisioningAgent + §5.6 wrappers + §7.1 install requirement | 🔴 critical | Optional dep, only required when EP provisioning is opted in |
+| **Solace Event Portal Designer MCP** | ✅ Applied — §4.10 SAEPProvisioningAgent + §5.6 wrappers + §7.1 install requirement | 🔴 critical | Optional dep, only required when EP provisioning is opted in |
 | **WebFetch for runtime grounding** | ✅ Applied — §5.2 `fetch_canonical_source` with docs.solace.com allowlist | 🟠 important | — |
 
 ## 8. Testing infrastructure

@@ -109,7 +109,7 @@ Sequenced for dependency, but most can parallelize across developers:
 
 | Step | Build |
 |---|---|
-| 1 | `solace-architect-provisioning` plugin: system prompt, opt-in gate, `verify_tenant_access` guard |
+| 1 | `solace-architect-ep-provisioning` plugin: system prompt, opt-in gate, `verify_tenant_access` guard |
 | 2 | EP Designer MCP wrappers in `solace-architect-core/ep_designer_mcp_tools.py`: list/create per layer, AsyncAPI export, reuse-by-content-match |
 | 3 | `provisioned.yaml` state recording + `provisioning-report.md` summary generation |
 | 4 | `test_ep_provisioning.py` (full three-way contract: opt-in, MCP-unavailable halt, never silently skip) |

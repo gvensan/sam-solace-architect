@@ -22,7 +22,7 @@ license = { text = "Apache-2.0" }
 #   pip install -e ../plugins/solace-architect-blueprint
 #   pip install -e ../plugins/solace-architect-webui-entrypoint
 #   # Provisioning is opt-in — install only if EP Designer MCP is configured:
-#   # pip install -e ../plugins/solace-architect-provisioning
+#   # pip install -e ../plugins/solace-architect-ep-provisioning
 #   cp .env.example .env  # then edit
 #   sam run
 

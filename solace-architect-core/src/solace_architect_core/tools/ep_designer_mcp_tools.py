@@ -1,6 +1,6 @@
 """Event Portal Designer MCP wrappers (v2spec §5.6).
 
-Phase 1: skeletons that return structured "not connected" responses, so SAProvisioningAgent
+Phase 1: skeletons that return structured "not connected" responses, so SAEPProvisioningAgent
 can be wired up end-to-end and tested for the opt-in/halt contract. Phase 5 replaces these
 with real MCP calls.
 
