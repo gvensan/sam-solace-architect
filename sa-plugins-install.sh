@@ -6,14 +6,26 @@
 # you want to pick up upstream plugin changes.
 #
 # Usage:
-#   ./sa-plugins-install.sh <sam-dir>        # explicit path
+#   ./sa-plugins-install.sh <sam-dir>                  # refresh all plugins
+#   ./sa-plugins-install.sh <sam-dir> --plugin <name>  # refresh just one plugin
 #   SAM_DIR=/path/to/sam ./sa-plugins-install.sh
-#   ./sa-plugins-install.sh                  # falls back to ./sam if neither set
+#   ./sa-plugins-install.sh                            # falls back to ./sam if neither set
+#
+# Flags:
+#   --plugin <name>     Refresh a single plugin (repeatable; pass --plugin twice
+#                       to refresh two). Accepts either the bare suffix
+#                       (e.g. "blueprint") or the full package name (e.g.
+#                       "solace-architect-blueprint"). When any --plugin is
+#                       given, the full-mesh refresh is skipped — only the
+#                       named plugins are touched.
+#   -h / --help         Show this help block.
 #
 # Examples:
 #   ./sa-plugins-install.sh sam
 #   ./sa-plugins-install.sh /Users/me/some-other-sam-project
 #   SAM_DIR=~/work/sam-prod ./sa-plugins-install.sh
+#   ./sa-plugins-install.sh sam --plugin event-portal
+#   ./sa-plugins-install.sh sam --plugin blueprint --plugin discovery
 
 set -euo pipefail
 
@@ -25,11 +37,15 @@ usage() { sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'; exit "${
 
 # ── arg parsing ─────────────────────────────────────────────────────────────
 sam_dir=""
+selected_plugins=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -h|--help) usage 0 ;;
-    -*)        echo "Unknown flag: $1" >&2; usage 1 ;;
-    *)         sam_dir="$1"; shift ;;
+    -h|--help)     usage 0 ;;
+    --plugin)      [[ -n "${2:-}" ]] || { echo "--plugin requires a name" >&2; usage 1; }
+                   selected_plugins+=( "$2" ); shift 2 ;;
+    --plugin=*)    selected_plugins+=( "${1#*=}" ); shift ;;
+    -*)            echo "Unknown flag: $1" >&2; usage 1 ;;
+    *)             sam_dir="$1"; shift ;;
   esac
 done
 
@@ -163,7 +179,30 @@ PLUGINS=(
   solace-architect-webui-entrypoint
 )
 
-echo "  Plugins to refresh: ${#PLUGINS[@]}"
+# ── narrow PLUGINS to --plugin selections if any were given ─────────────────
+if [[ ${#selected_plugins[@]} -gt 0 ]]; then
+  # Normalize: bare suffix → full name. Validate against the known list.
+  normalized=()
+  for p in "${selected_plugins[@]}"; do
+    [[ "$p" == solace-architect-* ]] || p="solace-architect-$p"
+    found=false
+    for known in "${PLUGINS[@]}"; do
+      [[ "$p" == "$known" ]] && { found=true; break; }
+    done
+    if ! $found; then
+      printf "\n"; fail "Unknown plugin: $p"
+      echo "  Valid choices:"
+      for k in "${PLUGINS[@]}"; do echo "    - $k  (or '${k#solace-architect-}')"; done
+      exit 1
+    fi
+    normalized+=( "$p" )
+  done
+  PLUGINS=( "${normalized[@]}" )
+  echo "  Plugins to refresh: ${#PLUGINS[@]} (selected via --plugin)"
+  for p in "${PLUGINS[@]}"; do echo "    - $p"; done
+else
+  echo "  Plugins to refresh: ${#PLUGINS[@]} (full mesh)"
+fi
 
 # ── refresh loop ────────────────────────────────────────────────────────────
 # refresh-plugin.sh expects to be run from inside the SAM project (it uses
