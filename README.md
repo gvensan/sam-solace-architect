@@ -132,36 +132,36 @@ See [`plugins/solace-architect-webui-entrypoint/README.md`](plugins/solace-archi
 
 Two helper scripts live at the repo root for managing SA in a SAM project. Both default to `./sam` if you don't pass a path, and both respect the `SAM_DIR` env var.
 
-### `update.sh` — refresh plugins from GitHub
+### `sa-plugins-install.sh` — refresh plugins from GitHub
 
 Re-installs every SA plugin from the upstream `sam-solace-architect-agents` GitHub repo and re-registers each as a SAM component in `<sam-dir>/configs/`. Run any time you push plugin changes upstream and want to pick them up locally.
 
 ```bash
-./update.sh                         # uses ./sam
-./update.sh sam                     # explicit
-./update.sh /path/to/other-sam      # any SAM project
-SAM_DIR=~/work/sam-prod ./update.sh
+./sa-plugins-install.sh                         # uses ./sam
+./sa-plugins-install.sh sam                     # explicit
+./sa-plugins-install.sh /path/to/other-sam      # any SAM project
+SAM_DIR=~/work/sam-prod ./sa-plugins-install.sh
 
-./update.sh --help
+./sa-plugins-install.sh --help
 ```
 
 The script validates the target is a real SAM project (has a `configs/` directory) before doing anything, then walks the plugin list in dependency order (orchestrator first, entrypoint last). Per-plugin `pip install --force-reinstall` output streams live; the summary at the end lists what succeeded and what failed. Exit code is non-zero only if any plugin failed.
 
-### `cleanup.sh` — uninstall SA from a SAM project
+### `sa-plugins-uninstall.sh` — uninstall SA from a SAM project
 
 Removes SA configs from `<sam-dir>/configs/`, pip-uninstalls every SA package (including `solace-architect-core` unless `--keep-core`), and clears `<sam-dir>/sa_logs/`.
 
 ```bash
-./cleanup.sh                        # interactive — prompts for confirm
-./cleanup.sh --dry-run              # preview only, no changes
-./cleanup.sh --yes                  # skip confirmation
-./cleanup.sh --keep-core            # leave solace-architect-core installed
-./cleanup.sh /path/to/other-sam --yes
+./sa-plugins-uninstall.sh                        # interactive — prompts for confirm
+./sa-plugins-uninstall.sh --dry-run              # preview only, no changes
+./sa-plugins-uninstall.sh --yes                  # skip confirmation
+./sa-plugins-uninstall.sh --keep-core            # leave solace-architect-core installed
+./sa-plugins-uninstall.sh /path/to/other-sam --yes
 
-./cleanup.sh --help
+./sa-plugins-uninstall.sh --help
 ```
 
-**Never touched:** engagement data under `SA_STORAGE_ROOT` (your projects), the SAM project's stock state .db files, the SAM directory itself, or stock SAM agents (BuiltInTools, sam-mermaid, find-my-ip, etc.). To restore SA after a cleanup, run `./update.sh`.
+**Never touched:** engagement data under `SA_STORAGE_ROOT` (your projects), the SAM project's stock state .db files, the SAM directory itself, or stock SAM agents (BuiltInTools, sam-mermaid, find-my-ip, etc.). To restore SA after a cleanup, run `./sa-plugins-install.sh`.
 
 ## Required env vars (summary)
 
