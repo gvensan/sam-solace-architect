@@ -24,8 +24,7 @@ test = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/solace_architect_core"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/solace_architect_core/grounding" = "solace_architect_core/grounding"
-"src/solace_architect_core/configs" = "solace_architect_core/configs"
-"src/solace_architect_core/schemas" = "solace_architect_core/schemas"
+# Note: configs/, grounding/, and schemas/ are subdirectories of the
+# package and ship automatically via `packages` above. Earlier revisions
+# also listed them under force-include, which caused duplicate entries
+# in the built wheel (visible as `UserWarning: Duplicate name …`).
