@@ -20,10 +20,9 @@
 #
 # Flags:
 #   --plugin <name>     Uninstall a single plugin (repeatable; pass --plugin
-#                       twice to remove two). Accepts either the bare suffix
-#                       (e.g. "blueprint") or the full package name (e.g.
-#                       "solace-architect-blueprint"). When any --plugin is
-#                       given:
+#                       twice to remove two). Must be the full package name
+#                       (e.g. "solace-architect-event-portal"), not the bare
+#                       suffix. When any --plugin is given:
 #                         • only the named plugins' configs + packages are
 #                           removed;
 #                         • only the named plugins' per-agent log files are
@@ -135,12 +134,18 @@ SA_PLUGINS=(
   solace-architect-webui-entrypoint
 )
 
-# ── normalize + validate --plugin selections ───────────────────────────────
+# ── validate --plugin selections ────────────────────────────────────────────
 # In targeted mode, narrow SA_PLUGINS down to just the user-selected ones.
+# Bare suffixes (e.g. "blueprint") are rejected — the user must supply the
+# full "solace-architect-*" name so the script never silently auto-expands.
 if $TARGETED; then
-  normalized=()
   for p in "${selected_plugins[@]}"; do
-    [[ "$p" == solace-architect-* ]] || p="solace-architect-$p"
+    if [[ "$p" != solace-architect-* ]]; then
+      printf "\n"; fail "Plugin name must start with 'solace-architect-': $p"
+      echo "  --plugin requires the full package name, not the bare suffix."
+      echo "  Did you mean: --plugin solace-architect-$p ?"
+      exit 1
+    fi
     found=false
     for known in "${SA_PLUGINS[@]}"; do
       [[ "$p" == "$known" ]] && { found=true; break; }
@@ -148,12 +153,11 @@ if $TARGETED; then
     if ! $found; then
       printf "\n"; fail "Unknown plugin: $p"
       echo "  Valid choices:"
-      for k in "${SA_PLUGINS[@]}"; do echo "    - $k  (or '${k#solace-architect-}')"; done
+      for k in "${SA_PLUGINS[@]}"; do echo "    - $k"; done
       exit 1
     fi
-    normalized+=( "$p" )
   done
-  SA_PLUGINS=( "${normalized[@]}" )
+  SA_PLUGINS=( "${selected_plugins[@]}" )
 fi
 
 # ── discovery — what's actually present ────────────────────────────────────

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # sa-plugins-install.sh — refresh every Solace Architect plugin in a SAM project.
 #
-# Re-installs each plugin from GitHub via `plugins/refresh-plugin.sh`, then
-# re-registers it as a SAM component in <sam-dir>/configs/. Run this any time
-# you want to pick up upstream plugin changes.
+# Re-installs each plugin from GitHub via ./refresh-plugin.sh (the per-plugin
+# helper, which lives alongside this script at the repo root) and re-registers
+# it as a SAM component in <sam-dir>/configs/. Run this any time you want to
+# pick up upstream plugin changes.
 #
 # Usage:
 #   ./sa-plugins-install.sh <sam-dir>                  # refresh all plugins
@@ -12,26 +13,27 @@
 #   ./sa-plugins-install.sh                            # falls back to ./sam if neither set
 #
 # Flags:
-#   --plugin <name>     Refresh a single plugin (repeatable; pass --plugin twice
-#                       to refresh two). Accepts either the bare suffix
-#                       (e.g. "blueprint") or the full package name (e.g.
-#                       "solace-architect-blueprint"). When any --plugin is
-#                       given, the full-mesh refresh is skipped — only the
-#                       named plugins are touched.
+#   --plugin <name>     Refresh a single plugin (repeatable; pass --plugin
+#                       twice to refresh two). Must be the full package name
+#                       (e.g. "solace-architect-event-portal"), not the bare
+#                       suffix. When any --plugin is given, the full-mesh
+#                       refresh is skipped — only the named plugins are
+#                       touched.
 #   -h / --help         Show this help block.
 #
 # Examples:
 #   ./sa-plugins-install.sh sam
 #   ./sa-plugins-install.sh /Users/me/some-other-sam-project
 #   SAM_DIR=~/work/sam-prod ./sa-plugins-install.sh
-#   ./sa-plugins-install.sh sam --plugin event-portal
-#   ./sa-plugins-install.sh sam --plugin blueprint --plugin discovery
+#   ./sa-plugins-install.sh sam --plugin solace-architect-event-portal
+#   ./sa-plugins-install.sh sam --plugin solace-architect-blueprint \
+#                               --plugin solace-architect-discovery
 
 set -euo pipefail
 
 # ── resolve paths ───────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REFRESH_SCRIPT="$SCRIPT_DIR/plugins/refresh-plugin.sh"
+REFRESH_SCRIPT="$SCRIPT_DIR/refresh-plugin.sh"
 
 usage() { sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'; exit "${1:-0}"; }
 
@@ -81,7 +83,7 @@ if [[ ! -d "$sam_dir/configs" ]]; then
 fi
 if [[ ! -x "$REFRESH_SCRIPT" ]]; then
   printf "\n"; fail "Cannot find refresh-plugin.sh at $REFRESH_SCRIPT"
-  echo "  The plugins/ sibling directory must be present and refresh-plugin.sh executable."
+  echo "  refresh-plugin.sh must live alongside this script at the repo root and be executable."
   exit 1
 fi
 
@@ -181,10 +183,16 @@ PLUGINS=(
 
 # ── narrow PLUGINS to --plugin selections if any were given ─────────────────
 if [[ ${#selected_plugins[@]} -gt 0 ]]; then
-  # Normalize: bare suffix → full name. Validate against the known list.
-  normalized=()
+  # Validate: must be the full "solace-architect-*" name and present in the
+  # known list. Bare suffixes (e.g. "blueprint") are rejected so the script
+  # never silently auto-expands a name the user didn't actually type.
   for p in "${selected_plugins[@]}"; do
-    [[ "$p" == solace-architect-* ]] || p="solace-architect-$p"
+    if [[ "$p" != solace-architect-* ]]; then
+      printf "\n"; fail "Plugin name must start with 'solace-architect-': $p"
+      echo "  --plugin requires the full package name, not the bare suffix."
+      echo "  Did you mean: --plugin solace-architect-$p ?"
+      exit 1
+    fi
     found=false
     for known in "${PLUGINS[@]}"; do
       [[ "$p" == "$known" ]] && { found=true; break; }
@@ -192,12 +200,11 @@ if [[ ${#selected_plugins[@]} -gt 0 ]]; then
     if ! $found; then
       printf "\n"; fail "Unknown plugin: $p"
       echo "  Valid choices:"
-      for k in "${PLUGINS[@]}"; do echo "    - $k  (or '${k#solace-architect-}')"; done
+      for k in "${PLUGINS[@]}"; do echo "    - $k"; done
       exit 1
     fi
-    normalized+=( "$p" )
   done
-  PLUGINS=( "${normalized[@]}" )
+  PLUGINS=( "${selected_plugins[@]}" )
   echo "  Plugins to refresh: ${#PLUGINS[@]} (selected via --plugin)"
   for p in "${PLUGINS[@]}"; do echo "    - $p"; done
 else
