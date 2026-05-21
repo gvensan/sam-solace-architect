@@ -309,19 +309,23 @@ async def test_reset_discovery_drops_phase_decisions_but_keeps_orchestrator():
 
 
 @pytest.mark.asyncio
-async def test_reset_discovery_resets_token_usage_for_phase_agents():
-    """Restart Discovery clears every llm-calls.jsonl row whose agent
-    maps to a phase that was wiped; orchestrator-authored rows survive
-    (matches the decisions policy). Without this, the existing
-    step_id-keyed filter misses 100% of real rows since the recorder
-    almost never tags step_id, leaving the Usage tile stale forever.
+async def test_reset_discovery_wipes_all_engagement_telemetry():
+    """Restart Discovery wipes EVERY llm-calls.jsonl row for the engagement,
+    including SAOrchestratorAgent rows. Phase restarts (Design / Review /
+    Validation / EP / Blueprint) still preserve orchestrator history; only
+    a full Discovery restart resets the engagement to a clean slate.
+
+    Rationale: when SAOrchestratorAgent is the default chat agent (post-
+    2026-05-21), ~86% of an engagement's tokens land under the orchestrator
+    in real usage. Preserving orchestrator rows on Discovery restart
+    leaves the Usage tile showing pre-restart numbers and the user
+    reports "tokens didn't reset" (matches the user-visible symptom).
     """
     from solace_architect_core.tools import telemetry_tools
     from solace_architect_webui_entrypoint.routes.api import reset_discovery
 
     eid = "telemetry-restart-eng"
 
-    # One row per agent, matching the decisions test's seed.
     seed = [
         ("SADiscoveryAgent", 100),
         ("SADomainAgent", 200),
@@ -340,11 +344,11 @@ async def test_reset_discovery_resets_token_usage_for_phase_agents():
 
     result = await reset_discovery(eid)
 
-    # Seven phase-owner rows wiped; orchestrator row survives.
-    assert result["telemetry_rows_cleared"] == 7, result
+    # All 8 rows wiped — orchestrator included.
+    assert result["telemetry_rows_cleared"] == 8, result
     remaining = (await telemetry_tools.read_token_usage(eid, group_by="agent")).data
-    assert remaining["totals"]["calls"] == 1, remaining
-    assert remaining["rows"][0]["key"] == "SAOrchestratorAgent"
+    assert remaining["totals"]["calls"] == 0, remaining
+    assert remaining["rows"] == [], remaining
 
 
 @pytest.mark.asyncio
@@ -380,3 +384,36 @@ async def test_reset_design_resets_only_design_and_downstream_telemetry():
     remaining = (await telemetry_tools.read_token_usage(eid, group_by="agent")).data
     survivors = {row["key"] for row in remaining["rows"]}
     assert survivors == {"SADiscoveryAgent", "SAOrchestratorAgent"}, survivors
+
+
+@pytest.mark.asyncio
+async def test_reset_discovery_unlinks_stakeholder_report():
+    """Restart Discovery deletes the stakeholder-ready narrative report
+    alongside the brief + summary. Without this, the previous Discovery
+    run's report.md survives and the next run lands on top of stale
+    user-facing copy."""
+    from solace_architect_core.tools import artifact_tools
+    from solace_architect_webui_entrypoint.routes.api import reset_discovery
+
+    eid = "report-restart-eng"
+    for name in (
+        "discovery/discovery-brief.yaml",
+        "discovery/discovery-summary.md",
+        "discovery/discovery-report.md",
+        # intake.json must SURVIVE — it's the user's submitted form
+        "discovery/intake.json",
+    ):
+        content = "topics: []" if name.endswith(".yaml") else "# stub"
+        await artifact_tools.write_artifact(eid, name, content)
+
+    result = await reset_discovery(eid)
+
+    remaining = (await artifact_tools.list_artifacts(eid, category="discovery")).data or []
+    # The three derived artifacts are gone; intake.json survives.
+    assert "discovery/discovery-brief.yaml" not in remaining, remaining
+    assert "discovery/discovery-summary.md" not in remaining, remaining
+    assert "discovery/discovery-report.md" not in remaining, remaining
+    assert "discovery/intake.json" in remaining, remaining
+    # And the removed-artifacts list reports the deletions.
+    removed = set(result.get("removed_artifacts", []))
+    assert "discovery/discovery-report.md" in removed, removed

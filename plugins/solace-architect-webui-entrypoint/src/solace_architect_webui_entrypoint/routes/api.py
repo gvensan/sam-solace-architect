@@ -274,6 +274,36 @@ async def _drop_decisions_for_phases(engagement_id: str, phases: set[str]) -> in
     return dropped
 
 
+async def _wipe_engagement_telemetry(engagement_id: str) -> int:
+    """Remove EVERY telemetry row for this engagement, including orchestrator.
+
+    Used by full-engagement restarts (reset_discovery in particular) where the
+    user expectation is "clean slate, no token history survives." The
+    phase-targeted :func:`_drop_telemetry_for_phases` deliberately preserves
+    SAOrchestratorAgent rows as cross-cutting flow, but when SAOrchestratorAgent
+    is also the user-facing chat default, ~86% of an engagement's tokens land
+    under that agent and the user reports "tokens didn't reset" (see
+    2026-05-21 regression).
+
+    This helper is intentionally distinct from the phase-targeted one — phase
+    restarts (Design / Review / Validation / EP / Blueprint) should NOT wipe
+    orchestrator history; only a full Discovery restart should.
+    """
+    path = "meta/telemetry/llm-calls.jsonl"
+    try:
+        rows = read_jsonl(engagement_id, path)
+    except Exception:
+        return 0
+    if not rows:
+        return 0
+    # Rewrite empty — keeps the file path consistent so the next agent run
+    # appends cleanly instead of triggering "file missing" creates.
+    import json as _json
+    _ = _json  # silence linters in case some platform yells about unused
+    write_text(engagement_id, path, "")
+    return len(rows)
+
+
 async def _drop_telemetry_for_phases(engagement_id: str, phases: set[str]) -> int:
     """Remove every llm-calls.jsonl row whose agent maps into ``phases``.
 
@@ -314,15 +344,30 @@ async def reset_discovery(engagement_id: str) -> Any:
     Removes:
       - discovery/discovery-brief.yaml
       - discovery/discovery-summary.md
+      - discovery/discovery-report.md (the stakeholder-ready narrative)
       - the discovery entry in meta/engagement-status.yaml
       - every decision in meta/decisions.yaml authored by SADiscoveryAgent,
         plus all decisions authored by downstream phases via cascade.
         Orchestrator-authored decisions (flow choices) are preserved.
+      - every telemetry row for this engagement — both phase-attributed rows
+        (per _drop_telemetry_for_phases) AND SAOrchestratorAgent rows. The
+        orchestrator's rows are normally preserved as cross-cutting flow,
+        but when the SAOrchestratorAgent-as-default work landed, ALL user
+        chat during Discovery gets attributed to the orchestrator. A user
+        restarting Discovery expects a clean slate, not 86% of tokens
+        preserved (see 2026-05-21 user-report).
     Marks open-items with source='discovery' as 'superseded' (we don't
     hard-delete in case a prior agent turn referenced an item id).
+    Leaves discovery/intake.json and discovery/intake.md alone — those
+    are the user's submitted form, the source-of-truth for any new
+    Discovery run.
     """
     removed = []
-    for name in ("discovery/discovery-brief.yaml", "discovery/discovery-summary.md"):
+    for name in (
+        "discovery/discovery-brief.yaml",
+        "discovery/discovery-summary.md",
+        "discovery/discovery-report.md",
+    ):
         try:
             path = safe_artifact_path(engagement_id, name)
             if path.exists():
@@ -351,11 +396,16 @@ async def reset_discovery(engagement_id: str) -> Any:
                 )
                 superseded += 1
 
-    # Drop discovery-authored decisions + telemetry rows before cascading.
-    # The cascade drops downstream-phase rows in its own loop, so by the time
-    # we return these counts cover discovery + every downstream phase.
+    # Drop discovery-authored decisions before cascading.
     decisions_cleared = await _drop_decisions_for_phases(engagement_id, {"discovery"})
-    telemetry_rows_cleared = await _drop_telemetry_for_phases(engagement_id, {"discovery"})
+
+    # Wipe EVERY telemetry row for this engagement — orchestrator included.
+    # Discovery restart means "clean slate"; the phase-targeted wipe preserved
+    # SAOrchestratorAgent rows (cross-cutting flow), but when the user runs
+    # Discovery through the orchestrator chat default, ~86% of tokens land
+    # there and the user-visible tile never resets. See _wipe_engagement_telemetry
+    # for the design rationale.
+    telemetry_rows_cleared = await _wipe_engagement_telemetry(engagement_id)
 
     # Cascade-wipe every downstream phase (design through blueprint) — they
     # all derive from Discovery, so re-running with stale design/review/etc

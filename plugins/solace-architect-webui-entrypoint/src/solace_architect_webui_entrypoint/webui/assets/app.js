@@ -1617,20 +1617,31 @@
   function wireProgressCtaActions(root, eid) {
     const openChatWith = (text, agent) => {
       applyChat("open");
-      // Flip the chat agent selector before priming so the message
-      // dispatches to the right agent (Discovery → Domain on handoff).
-      if (agent) {
-        const sel = document.getElementById("chat-agent-select");
-        if (sel) {
-          const opt = Array.from(sel.options).find(o => o.value === agent);
-          if (opt) sel.value = agent;
-        }
+      // Per-turn dispatch override: instead of mutating the dropdown
+      // (which used to auto-flip to the target agent and override the
+      // user's persistent pick), we set a one-shot variable the submit
+      // handler reads. The dropdown stays put — user keeps their chosen
+      // agent (default SAOrchestratorAgent), and only THIS kickoff
+      // dispatches to the named target. Subsequent user-typed messages
+      // resume using the dropdown value.
+      if (agent && text) {
+        _pendingDispatchAgent = agent;
       }
       const ci = document.getElementById("chat-input");
       if (ci) {
         if (text) ci.value = text;
         ci.focus();
         if (text) chatForm.requestSubmit?.();
+      }
+      // Scroll the chat log to the latest message so the user sees the
+      // kickoff land + the agent's first response without having to
+      // scroll manually. Defer one tick so the kickoff bubble lands
+      // first; requestSubmit is sync but the bubble append happens in
+      // the submit handler.
+      if (chatLog) {
+        requestAnimationFrame(() => {
+          chatLog.scrollTop = chatLog.scrollHeight;
+        });
       }
     };
     // Lock the Start/Continue button on click so the user can't double-submit
@@ -1774,8 +1785,25 @@
           .forEach(step => _clearPhaseHint(eid, step));
         setAutoMode(eid, false);
         closeModal();
-        // Refresh the view so the CTA flips back to "Start Discovery".
+        // Refresh the view so the lifecycle banner + Progress page reflect
+        // the cleared state.
         render();
+        // Auto-dispatch the discovery kickoff so a single "Restart" click
+        // gets the user back into an active conversation, instead of the
+        // two-click "restart → start discovery" dance. Same kickoff body
+        // and target as the Start Discovery button (line ~1680). The
+        // per-turn override (set inside openChatWith) routes this one
+        // message to SADiscoveryAgent without flipping the dropdown.
+        //
+        // openChatWith is scoped inside wireProgressCtaActions; render()
+        // above re-wires it, but we can't grab the closure-local helper
+        // from here. Easiest: drive it through the same DOM as a Start
+        // Discovery click would. The button only exists after render()
+        // has painted the progress-CTA into the page, so defer one tick.
+        requestAnimationFrame(() => {
+          const startBtn = document.getElementById("start-discovery-btn");
+          if (startBtn) startBtn.click();
+        });
       } catch (err) {
         btn.disabled = false;
         btn.textContent = "Restart Discovery";
@@ -5387,12 +5415,28 @@
     }
   });
 
+  // One-shot dispatch override — set by openChatWith() when a phase-handoff
+  // CTA needs THIS turn to target a specific agent (e.g. SADiscoveryAgent
+  // for the discovery kickoff) without flipping the user's dropdown choice.
+  // Consumed and cleared on the next submit. Always falls back to the
+  // dropdown value if unset.
+  let _pendingDispatchAgent = "";
+  // Expose for openChatWith (which is scoped inside wireProgressCtaActions).
+  // Using a window setter rather than a shared closure keeps openChatWith
+  // unchanged in shape — it just writes to this single source of truth.
+  window.__setPendingDispatchAgent = (name) => { _pendingDispatchAgent = name || ""; };
+
   chatForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = chatInput.value.trim();
     if (!text) return;
     const eid = currentProjectId();
-    const agent = chatAgentSelect?.value || "";
+    // Prefer the one-shot override (set by phase-handoff CTAs) so the
+    // kickoff lands on the right agent without disturbing the dropdown.
+    // Clear it after read so the NEXT message returns to using the
+    // dropdown — the override is for ONE dispatch only.
+    const agent = _pendingDispatchAgent || (chatAgentSelect?.value || "");
+    if (_pendingDispatchAgent) _pendingDispatchAgent = "";
 
     // Ensure the per-project sessionId is current and the SSE stream is live.
     if (!chatSessionId) chatSessionId = deriveChatSessionId();
