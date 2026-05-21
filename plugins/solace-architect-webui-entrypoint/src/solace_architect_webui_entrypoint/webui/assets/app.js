@@ -2225,7 +2225,11 @@
     { id: "day",     label: "Day" },
     { id: "step",    label: "Step" },
   ];
-  let _usageState = { range: "30d", groupBy: "project" };
+  // project === "" means "All projects" (cross-engagement rollup via /api/me/token-usage).
+  // Otherwise project is an engagement_id; we hit /api/engagements/<eid>/token-usage
+  // which doesn't accept group_by=project — _loadUsage transparently swaps to "agent".
+  let _usageState = { range: "30d", groupBy: "project", project: "" };
+  let _usageProjects = [];
 
   function _renderUsageSection(root) {
     root.innerHTML = `
@@ -2241,20 +2245,70 @@
             ${USAGE_RANGES.map(r => `<option value="${r.id}" ${r.id === _usageState.range ? "selected" : ""}>${escapeHtml(r.label)}</option>`).join("")}
           </select>
         </label>
-        <label>Group by
-          <select id="usage-group">
-            ${USAGE_GROUPINGS.map(g => `<option value="${g.id}" ${g.id === _usageState.groupBy ? "selected" : ""}>${escapeHtml(g.label)}</option>`).join("")}
+        <label>Project
+          <select id="usage-project">
+            <option value="" ${_usageState.project === "" ? "selected" : ""}>All projects</option>
           </select>
+        </label>
+        <label>Group by
+          <select id="usage-group"></select>
         </label>
       </div>
 
       <div id="usage-body"><p class="usage-empty">Loading…</p></div>
     `;
     const rangeSel = root.querySelector("#usage-range");
+    const projectSel = root.querySelector("#usage-project");
     const groupSel = root.querySelector("#usage-group");
+    _populateUsageGroupings(groupSel);
     rangeSel.addEventListener("change", () => { _usageState.range = rangeSel.value; _loadUsage(root); });
+    projectSel.addEventListener("change", () => {
+      _usageState.project = projectSel.value;
+      // group_by=project is invalid against the per-engagement endpoint —
+      // demote to "agent" so the next fetch doesn't 400. Same demotion lets
+      // us hide the Project option from the dropdown while a project is picked.
+      if (_usageState.project && _usageState.groupBy === "project") {
+        _usageState.groupBy = "agent";
+      }
+      _populateUsageGroupings(groupSel);
+      _loadUsage(root);
+    });
     groupSel.addEventListener("change", () => { _usageState.groupBy = groupSel.value; _loadUsage(root); });
+
+    // Populate the Project dropdown asynchronously. The Range / Group by
+    // controls stay usable while we wait — first /api/me/token-usage
+    // request fires below in _loadUsage().
+    _loadUsageProjects(projectSel);
     _loadUsage(root);
+  }
+
+  function _populateUsageGroupings(groupSel) {
+    const filteredToOne = !!_usageState.project;
+    const options = USAGE_GROUPINGS
+      .filter(g => !(filteredToOne && g.id === "project"))
+      .map(g => `<option value="${g.id}" ${g.id === _usageState.groupBy ? "selected" : ""}>${escapeHtml(g.label)}</option>`);
+    groupSel.innerHTML = options.join("");
+  }
+
+  async function _loadUsageProjects(projectSel) {
+    try {
+      const r = await fetch("/api/projects", { headers: { "Accept": "application/json" } });
+      if (!r.ok) return;
+      const projects = await r.json();
+      if (!Array.isArray(projects)) return;
+      _usageProjects = projects;
+      const opts = ['<option value="">All projects</option>'].concat(
+        projects.map(p => {
+          const id = p.id || "";
+          const name = p.name || id;
+          const sel = id === _usageState.project ? " selected" : "";
+          return `<option value="${escapeHtml(id)}"${sel}>${escapeHtml(name)}</option>`;
+        }),
+      );
+      projectSel.innerHTML = opts.join("");
+    } catch (_err) {
+      // Silent: All projects still works; per-project filtering just isn't selectable.
+    }
   }
 
   async function _loadUsage(root) {
@@ -2264,8 +2318,13 @@
       : new Date(Date.now() - range.days * 86400 * 1000).toISOString();
     const params = new URLSearchParams({ group_by: _usageState.groupBy });
     if (since) params.set("since", since);
+    // Pick endpoint based on project filter — per-engagement when one is picked,
+    // otherwise the cross-project rollup.
+    const url = _usageState.project
+      ? `/api/engagements/${encodeURIComponent(_usageState.project)}/token-usage?${params}`
+      : `/api/me/token-usage?${params}`;
     try {
-      const r = await fetch(`/api/me/token-usage?${params}`, { headers: { "Accept": "application/json" } });
+      const r = await fetch(url, { headers: { "Accept": "application/json" } });
       if (!r.ok) {
         const detail = await r.json().catch(() => ({}));
         throw new Error(detail.error || `HTTP ${r.status}`);
