@@ -134,7 +134,12 @@ async def test_compute_intake_preview_matches_plan_shape():
     skipped_steps = {s["step"] for s in r.data["skipped_steps"]}
     assert "sam-design" in included_steps
     assert "mesh-design" in skipped_steps
-    assert "provisioning" in skipped_steps
+    # Path A consolidation: the live Event Portal provisioning step was
+    # renamed from "provisioning" to "event-portal" and is now opt-in via
+    # preferences.provision_event_portal. Design-time scope is
+    # "event-portal-design" (always-included).
+    assert "event-portal" in skipped_steps  # opt-out → skipped
+    assert "event-portal-design" in included_steps  # design scope unconditional
 
 
 # ---------- dashboard_tools ----------

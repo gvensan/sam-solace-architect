@@ -21,6 +21,7 @@ import yaml
 
 from .._storage import list_artifacts, read_text, safe_artifact_path, storage_root
 from .._user_context import resolve_user_id as _resolve_user_id, scoped_user as _scoped_user
+from ._arg_coercion import coerce_args
 from .artifact_tools import ToolResult
 
 
@@ -153,6 +154,7 @@ def _max_source_mtime(engagement_id: str, artifacts: list[str]) -> float:
     return latest
 
 
+@coerce_args
 async def render_audience_pack(
     engagement_id: str, audience: str, format: str = "html",
     branding_overrides: Optional[dict] = None,

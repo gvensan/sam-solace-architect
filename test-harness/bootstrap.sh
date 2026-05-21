@@ -6,7 +6,7 @@
 #   cd sam-solace-architect
 #
 # Walks you from "freshly cloned" to "sam run ready":
-#   1. Verifies prerequisites (python, pip, sam, optionally node/uvx)
+#   1. Verifies prerequisites (python, pip, sam, optionally uvx)
 #   2. Clones the plugins subrepo into ./plugins/ if missing
 #   3. Editable-installs solace-architect-core/ and every plugin
 #   4. Initialises a SAM project at ./sam/ (idempotent)
@@ -92,12 +92,6 @@ if ! command -v sam >/dev/null; then
   SKIP_SAM="1"
 else
   ok "sam $(sam --version 2>&1 | head -1 || echo present)"
-fi
-
-if command -v node >/dev/null; then
-  ok "node $(node --version) — visualizer rebuilds available via 'make visualizer-build'"
-else
-  warn "node not found — visualizer ships pre-built so this is fine for running, only needed if you'll edit visualizer-src/"
 fi
 
 if command -v uvx >/dev/null; then

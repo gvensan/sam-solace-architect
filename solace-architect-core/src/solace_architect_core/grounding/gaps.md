@@ -16,12 +16,12 @@ Format:
 
 ### Platform Services (Layer 3) — highest impact
 
-- **Schema Registry design:** Checked as a yes/no question but never designed. No skill produces schema definitions, evolution rules, compatibility policies, deployment configuration, or SERDES integration guidance.
-  - Skill: /solace-dev-review, /solace-validate
-  - Workaround: Antipattern check for "skipping Schema Registry" flags the absence
+- **Schema Registry design:** ⚙ PARTIALLY ADDRESSED (2026-05-21). Checked as a yes/no question but never designed. No skill produces schema definitions, evolution rules, compatibility policies, deployment configuration, or SERDES integration guidance.
+  - Skill: /solace-dev-review (evaluation rubric extended), /solace-validate (TODO)
+  - Workaround → Done: `/solace-dev-review` rubric item 3 now applies five sub-checks (definitions present / registry usage / compatibility policy / SERDES / deployment+auth) and grades severity per dimension. Grounding for the concept model lives in `solace-platform-reference.md → Solace Schema Registry`. **Remaining**: `/solace-validate` should fail-fast when blocking sub-checks are missing; the design phase (e.g. a SADomainAgent scope) should *produce* concrete schema definitions and compatibility policy rather than only reviewing for them.
   - Priority: High — schema governance is foundational for event-driven systems
-  - Phase: 4 (extend /solace-dev-review)
-  - Date: 2026-05-03
+  - Phase: 4 (extend /solace-dev-review) → done; Phase 5 for production + validation
+  - Date: 2026-05-03 (raised) / 2026-05-21 (dev-reviewer rubric extended)
 
 - **Solace Insights monitoring strategy:** Checked as present/absent but never designed. No skill specifies which of the 50+ pre-built monitors to enable, alert threshold values, custom monitors, log forwarding configuration, or integration with external observability platforms (Datadog, Grafana, etc.).
   - Skill: /solace-ops-review
@@ -63,11 +63,12 @@ Format:
 
 ### Event Mesh (Layer 1)
 
-- **Sizing and capacity planning in skills:** Platform reference now documents sizing methodology and tuning areas. No skill uses this grounding to produce sizing recommendations — broker-select does not calculate spool or map service classes, ops-review does not produce capacity baselines.
-  - Skill: /solace-broker-select, /solace-ops-review
-  - Workaround: Grounding available; skill extension needed (Phase 3)
+- **Sizing and capacity planning in skills:** ⚙ PARTIALLY ADDRESSED (2026-05-21). Platform reference now documents sizing methodology and tuning areas. No skill uses this grounding to produce sizing recommendations — broker-select does not calculate spool or map service classes, ops-review does not produce capacity baselines.
+  - Skill: /solace-broker-select (extended), /solace-ops-review (TODO)
+  - Workaround → Done: SADomainAgent's broker-select scope prompt now has a "Per-scope methodology — broker-select" section that walks the agent through (1) computing connection count + peak event rate + avg message size + retention from the brief (asking via `ask_user_question` when missing, never inventing), (2) calculating spool size as msg_rate × size × retention, (3) classifying throughput qualitatively + citing the canonical service-class-comparison URL for tier verification, (4) recording the rationale via `record_decision`. The `broker-recommendation.yaml` now requires an explicit `sizing:` block with inputs/computed/recommendation sub-keys. **Remaining**: extend /solace-ops-review to produce capacity baselines (RPS / latency targets / queue-depth alerts) using the same inputs.
   - Priority: High
-  - Date: 2026-04-29 (updated 2026-05-03)
+  - Phase: 3 done for broker-select; Phase 3 still owed for /solace-ops-review
+  - Date: 2026-04-29 (raised) / 2026-05-03 (updated) / 2026-05-21 (broker-select extended)
 
 - **Message VPN design guidance:** Platform reference documents VPNs thoroughly but no skill provides VPN design — how many VPNs, naming conventions, when to use multiple VPNs vs. multiple brokers, quota sizing per VPN, isolation boundaries.
   - Skill: /solace-broker-select, /solace-security-review
@@ -240,5 +241,26 @@ Format:
 - **~~MCP specification URL~~:** URL present in solace-canonical-sources.md.
   - Resolved: 2026-04-30
 
-- **2026-05-18T16:47:39+00:00** — topic=`ask_user_question tool - options parameter` agent=`SADiscoveryAgent` reason: The ask_user_question tool consistently returns error='options must be a list' regardless of JSON formatting attempts (compact JSON, pretty JSON, escaped quotes, minimal options). Schema declares options as type:string but implementation appears to expect a Python list object, not a JSON string. Unable to use single_choice or multi_choice question kinds.
-  suggested fix: Either: (1) Update tool schema to correctly declare options parameter type as array/list, or (2) Update tool implementation to parse JSON string into list, or (3) Provide working example of correct options parameter format in agent documentation
+- **~~ask_user_question options parameter~~:** 2026-05-18 SADiscoveryAgent runtime-flagged: tool consistently returned `'options must be a list'` because ADK's schema extractor downgrades `Optional[list[dict]]` to `STRING`, so the LLM sent options as a JSON-encoded string.
+  - Resolved: 2026-05-21 — `_coerce_options` in `interaction_tools.py` parses JSON-string options before validation; regression tests added in `tests/test_interaction_tools.py` (12 tests pin both shapes + the no-recommended-without-single_choice / dup-id / malformed-JSON edges).
+
+---
+
+## Next-up for v2 (queued, one-by-one review)
+
+Order reflects priority × cost-to-fix (grounding already exists for items marked ✓ — just needs prompt extension, not new grounding authoring):
+
+| # | Gap | Owner skill | Grounding present? | Notes |
+|---|---|---|---|---|
+| 1 | **Solace Insights monitoring strategy** | /solace-ops-review | ✓ (platform-reference) | Extend prompt to recommend specific monitors from the 50+, alert thresholds, Datadog/Grafana forwarding |
+| 2 | **SEMP v2 for infrastructure-as-code** | /solace-ops-review, /solace-blueprint | ✓ | Extend prompts to recommend SEMP usage for CI/CD pipelines and IaC |
+| 3 | ~~**Sizing and capacity planning** (broker-select done)~~ — /solace-ops-review still owed | /solace-ops-review | ✓ | broker-select extended 2026-05-21. Next: ops-review capacity baselines (RPS / latency targets / queue-depth alerts) |
+| 4 | **Message VPN design guidance** | /solace-broker-select, /solace-security-review | ✓ | Extend prompts with VPN-count guidance, naming conventions, multi-VPN-vs-multi-broker decision |
+| 5 | **Performance tuning** | /solace-ops-review, /solace-dev-review | partial | Extend prompts with connection pooling, session mgmt, publisher flow control, consumer prefetch, batching |
+| 6 | **Schema Registry — Phase 5** | /solace-validate, design-phase | n/a | Validation step + design-phase production of concrete schemas (rubric review-side already done) |
+
+The same pattern applies to most medium-priority items below — they're "extend the prompt to consult grounding that's already there" rather than "go author new grounding". Tackle one per review session.
+
+## Housekeeping (separate from grounding gaps)
+
+- ~~**Stale skill-routing tests** — fixed 2026-05-21.~~ `tests/test_skill_routing.py::test_plan_bank_chat_sam_included_mesh_skipped`, `::test_plan_market_data_mesh_included_sam_skipped`, and `tests/test_tools.py::test_compute_intake_preview_matches_plan_shape` were updated to use the post-Path-A step names (`event-portal` for the opt-in live step, `event-portal-design` for the always-included design scope).

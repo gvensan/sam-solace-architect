@@ -87,7 +87,6 @@ After it finishes, you still need to:
 | Python | 3.11+ | All plugins + core. |
 | `pip` | — | Editable installs. |
 | `sam` CLI | — | `pip install solace-agent-mesh`. The script warns if missing and skips the SAM-project step. |
-| Node.js + npm | optional | Only needed if you want to *edit* the visualizer (`visualizer-src/`); the built bundle ships pre-built so running needs no Node. |
 | `uvx` | optional | `pip install uv` — needed by `SAEventPortalAgent` (launches the EP Designer MCP server via stdio). |
 | `weasyprint` + native libs | optional | For Blueprint PDF export. HTML works without it. |
 | `mmdc` (`npm i -g @mermaid-js/mermaid-cli`) | optional | For pre-rendered Mermaid diagrams in PDFs. |

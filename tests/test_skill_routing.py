@@ -81,7 +81,16 @@ async def test_plan_bank_chat_sam_included_mesh_skipped():
     assert not by_step["mesh-design"]["included"], "single-site skips mesh"
     assert by_step["ha-dr"]["included"], "at-least-once triggers ha-dr"
     assert by_step["migration"]["included"], "existing IBM MQ triggers migration"
-    assert not by_step["provisioning"]["included"], "opt-out skips provisioning"
+    # Path A consolidation: the live Event Portal provisioning step (the
+    # opt-in, MCP-backed phase that used to be called "provisioning") is now
+    # named "event-portal". The design-time scope that produces the EP model
+    # is "event-portal-design" and runs unconditionally.
+    assert not by_step["event-portal"]["included"], (
+        "opt-out (preferences.provision_event_portal=false) skips event-portal step"
+    )
+    assert by_step["event-portal-design"]["included"], (
+        "event-portal-design (SADomainAgent scope) runs unconditionally"
+    )
 
 
 @pytest.mark.asyncio
@@ -92,7 +101,10 @@ async def test_plan_market_data_mesh_included_sam_skipped():
     assert by_step["mesh-design"]["included"], "multi-region triggers mesh"
     assert not by_step["ha-dr"]["included"], "best-effort skips ha-dr"
     assert not by_step["migration"]["included"], "greenfield skips migration"
-    assert by_step["provisioning"]["included"], "opt-in includes provisioning"
+    # Path A: "provisioning" → "event-portal" (live MCP step, opt-in via intake).
+    assert by_step["event-portal"]["included"], (
+        "opt-in (preferences.provision_event_portal=true) includes event-portal step"
+    )
 
 
 @pytest.mark.asyncio

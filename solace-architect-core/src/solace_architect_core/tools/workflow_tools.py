@@ -13,6 +13,7 @@ import yaml
 
 from .._routing import evaluate_when
 from .._storage import read_yaml, write_yaml
+from ._arg_coercion import coerce_args
 from .artifact_tools import ToolResult
 from .session_tools import read_session_state, update_session_state
 
@@ -25,6 +26,7 @@ def _load_routing_config() -> dict:
 
 # ---------- get_engagement_plan ----------
 
+@coerce_args
 async def get_engagement_plan(discovery_brief: dict) -> ToolResult:
     """Build the ordered execution plan from the routing config + discovery brief."""
     routing = _load_routing_config()
@@ -56,6 +58,7 @@ async def get_engagement_plan(discovery_brief: dict) -> ToolResult:
 
 # ---------- get_next_step ----------
 
+@coerce_args
 async def get_next_step(engagement_id: str, discovery_brief: Optional[dict] = None) -> ToolResult:
     """Return the next runnable step or {'status': 'engagement_complete' | 'blocked'}."""
     session = (await read_session_state(engagement_id)).data
@@ -94,6 +97,7 @@ def _is_meta_dep(dep: str, completed: set, runnable: list) -> bool:
 
 # ---------- record_step_complete / record_step_timing ----------
 
+@coerce_args
 async def record_step_complete(
     engagement_id: str, step_name: str, timing_data: Optional[dict] = None,
 ) -> ToolResult:
@@ -112,6 +116,7 @@ async def record_step_complete(
     return ToolResult(ok=True, data={"step": step_name, "completed_count": len(completed)})
 
 
+@coerce_args
 async def record_step_timing(
     engagement_id: str, step_name: str, *,
     wall_sec: int, execution_sec: int, user_wait_sec: int = 0,

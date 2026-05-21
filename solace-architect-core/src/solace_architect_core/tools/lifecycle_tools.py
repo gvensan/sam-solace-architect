@@ -14,6 +14,11 @@ the v2spec):
                                blocking open-items
   - ``NEEDS_CONTEXT``        — waiting on user input (the agent's last
                                turn was a question)
+  - ``SKIPPED``              — step is not applicable to this engagement
+                               (opt-out at intake, or brief-driven scope
+                               exclusion). Treated as terminal-advance for
+                               CTA chaining — the dashboard skips over it
+                               instead of waiting on it.
   - ``NOT_STARTED``          — step hasn't run yet (default if absent)
 
 Stored shape (one file per engagement, under engagement-scoped storage)::
@@ -35,6 +40,7 @@ from typing import Any, Optional
 
 from .._storage import read_yaml, write_yaml
 from .._user_context import resolve_user_id as _resolve_user_id, scoped_user as _scoped_user
+from ._arg_coercion import coerce_args
 from .artifact_tools import ToolResult
 
 
@@ -46,7 +52,7 @@ def _iso_to_dt(iso: str) -> datetime | None:
         return None
 
 
-_STATUS_VALUES = ("DONE", "DONE_WITH_CONCERNS", "BLOCKED", "NEEDS_CONTEXT", "NOT_STARTED")
+_STATUS_VALUES = ("DONE", "DONE_WITH_CONCERNS", "BLOCKED", "NEEDS_CONTEXT", "SKIPPED", "NOT_STARTED")
 _STATUS_FILE = "meta/engagement-status.yaml"
 
 
@@ -172,6 +178,7 @@ async def clear_step_status(
 _SCOPE_STATUS_VALUES = ("DONE", "DONE_WITH_CONCERNS", "BLOCKED", "NEEDS_CONTEXT")
 
 
+@coerce_args
 async def record_scope_progress(
     engagement_id: str,
     step: str,
@@ -235,6 +242,10 @@ async def record_scope_progress(
     if not current_scope or not isinstance(current_scope, str):
         return ToolResult(ok=False, error="current_scope must be a non-empty string")
 
+    # `scopes_done` arrives as a real list thanks to @coerce_args (it would
+    # otherwise be a JSON-encoded string when LiteLLM/ADK fail to decode the
+    # tool call). See _arg_coercion.py for the full rationale.
+
     with _scoped_user(_resolve_user_id(user_id, tool_context)):
         data = read_yaml(engagement_id, _STATUS_FILE, default={"steps": {}}) or {"steps": {}}
         if "steps" not in data or not isinstance(data["steps"], dict):
@@ -244,7 +255,7 @@ async def record_scope_progress(
             "current": current_scope,
             "status": status,
             "next": next_scope or None,
-            "done": list(scopes_done or []),
+            "done": [str(s) for s in (scopes_done or [])],
             "updated_at": _now_iso(),
             "note": note or "",
         }

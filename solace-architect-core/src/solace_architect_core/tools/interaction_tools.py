@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from ._arg_coercion import coerce_args
 from .artifact_tools import ToolResult
 
 
@@ -69,6 +70,7 @@ def _validate_options(kind: str, options: Optional[list]) -> Optional[str]:
     return None
 
 
+@coerce_args
 async def ask_user_question(
     question_id: str,
     question: str,

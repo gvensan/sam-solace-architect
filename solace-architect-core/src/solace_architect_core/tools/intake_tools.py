@@ -14,6 +14,7 @@ import yaml
 from .._routing import evaluate_when
 from .._storage import read_yaml, write_yaml
 from .._user_context import resolve_user_id as _resolve_user_id, scoped_user as _scoped_user
+from ._arg_coercion import coerce_args
 from .artifact_tools import ToolResult
 
 
@@ -78,6 +79,7 @@ def _load_routing_steps() -> list:
     return routing.get("routing", routing.get("steps", []))
 
 
+@coerce_args
 async def compute_intake_preview(partial_intake: dict) -> ToolResult:
     """Live skill-routing preview: which steps would fire for this intake state."""
     steps = _load_routing_steps()
@@ -128,6 +130,7 @@ async def integration_hub_autocomplete(query: str) -> ToolResult:
     return ToolResult(ok=True, data=res.data[:10])
 
 
+@coerce_args
 async def render_intake_markdown(intake_dict: dict) -> ToolResult:
     """Render the intake state as diff-friendly Markdown."""
     lines = [f"# Intake — {intake_dict.get('project_name', 'Untitled')}", ""]
@@ -186,6 +189,7 @@ async def export_intake_from_project(
     return ToolResult(ok=True, data={"yaml": yaml_text, "filename": f"{source_engagement_id}-intake.yaml"})
 
 
+@coerce_args
 async def import_source_context(
     source_project_id: str, sections: list[str], user_id: Optional[str] = None,
     tool_context: Any = None,

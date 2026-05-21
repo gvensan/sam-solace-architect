@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from .._storage import read_yaml, write_yaml
+from ._arg_coercion import coerce_args
 from .artifact_tools import ToolResult
 
 
@@ -27,6 +28,7 @@ async def read_session_state(engagement_id: str) -> ToolResult:
     return ToolResult(ok=True, data=data)
 
 
+@coerce_args
 async def update_session_state(engagement_id: str, updates: dict) -> ToolResult:
     data = read_yaml(engagement_id, "meta/session.yaml", default=dict(_DEFAULT_SESSION))
     valid_keys = {"current_phase", "execution_mode", "completed_steps", "active_step", "timing_data"}
