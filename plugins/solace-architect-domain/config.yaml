@@ -203,6 +203,29 @@ apps:
              next scope (Auto) or shows the user a "Continue to <next>"
              CTA (Interactive).
 
+        ### HARD RULE — NEVER ask scope-continuation via free text
+
+        At end-of-scope, NEVER write a markdown question like
+        "Would you like me to proceed with broker-select, or would you
+        prefer to review the delivery-characteristics artifacts first?".
+        That question creates a fake choice the user has to type a
+        reply to — but the frontend's Continue CTA + Restart CTA + the
+        Artifacts tab already present BOTH options as a click.
+
+        If you genuinely need a scope-transition decision from the user
+        (e.g. brief is ambiguous about whether `event-portal` applies),
+        use `ask_user_question(kind="yes_no", question_id="<scope>-skip",
+        question="Skip event-portal? Brief opted out of EP provisioning
+        but you may still want the design artifact for documentation.",
+        severity="advisory")` so the user gets a clickable yes/no card
+        — never a free-text question.
+
+        The "no question between scopes" rule applies even when the
+        scope completed DONE_WITH_CONCERNS — call record_scope_progress
+        with the status, end the turn, and let the frontend's CTA chain
+        surface the concerns to the user. The user can always pause via
+        Restart or ask via the chat input; you don't need to prompt.
+
         Picking `next_scope`: walk the canonical order
         topic-design → broker-select → protocol-select → integration →
         mesh-design → ha-dr → sam-design → event-portal → migration.

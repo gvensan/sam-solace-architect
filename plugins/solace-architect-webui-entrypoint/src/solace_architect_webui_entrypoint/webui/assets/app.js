@@ -2442,9 +2442,13 @@
   }
 
   function _renderUsageBody(body, data) {
-    const totals = data?.totals || { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_tokens: 0, calls: 0 };
+    const totals = data?.totals || { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_tokens: 0, calls: 0, total_cost_usd: 0 };
     const rows = data?.rows || [];
     const projectCount = data?.project_count ?? null;
+    const totalCost = Number(totals.total_cost_usd || 0);
+    // Format $ with sensible precision: tiny (<$0.01) → 4 decimals so it
+    // doesn't read as $0.00; otherwise 2 decimals like normal currency.
+    const fmtUsd = (n) => n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
 
     const summaryHtml = `
       <div class="usage-summary">
@@ -2462,6 +2466,11 @@
           <div class="label">Output</div>
           <div class="value">${_formatTokens(totals.output_tokens)}</div>
           <div class="sub">&nbsp;</div>
+        </div>
+        <div class="usage-card">
+          <div class="label">Est. cost</div>
+          <div class="value">${fmtUsd(totalCost)}</div>
+          <div class="sub">${totalCost > 0 ? "USD · public-API pricing" : "model price not registered"}</div>
         </div>
       </div>
     `;
@@ -2551,6 +2560,28 @@
   const chatLog = document.getElementById("chat-log");
   const chatForm = document.getElementById("chat-form");
   const chatInput = document.getElementById("chat-input");
+
+  // Single source of truth for scroll-to-bottom. rAF-scheduled so it runs
+  // AFTER the browser has laid out the just-mutated DOM — without this,
+  // appending a tall card and reading scrollHeight in the same tick gives
+  // the pre-layout height and falls short.
+  function scrollChatToBottom() {
+    if (!chatLog) return;
+    requestAnimationFrame(() => {
+      chatLog.scrollTop = chatLog.scrollHeight;
+    });
+  }
+  // Auto-scroll on every DOM change inside chatLog. Catches every code path
+  // that mutates the panel (streaming tokens, question cards, switch-agent
+  // chips, status updates, replay events, error messages) without having to
+  // remember a chatLog.scrollTop assignment at each site.
+  if (chatLog && typeof MutationObserver !== "undefined") {
+    new MutationObserver(scrollChatToBottom).observe(chatLog, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  }
 
   // Click-to-expand for tool-call pills (3-line clamp by default).
   // Delegated on chatLog so dynamically-added pills get this for free.
@@ -2649,8 +2680,10 @@
   }
 
   // Switch the chat panel to the project context derived from the current URL.
-  // No auto-rehydrate; the user clicks "Load history" if they want the
-  // previous conversation for this project back.
+  // Auto-rehydrates the previous transcript when localStorage has one for
+  // this project — the "Load history" button stays as a manual re-trigger
+  // for the case where rehydrate races a stream that's already cleared
+  // the panel.
   let chatProjectContext = null;
   function syncChatProjectContext() {
     const nextSid = deriveChatSessionId();
@@ -2671,11 +2704,17 @@
         </p>
       </div>`;
     updateLoadHistoryButton();
-    // Project active → fetch state and replace the placeholder with the
-    // contextual welcome card. Skipped when there's existing chat history
-    // (the user will hit Load history themselves if they want the thread).
-    if (chatProjectContext && !hasChatHistory(chatSessionId)) {
-      hydrateChatWelcomeCard(chatProjectContext, chatSessionId);
+    // Auto-rehydrate the prior transcript when we have one for this project,
+    // and scroll to the latest message. The MutationObserver installed at
+    // panel-init time handles scroll automatically as messages render.
+    // When no transcript exists yet, fall back to the contextual welcome
+    // card so the panel isn't an empty void.
+    if (chatProjectContext) {
+      if (hasChatHistory(chatSessionId)) {
+        loadHistoryForCurrentContext();
+      } else {
+        hydrateChatWelcomeCard(chatProjectContext, chatSessionId);
+      }
     }
   }
 
@@ -3154,7 +3193,11 @@
 
   function loadHistoryForCurrentContext() {
     if (!chatSessionId) return;
-    chatLog.querySelector(".chat-empty")?.remove();
+    // Wipe before render so repeat invocations (auto-load on context
+    // switch + manual button click) don't double-render the transcript.
+    // Every streamed message persists into localStorage as it arrives, so
+    // wiping never loses anything that wasn't already in the saved log.
+    chatLog.innerHTML = "";
     const log = loadChatHistory(chatSessionId);
     log.forEach(m => appendChatMessage(m.role, m.text, { skipPersist: true }));
     if (!chatEventSource) openSseStream(chatSessionId);

@@ -147,14 +147,22 @@ def _aggregate(rows: list[dict], group_by: str,
     extra_labels = extra_labels or {}
     filtered = [r for r in rows if _row_in_range(r, since, until)]
 
-    agg: dict[str, dict[str, int]] = defaultdict(lambda: {
-        "input_tokens": 0, "output_tokens": 0,
-        "cached_input_tokens": 0, "total_tokens": 0, "calls": 0,
-    })
-    totals = {
-        "input_tokens": 0, "output_tokens": 0,
-        "cached_input_tokens": 0, "total_tokens": 0, "calls": 0,
-    }
+    # Cost is computed at READ time from the row's model + token counts via
+    # the central price table — so historical rows (which never stored a
+    # cost field) get USD numbers in reports without a backfill, AND a
+    # price-table update applies retroactively to all data. See
+    # _model_prices.py for the table itself and the lookup rules.
+    from .._model_prices import cost_for_row as _cost_for_row
+
+    def _empty_bucket() -> dict[str, float]:
+        return {
+            "input_tokens": 0, "output_tokens": 0,
+            "cached_input_tokens": 0, "total_tokens": 0, "calls": 0,
+            "input_cost_usd": 0.0, "output_cost_usd": 0.0, "total_cost_usd": 0.0,
+        }
+
+    agg: dict[str, dict[str, float]] = defaultdict(_empty_bucket)
+    totals = _empty_bucket()
     for r in filtered:
         key = _group_key(r, group_by)
         bucket = agg[key]
@@ -164,6 +172,18 @@ def _aggregate(rows: list[dict], group_by: str,
             totals[field] += val
         bucket["calls"] += 1
         totals["calls"] += 1
+        # On-the-fly USD cost from price table. Unknown model → cost stays 0
+        # for that row; the rest of the aggregation still works.
+        cost = _cost_for_row(
+            r.get("model", ""),
+            int(r.get("input_tokens", 0) or 0),
+            int(r.get("output_tokens", 0) or 0),
+            int(r.get("cached_input_tokens", 0) or 0),
+        )
+        if cost:
+            for f in ("input_cost_usd", "output_cost_usd", "total_cost_usd"):
+                bucket[f] += cost[f]
+                totals[f] += cost[f]
 
     out_rows: list[dict[str, Any]] = []
     for k, v in agg.items():

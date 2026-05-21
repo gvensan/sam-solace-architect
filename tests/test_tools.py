@@ -601,6 +601,43 @@ async def test_record_scope_progress_rejects_empty_scope():
     assert "current_scope" in r.error
 
 
+def test_cost_for_row_matches_published_claude_sonnet_pricing():
+    """Lock in published Anthropic prices for claude-sonnet-4-5 — $3/M
+    input, $15/M output, $0.30/M cache-read. Catches a bad price-table
+    edit (off-by-decimal-place is the classic risk).
+    """
+    from solace_architect_core._model_prices import cost_for_row
+    c = cost_for_row("claude-sonnet-4-5",
+                     input_tokens=1_000_000, output_tokens=1_000_000,
+                     cached_input_tokens=0)
+    assert c is not None
+    assert abs(c["input_cost_usd"]  - 3.00) < 1e-6, c
+    assert abs(c["output_cost_usd"] - 15.00) < 1e-6, c
+    assert abs(c["total_cost_usd"]  - 18.00) < 1e-6, c
+    # Cache-read discount applies to cached portion only.
+    c2 = cost_for_row("claude-sonnet-4-5",
+                      input_tokens=1_000_000, output_tokens=0,
+                      cached_input_tokens=500_000)
+    # 500k fresh @ $3/M + 500k cached @ $0.30/M = $1.50 + $0.15 = $1.65
+    assert abs(c2["input_cost_usd"] - 1.65) < 1e-6, c2
+
+
+def test_cost_for_row_falls_back_to_env_default_for_unknown_model(monkeypatch):
+    """Legacy ledger rows have model=='unknown' (pre PEP-563-fix). The
+    SA_DEFAULT_LLM_MODEL env var lets historical rows still get cost
+    numbers retroactively.
+    """
+    from solace_architect_core._model_prices import cost_for_row
+    monkeypatch.setenv("SA_DEFAULT_LLM_MODEL", "claude-sonnet-4-5")
+    c = cost_for_row("unknown",
+                     input_tokens=1_000_000, output_tokens=1_000_000,
+                     cached_input_tokens=0)
+    assert c is not None and abs(c["total_cost_usd"] - 18.00) < 1e-6, c
+    # Without the env var, unknown stays unknown.
+    monkeypatch.delenv("SA_DEFAULT_LLM_MODEL", raising=False)
+    assert cost_for_row("unknown", 1_000_000, 1_000_000, 0) is None
+
+
 @pytest.mark.asyncio
 async def test_record_scope_progress_coerces_json_string_scopes_done():
     """Regression for the 2026-05-21 PEP-563 bug: when LiteLLM passes

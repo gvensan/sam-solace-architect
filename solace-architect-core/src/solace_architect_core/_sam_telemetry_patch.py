@@ -169,7 +169,21 @@ def _extract_user_id(callback_context: Any) -> str | None:
 
 
 def _resolve_model_name(callback_context: Any, llm_response: Any) -> str:
-    """Best-effort model name. Tries callback state first, then the response."""
+    """Best-effort model name. Tries multiple sources in order:
+      1. callback_context.state["model_name"] — fast path if SAM already
+         resolved + cached it for this turn.
+      2. llm_response.model — Gemini-style response object attribute.
+      3. The agent's configured model — via
+         callback_context._invocation_context.agent.model.
+         This is what the ADK runner USES to dispatch the LLM call, so
+         it's the most authoritative source for "which model billed this
+         call?". Critically: this resolves to "openai/vertex-claude-4-5-sonnet"
+         (or whatever's configured in config.yaml) even when (1) and (2)
+         both return empty — the symptom that filled the ledger with
+         ``"model": "unknown"`` before this fix.
+      4. Fall back to "unknown" — preserves the legacy behavior for any
+         row we genuinely can't attribute.
+    """
     name = _safe_state_get(callback_context, "model_name")
     if name:
         return str(name)
@@ -177,6 +191,21 @@ def _resolve_model_name(callback_context: Any, llm_response: Any) -> str:
         model = getattr(llm_response, "model", None)
         if model:
             return str(model)
+    except Exception:
+        pass
+    # Source 3: the LlmAgent's own model attribute. ADK's LiteLlm wrapper
+    # accepts either a string ("openai/vertex-claude-4-5-sonnet") or a
+    # LiteLlm instance whose .model holds the string — handle both.
+    try:
+        invocation_ctx = getattr(callback_context, "_invocation_context", None)
+        agent = getattr(invocation_ctx, "agent", None) if invocation_ctx else None
+        agent_model = getattr(agent, "model", None) if agent else None
+        if agent_model:
+            # LiteLlm instance — unwrap to its model string.
+            inner = getattr(agent_model, "model", None)
+            if inner:
+                return str(inner)
+            return str(agent_model)
     except Exception:
         pass
     return "unknown"
@@ -192,7 +221,21 @@ def install() -> None:
     The wrapper reads ``component.agent_name`` per call, so a single patch
     serves every agent — the "which agent fired this LLM call" attribution
     is resolved at call time, not patch time.
+
+    Also registers our custom-alias model prices with LiteLLM (suppresses
+    the "Cost tracking unavailable for model …" warnings that LiteLLM
+    emits on every LLM call against an unknown model). See
+    :mod:`solace_architect_core._model_prices`.
     """
+    # Register model prices first — independent of the monkey-patch, safe to
+    # repeat (LiteLLM dedupes registrations), so we run it on every install()
+    # call rather than gating on the sentinel.
+    try:
+        from ._model_prices import register_with_litellm
+        register_with_litellm()
+    except Exception as exc:
+        log.debug("[SA telemetry] model-price registration skipped: %s", exc)
+
     try:
         from solace_agent_mesh.agent.adk import setup as _sam_setup
     except Exception as e:  # pragma: no cover — SAM should always be importable
