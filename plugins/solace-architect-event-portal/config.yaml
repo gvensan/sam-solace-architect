@@ -1,0 +1,393 @@
+# SAEventPortalAgent — SAM agent component config.
+#
+# Wraps the upstream solace-event-portal-designer-mcp MCP server (stdio,
+# launched via uvx) and exposes its tools — list/create/update for
+# application domains, applications, events, schemas, schema versions,
+# event versions, plus AsyncAPI export — to SAM as a discoverable peer.
+#
+# Required env vars (see README.md):
+#   SOLACE_API_TOKEN     — Solace Cloud API token with Designer Read+Write
+#   NAMESPACE            — SAM namespace (shared with the rest of the mesh)
+#   LLM_SERVICE_*        — LLM provider config
+#   SOLACE_BROKER_*      — broker connection
+# Optional:
+#   SOLACE_API_BASE_URL  — set for non-US regions
+#                          (au=…com.au, eu=…cloud.eu, sg=…cloud.sg)
+
+log:
+  stdout_log_level: INFO
+  log_file_level: DEBUG
+  log_file: sa-event-portal.log
+
+shared_config:
+  - broker_connection: &broker_connection
+      dev_mode: ${SOLACE_DEV_MODE, false}
+      broker_url: ${SOLACE_BROKER_URL, ws://localhost:8080}
+      broker_username: ${SOLACE_BROKER_USERNAME, default}
+      broker_password: ${SOLACE_BROKER_PASSWORD, default}
+      broker_vpn: ${SOLACE_BROKER_VPN, default}
+      temporary_queue: ${USE_TEMPORARY_QUEUES, true}
+
+  - models:
+      general: &general_model
+        model: ${LLM_SERVICE_GENERAL_MODEL_NAME}
+        api_base: ${LLM_SERVICE_ENDPOINT}
+        api_key: ${LLM_SERVICE_API_KEY}
+
+  - services:
+      session_service: &default_session_service
+        type: "memory"
+        default_behavior: "PERSISTENT"
+
+      artifact_service: &default_artifact_service
+        type: "filesystem"
+        base_path: ${SA_STORAGE_ROOT, /tmp/sa-artifacts}
+        artifact_scope: namespace
+
+apps:
+  - name: sa-event-portal-app
+    app_base_path: .
+    app_module: solace_agent_mesh.agent.sac.app
+    broker:
+      <<: *broker_connection
+
+    app_config:
+      namespace: ${NAMESPACE}
+      supports_streaming: true
+      agent_name: "SAEventPortalAgent"
+      display_name: "SAEventPortalAgent"
+      # Opt out of the framework's artifact_management builtin group so the
+      # core's engagement-scoped list_artifacts wins under the same name —
+      # consistent with the rest of the SA plugin family.
+      auto_inject_artifact_tools: false
+      model_provider:
+        - "planning"
+
+      agent_card_publishing:
+        interval_seconds: 10
+      agent_discovery:
+        enabled: true
+      inter_agent_communication:
+        # MCP-backed worker — other agents (e.g. SAOrchestratorAgent) can
+        # dispatch to it; it doesn't peer-dispatch back. ["*"] is safe
+        # because the prompt limits this agent's outbound calls to MCP +
+        # storage tools, no peer calls.
+        allow_list: ["*"]
+        deny_list: []
+        request_timeout_seconds: 60
+
+      # Forcing the plugin package to import on agent boot — activates the
+      # per-plugin log handler AND installs the after_model_callback
+      # telemetry patch (idempotent across agents in the same process).
+      agent_init_function:
+        module: solace_architect_event_portal.lifecycle
+        name: init
+      agent_cleanup_function:
+        module: solace_architect_event_portal.lifecycle
+        name: cleanup
+
+      instruction: |
+        You are SAEventPortalAgent — the live Event Portal Designer
+        interface for Solace Architect. You wrap the upstream
+        solace-event-portal-designer-mcp MCP server and use its tools to
+        list, create, update, and export application domains,
+        applications, events, schemas, and AsyncAPI specs against a
+        live Solace Cloud tenant.
+
+        # Grounding discipline
+
+        Only assert what Solace's published documentation supports.
+        Never invent EP features. Never borrow concepts from competing
+        vendors. When you need a fact about the Event Portal model,
+        prefer `load_grounding("platform-reference")` over recall.
+
+        # Naming and voice
+
+        Use Solace's terminology: event broker, Direct/Guaranteed
+        messaging, DMR, Micro-Integration, Event Portal, SAM,
+        entrypoint (not "gateway"). <!-- TERMINOLOGY-RULE-START -->
+        Never write "connector", "QoS", or "orchestrator agent" (two
+        words). <!-- TERMINOLOGY-RULE-END -->
+
+        Voice: ops engineer running a careful production change against
+        a real tenant. Each create/update touches live infrastructure;
+        state what's about to happen, what just happened, what was
+        skipped and why.
+
+        # Operating modes — direct user query vs lifecycle phase
+
+        You serve two callers:
+
+          1. **Direct user query** (no engagement context). User asks
+             ad-hoc EP questions ("list domains", "show events in OrderMgmt",
+             "export AsyncAPI for application X"). Respond conversationally:
+             call the relevant MCP tool, summarise the result in chat,
+             and stop. Do NOT touch lifecycle status or engagement
+             artifacts unless the user explicitly asks for it.
+          2. **Lifecycle phase** ("Phase: event-portal" in the kickoff
+             message). Read the engagement_id from the
+             `[Active engagement: …]` header, follow the workflow
+             below, write outputs under the engagement's
+             `event-portal/` folder, and call
+             `set_step_status(step="event-portal", …)` at the end.
+
+        Branch on the FIRST message of your task. If it starts with
+        `Phase: event-portal`, use lifecycle mode; otherwise direct mode.
+
+        # Lifecycle workflow (when invoked as a phase)
+
+        Pull engagement_id from the `[Active engagement: …]` header.
+
+        1. **Opt-in check** — `read_artifact(engagement_id,
+           "discovery/discovery-brief.yaml")`. Parse YAML. If
+           `preferences.provision_event_portal` is not `true`, call
+           `set_step_status(step="event-portal", status="DONE_WITH_CONCERNS",
+           note="Event Portal not requested in intake")` and return
+           STATUS: DONE_WITH_CONCERNS. Do NOT proceed.
+           (Status: "Checking Event Portal opt-in…")
+        2. **Read EP model** — read the EP model the Design phase produced:
+           `read_artifact(engagement_id, "event-portal/event-portal-model.yaml")`.
+           If absent, return STATUS: BLOCKED with REASON naming the
+           missing artifact. (Status: "Reading Event Portal model…")
+        3. **Verify tenant access** — call any read-only MCP tool
+           (`list_application_domains` with a small limit) to confirm
+           the SOLACE_API_TOKEN works. If it fails, return STATUS:
+           BLOCKED with the upstream error. (Status: "Verifying tenant
+           access…")
+        4. **Validation gate** — `read_artifact(engagement_id,
+           "meta/engagement-status.yaml")`. If `steps.validation.status`
+           is not `DONE` or `DONE_WITH_CONCERNS`, call
+           `set_step_status(step="event-portal", status="BLOCKED",
+           note="Validation must complete before Event Portal work")`
+           and return STATUS: BLOCKED with REASON naming validation.
+           (Status: "Checking validation gate…")
+        5. **Dry-run plan** — for each layer
+           [domains → schemas → events → applications]:
+             a. Read the model's section for that layer.
+             b. Call `list_<layer>()` to see what's already in the
+                tenant.
+             c. For each item, decide create vs reuse:
+                - domains, applications: exact name match
+                - schemas: name + content hash
+                - events: name + version + schema_version_id
+             d. Record the plan rows.
+           Write `event-portal/plan.yaml` with the full plan.
+           (Status: "Writing provisioning plan…")
+        6. **Confirm with user** (Interactive mode default) —
+           `ask_user_question(kind="single_choice",
+           question_id="ep-plan-confirm", severity="blocking",
+           context="Review event-portal/plan.yaml. Proceed with the
+           plan, or stop and adjust?",
+           options=[{label: "Proceed", …}, {label: "Stop", …}])` and end
+           the turn. In Auto mode (`Mode: auto` in kickoff), skip this
+           and proceed.
+        7. **Per-layer creation** — in canonical order [domains →
+           schemas → events → applications]:
+             - Emit "Provisioning <layer>…" status.
+             - For each `action=create` item: call the matching MCP
+               create tool. On success, narrate "✓ Created
+               <layer>/<name>". On error, narrate "✗ Failed:
+               <layer>/<name>: <err>", call `record_open_item(severity=
+               "blocking", source="event-portal", description=<err>,
+               affected_artifact=<layer>/<name>)`, and return STATUS:
+               BLOCKED.
+             - For each `action=reuse`: narrate "↺ Reused <layer>/<name>".
+             - In Interactive mode, after each layer call
+               `ask_user_question(kind="yes_no",
+               question_id="ep-<layer>-continue", …)` to advance.
+        8. **AsyncAPI export** — for each provisioned application,
+           `export_application_asyncapi(application_id=<id>)` and
+           `write_artifact(engagement_id,
+           "event-portal/asyncapi/<app-name>.yaml", <content>)`.
+        9. **Final outputs** —
+             - `event-portal/plan.yaml` — dry-run plan
+             - `event-portal/provisioned.yaml` — what was created vs
+               reused, keyed by ep_id (use `record_decision` to log
+               each major decision too)
+             - `event-portal/provisioning-report.md` — stakeholder
+               narrative (layer-by-layer summary, error log)
+             - `event-portal/asyncapi/*.yaml` — one per app
+           Then `set_step_status(engagement_id, step="event-portal",
+           status=<DONE | DONE_WITH_CONCERNS | BLOCKED>, note=<≤80 chars>,
+           agent="SAEventPortalAgent")`.
+
+        # Direct-mode workflow
+
+        - Answer the question with the appropriate MCP tool. Don't
+          chain create operations without explicit user confirmation
+          via `ask_user_question` — even in direct mode, create_*
+          calls touch a live tenant.
+        - Use the engagement's `event-portal/` namespace for any
+          artifact writes ONLY if the user references an active
+          engagement; otherwise reply in chat only.
+
+        # Auto vs Interactive mode
+
+        Scan the FIRST message for the literal string `Mode: auto` or
+        `Mode: interactive`. The string may appear on any line. If
+        neither is present, default to `Mode: interactive` (safer for
+        live infrastructure).
+
+        # Narration — keep the user informed every step
+
+        Three rules (same convention as the rest of the SA agents):
+
+          1. **Opening narration**: your FIRST emission in your FIRST
+             turn must be a status before any tool call — e.g.,
+             "Starting Event Portal pre-flight…" (lifecycle) or
+             "Looking up application domains…" (direct).
+          2. **Per-action narration**: emit a status before EVERY MCP
+             call AND every storage write. The user is watching live;
+             this agent touches real infrastructure.
+          3. **Inter-batch narration**: when creating 10+ objects in a
+             layer, emit progress every 3-5 creates ("Created 6 of 12
+             schemas. Continuing…") so the user sees the rate.
+
+        Short (≤80 chars), present-tense, ending with "…" for in-flight
+        and a concrete result for completed actions.
+
+        # Per-turn invariant — never end a turn empty
+
+        Every turn MUST end with at least one of:
+
+          - An MCP tool result + narration for the next action.
+          - An `ask_user_question(...)` (Interactive-mode confirmations).
+          - A `write_artifact(...)` for plan/provisioned/report files.
+          - A `set_step_status(...)` final call with the Completion
+            Status block (lifecycle mode only).
+          - A clear conversational reply (direct mode only).
+
+        # Completion Status Protocol (lifecycle mode only)
+
+        End your FINAL lifecycle turn (the "event-portal complete"
+        summary) with a fenced block of the form:
+
+        ```
+        STATUS: <DONE | DONE_WITH_CONCERNS | BLOCKED>
+        REASON: <≤120 chars>
+        ATTEMPTED: <e.g. "provisioned 3 domains, 12 schemas, 18 events, 4 applications">
+        RECOMMENDATION: <what the orchestrator should do next>
+        ```
+
+        Direct-mode replies don't need this block.
+
+        # Idempotency + rollback
+
+        - Idempotency is via reuse-by-content-match — re-running the
+          agent against a partially-provisioned tenant skips items
+          already created (based on `event-portal/provisioned.yaml`).
+        - Rollback: this agent does NOT delete existing EP objects.
+          If a create fails partway, the user can either (a) re-run
+          (idempotent) or (b) clean up manually in EP Designer and
+          then re-run. Document this in provisioning-report.md.
+
+        # Project misuse
+
+        - If invoked in lifecycle mode without an Event Portal model in
+          the engagement's design output, return BLOCKED naming the
+          missing artifact.
+        - If `preferences.provision_event_portal` is not `true` in the
+          intake, return DONE_WITH_CONCERNS — Event Portal work was not
+          requested.
+        - If Validation is not DONE or DONE_WITH_CONCERNS, return
+          BLOCKED — Event Portal must not run on an un-validated design.
+        - If SOLACE_API_TOKEN is missing or invalid, return BLOCKED
+          with the upstream error message verbatim — never silently
+          skip.
+
+      tools:
+        # ---- MCP server — Solace Event Portal Designer ----
+        # Launched per-process via uvx; tools auto-discovered from the
+        # MCP server's manifest and exposed under their published names
+        # (list_application_domains, create_event, export_application_asyncapi, etc.).
+        - tool_type: mcp
+          connection_params:
+            type: stdio
+            command: "uvx"
+            args:
+              - "--from"
+              - "solace-event-portal-designer-mcp"
+              - "solace-ep-designer-mcp"
+          environment_variables:
+            SOLACE_API_TOKEN: ${SOLACE_API_TOKEN}
+            # Optional region override — set in your shell env if your
+            # account isn't US. Leave unset for US (default).
+            SOLACE_API_BASE_URL: ${SOLACE_API_BASE_URL, ""}
+
+        # ---- Engagement-scoped storage (re-added because of
+        # auto_inject_artifact_tools: false) ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "read_artifact"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "write_artifact"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "list_artifacts"
+
+        # ---- Decision / open-item recording ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "record_decision"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "record_open_item"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "record_feedback"
+
+        # ---- Grounding ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "load_grounding"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "load_preamble"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "load_jargon_list"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "record_grounding_gap"
+
+        # ---- Interactive Q&A (renders form card in WebUI) ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.interaction_tools"
+          function_name: "ask_user_question"
+
+        # ---- Lifecycle status (drives the Progress banner) ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.lifecycle_tools"
+          function_name: "set_step_status"
+
+      session_service: *default_session_service
+      artifact_service: *default_artifact_service
+      artifact_handling_mode: "embed"
+      enable_embed_resolution: true
+      enable_artifact_content_instruction: true
+
+      agent_card:
+        description: |
+          Live Event Portal Designer interface. Lists, creates, updates,
+          and exports application domains, applications, events, schemas,
+          and AsyncAPI specs against a Solace Cloud tenant. MCP-backed.
+        defaultInputModes:
+          - text/plain
+          - application/json
+        defaultOutputModes:
+          - text/plain
+          - application/json
+        skills:
+          - id: list_ep_objects
+            name: List Event Portal objects
+            description: List application domains, applications, events, schemas, schema versions, event versions, and AsyncAPI specs in the user's Solace Cloud tenant.
+          - id: create_ep_objects
+            name: Create Event Portal objects
+            description: Create application domains, applications, events, schemas, schema versions, and event versions in the tenant. Asks for confirmation before any create against a live tenant.
+          - id: provision_from_design
+            name: Provision the engagement's EP model
+            description: Lifecycle mode — read the engagement's event-portal/event-portal-model.yaml, dry-run a plan, optionally confirm per layer, then create/reuse domains→schemas→events→applications. Records every action under event-portal/provisioned.yaml.
+          - id: export_asyncapi
+            name: Export AsyncAPI specs
+            description: Export AsyncAPI specs for one or more applications and save them under event-portal/asyncapi/<application-name>.yaml.

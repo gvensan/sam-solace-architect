@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <title>Sign in — Solace Architect</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    body { display: grid; place-items: center; min-height: 100vh; }
+    .auth-card {
+      width: 360px; padding: 32px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+    }
+    .auth-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+    .auth-brand .logo-mark { width: 36px; height: 36px; border-radius: 8px;
+      background: var(--accent); color: var(--primary);
+      font-family: 'Space Mono', monospace; font-weight: 700;
+      display: grid; place-items: center; font-size: 14px; }
+    .auth-brand .title { font-weight: 700; color: var(--primary); }
+    h1 { font-size: 18px; color: var(--primary); margin-bottom: 4px; }
+    .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
+    input { width: 100%; padding: 10px 12px; border: 1px solid var(--border);
+      border-radius: 6px; background: var(--bg); color: var(--text);
+      font-family: 'Figtree', sans-serif; font-size: 14px; }
+    input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0,200,149,0.15); }
+    button[type=submit] { width: 100%; margin-top: 20px; padding: 10px;
+      background: var(--primary); color: white; border: none; border-radius: 6px;
+      font-family: 'Figtree', sans-serif; font-weight: 600; font-size: 14px;
+      cursor: pointer; }
+    button[type=submit]:hover { background: var(--accent); color: var(--primary); }
+    button[type=submit]:disabled { opacity: 0.5; cursor: wait; }
+    .footer-link { text-align: center; margin-top: 16px; font-size: 13px; color: var(--muted); }
+    .footer-link a { color: var(--primary); }
+    .error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca;
+      padding: 10px 12px; border-radius: 6px; font-size: 13px; margin-top: 12px;
+      display: none; }
+    .error.shown { display: block; }
+    .first-run-banner { background: #ecfeff; color: #0e7490; border: 1px solid #a5f3fc;
+      padding: 10px 12px; border-radius: 6px; font-size: 12px; margin-bottom: 16px; display: none; }
+    .first-run-banner.shown { display: block; }
+  </style>
+</head>
+<body>
+  <div class="auth-card">
+    <div class="auth-brand">
+      <span class="logo-mark">SA</span>
+      <span class="title">Solace Architect</span>
+    </div>
+
+    <div id="first-run" class="first-run-banner">
+      No users yet — head to <a href="/signup">signup</a> to create the first (admin) account.
+    </div>
+
+    <h1>Sign in</h1>
+    <div class="subtitle">Enter your username and password.</div>
+
+    <form id="login-form" autocomplete="on">
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" required autofocus>
+
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+      <div id="error" class="error"></div>
+
+      <button type="submit" id="submit-btn">Sign in</button>
+    </form>
+
+    <div class="footer-link">
+      <span id="signup-link" style="display:none">
+        New here? <a href="/signup">Create an account</a>
+      </span>
+    </div>
+  </div>
+
+  <script>
+    (async function () {
+      // Detect first-run / signup-enabled state via /api/auth/me
+      try {
+        const me = await fetch("/api/auth/me").then(r => r.json());
+        if (me.first_run) document.getElementById("first-run").classList.add("shown");
+        if (me.enable_signup) document.getElementById("signup-link").style.display = "";
+        if (me.authenticated) {
+          // Already logged in — honor ?next= so a session-expiry redirect
+          // (set by the dashboard's redirectToLoginPreservingPath helper)
+          // bounces the user back to where they were after re-auth.
+          const params = new URLSearchParams(window.location.search);
+          window.location.href = params.get("next") || "/";
+        }
+      } catch (e) { /* leave UI in default state */ }
+    })();
+
+    const params = new URLSearchParams(window.location.search);
+    const nextUrl = params.get("next") || "/";
+    const errEl = document.getElementById("error");
+    const btn = document.getElementById("submit-btn");
+
+    document.getElementById("login-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errEl.classList.remove("shown");
+      btn.disabled = true;
+      btn.textContent = "Signing in…";
+      try {
+        const r = await fetch("/api/auth/login", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: document.getElementById("username").value,
+            password: document.getElementById("password").value,
+            next: nextUrl,
+          }),
+        });
+        const d = await r.json();
+        if (!r.ok) {
+          errEl.textContent = d.error || "Sign-in failed";
+          errEl.classList.add("shown");
+          btn.disabled = false;
+          btn.textContent = "Sign in";
+          return;
+        }
+        window.location.href = d.redirect || "/";
+      } catch (err) {
+        errEl.textContent = "Network error — please retry";
+        errEl.classList.add("shown");
+        btn.disabled = false;
+        btn.textContent = "Sign in";
+      }
+    });
+  </script>
+</body>
+</html>

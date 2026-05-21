@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.solace_architect_event_portal.metadata]
+type = "agent"
+
+[project]
+name = "solace-architect-event-portal"
+version = "0.1.0"
+authors = [{ name = "Solace Architect Contributors" }]
+description = "Solace Architect — live Event Portal Designer agent backed by the solace-event-portal-designer-mcp MCP server (stdio, launched via uvx). Manages application domains, applications, events, schemas, and AsyncAPI exports via natural-language requests routed through SAM."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "solace-architect-core>=0.1.0,<1.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/solace_architect_event_portal"]
+src-path = "src"
+
+[tool.hatch.build.targets.wheel.force-include]
+"config.yaml" = "solace_architect_event_portal/config.yaml"
+"README.md" = "solace_architect_event_portal/README.md"
+"pyproject.toml" = "solace_architect_event_portal/pyproject.toml"

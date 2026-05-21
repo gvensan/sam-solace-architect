@@ -1,0 +1,57 @@
+2026-05-15 13:08:00,477 | WARNING | solace_ai_connector.solace_ai_connector | No log config provided - using defaults
+2026-05-15 13:08:00,478 | INFO | solace_ai_connector.common.observability.registry | Observability disabled in configuration
+2026-05-15 13:08:00,478 | INFO | solace_ai_connector.solace_ai_connector | Management server disabled
+2026-05-15 13:08:00,478 | INFO | solace_ai_connector.solace_ai_connector | Starting Solace AI Event Connector
+2026-05-15 13:08:00,478 | INFO | solace_ai_connector.solace_ai_connector | Creating app solace_architect_webui_app
+2026-05-15 13:08:04,552 | INFO | solace_agent_mesh.gateway.base.app | Generated Solace subscriptions for gateway 'sa-webui-ep-01': [{'topic': 'sa/a2a/v1/discovery/>'}, {'topic': 'sa/a2a/v1/gateway/response/sa-webui-ep-01/>'}, {'topic': 'sa/a2a/v1/gateway/status/sa-webui-ep-01/>'}]
+2026-05-15 13:08:04,554 | INFO | solace_agent_mesh.common.sac.sam_component_base | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Initializing SamComponentBase...
+2026-05-15 13:08:04,555 | INFO | solace_agent_mesh.common.sac.sam_component_base | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Initialized SamComponentBase
+2026-05-15 13:08:04,555 | INFO | solace_agent_mesh.gateway.base.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Initializing Base Gateway Component...
+2026-05-15 13:08:04,555 | INFO | solace_agent_mesh.gateway.base.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Retrieved common configs: Namespace=sa, GatewayID=sa-webui-ep-01
+2026-05-15 13:08:04,555 | INFO | solace_agent_mesh.core_a2a.service | [CoreA2AService-WebUI] Initialized with namespace: sa
+2026-05-15 13:08:04,555 | INFO | solace_agent_mesh.agent.adk.services | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Initializing Artifact Service of type: filesystem
+2026-05-15 13:08:04,555 | INFO | solace_agent_mesh.agent.adk.artifacts.filesystem_artifact_service | Initialized FilesystemArtifactService. Base path: /tmp/sa-artifacts
+2026-05-15 13:08:04,555 | INFO | solace_agent_mesh.agent.adk.services | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Wrapping artifact service with dynamic ScopedArtifactServiceWrapper.
+2026-05-15 13:08:04,555 | INFO | solace_agent_mesh.common.services.identity_service | [IdentityFactory] No 'identity_service' configuration found. Skipping creation.
+2026-05-15 13:08:04,555 | INFO | solace_agent_mesh.gateway.base.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Middleware system initialized (using default configuration resolver).
+2026-05-15 13:08:04,555 | INFO | solace_agent_mesh.gateway.base.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Initialized Base Gateway Component.
+2026-05-15 13:08:04,555 | INFO | solace_architect_webui_entrypoint.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Initializing Solace Architect WebUI entrypoint…
+2026-05-15 13:08:04,555 | INFO | solace_architect_webui_entrypoint.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  SA_STORAGE_ROOT defaulted to artifact_service.base_path=/tmp/sa-artifacts
+2026-05-15 13:08:04,556 | INFO | solace_architect_webui_entrypoint.auth.db | Auth DB initialized at /tmp/sa-artifacts/__system__/users.db
+2026-05-15 13:08:04,556 | INFO | solace_architect_webui_entrypoint.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Auth: db=/tmp/sa-artifacts/__system__/users.db, require_auth=True, enable_signup=True
+2026-05-15 13:08:04,556 | INFO | solace_agent_mesh.gateway.base.app | BaseGatewayApp 'solace_architect_webui_app' initialized successfully.
+2026-05-15 13:08:04,557 | INFO | solace_agent_mesh.common.sac.sam_component_base | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Starting SamComponentBase run method.
+2026-05-15 13:08:04,557 | INFO | solace_ai_connector.solace_ai_connector | Solace AI Event Connector started successfully
+2026-05-15 13:08:04,557 | INFO | solace_agent_mesh.common.sac.sam_component_base | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Initializing asyncio event loop in dedicated thread...
+2026-05-15 13:08:04,557 | INFO | solace_agent_mesh.common.sac.sam_component_base | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Async operations thread started.
+2026-05-15 13:08:04,557 | INFO | solace_agent_mesh.common.sac.sam_component_base | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Starting _async_setup_and_run as an asyncio task. Will run event loop forever (or until stop_signal).
+2026-05-15 13:08:04,557 | INFO | solace_agent_mesh.gateway.base.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Starting gateway card publishing every 30 seconds
+2026-05-15 13:08:04,557 | INFO | solace_agent_mesh.gateway.base.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Starting _start_listener() to initiate external platform connection.
+2026-05-15 13:08:04,557 | INFO | solace_architect_webui_entrypoint.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Starting WebUI HTTP listener on 0.0.0.0:9080
+2026-05-15 13:08:04,558 | INFO | solace_architect_webui_entrypoint.auth.middleware | Auth middleware installed (require_auth=True)
+2026-05-15 13:08:04,558 | INFO | solace_architect_webui_entrypoint.auth.routes | Auth routes registered (signup=True, require_auth=True)
+2026-05-15 13:08:04,560 | ERROR | solace_architect_webui_entrypoint.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  HTTP server failed to start
+Traceback (most recent call last):
+  File "/Users/girivenkatesan/gitmine/sam-solace-architect/.venv/lib/python3.12/site-packages/solace_architect_webui_entrypoint/component.py", line 216, in _run_http_server
+    loop.run_until_complete(self._site.start())
+  File "/Users/girivenkatesan/.pyenv/versions/3.12.12/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/girivenkatesan/gitmine/sam-solace-architect/.venv/lib/python3.12/site-packages/aiohttp/web_runner.py", line 121, in start
+    self._server = await loop.create_server(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/girivenkatesan/.pyenv/versions/3.12.12/lib/python3.12/asyncio/base_events.py", line 1584, in create_server
+    raise OSError(err.errno, msg) from None
+OSError: [Errno 48] error while attempting to bind on address ('0.0.0.0', 9080): [errno 48] address already in use
+2026-05-15 13:08:05,565 | INFO | solace_agent_mesh.gateway.base.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  New gateway discovered: sa-webui-ep-01 (type: generic)
+2026-05-15 13:09:33,187 | INFO | solace_ai_connector.solace_ai_connector | Received keyboard interrupt - stopping
+2026-05-15 13:09:33,187 | WARNING | solace_ai_connector.main | Shutdown initiated due to KeyboardInterrupt.
+2026-05-15 13:09:33,188 | WARNING | solace_ai_connector.main | Stopping Solace AI Connector
+2026-05-15 13:09:33,188 | INFO | solace_ai_connector.solace_ai_connector | Stopping Solace AI Event Connector
+2026-05-15 13:09:33,662 | INFO | solace_agent_mesh.common.sac.sam_component_base | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  SamComponentBase run method finished.
+2026-05-15 13:09:33,670 | INFO | solace_ai_connector.solace_ai_connector | Cleaning up Solace AI Event Connector
+2026-05-15 13:09:33,671 | INFO | solace_ai_connector.flow.app | Cleaning up app: solace_architect_webui_app
+2026-05-15 13:09:33,671 | INFO | solace_ai_connector.flow.flow | Cleaning up flow: solace_architect_webui_app_implicit_flow
+2026-05-15 13:09:33,671 | INFO | solace_agent_mesh.common.sac.sam_component_base | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Starting cleanup for SamComponentBase...
+2026-05-15 13:09:33,671 | INFO | solace_agent_mesh.gateway.base.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Calling _stop_listener()...
+2026-05-15 13:09:33,671 | INFO | solace_architect_webui_entrypoint.component | [solace_ai_connector.solace_architect_webui_app_implicit_flow.<unnamed>]  Stopping WebUI HTTP listener…

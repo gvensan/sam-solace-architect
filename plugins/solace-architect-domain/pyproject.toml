@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.solace_architect_domain.metadata]
+type = "agent"
+
+[project]
+name = "solace-architect-domain"
+version = "0.1.0"
+authors = [{ name = "Solace Architect Contributors" }]
+description = "Solace Architect — solace platform domain expert — 9 design scopes (topic, broker, sam, protocol, mesh, ha/dr, migration, integration, event portal)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "solace-architect-core>=0.1.0,<1.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/solace_architect_domain"]
+src-path = "src"
+
+[tool.hatch.build.targets.wheel.force-include]
+"config.yaml" = "solace_architect_domain/config.yaml"
+"README.md" = "solace_architect_domain/README.md"
+"pyproject.toml" = "solace_architect_domain/pyproject.toml"

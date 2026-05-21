@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.solace_architect_webui_entrypoint.metadata]
+type = "gateway"
+
+[project]
+name = "solace-architect-webui-entrypoint"
+version = "0.1.0"
+authors = [{ name = "Solace Architect Contributors" }]
+description = "Solace Architect — webui http-sse entrypoint (also serves the rest api) — 6 dashboard views, intake form, audience-pack viewer, project switcher, dark-mode, live status bar."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "solace-architect-core>=0.1.0,<1.0.0",
+  "solace-agent-mesh>=0.1.0",          # BaseGatewayApp + BaseGatewayComponent
+  "aiohttp>=3.9.0",                    # HTTP server + SSE
+  "jinja2>=3.1",                       # HTML templates for dashboard
+  "argon2-cffi>=23.1.0",               # password hashing for the local user DB
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-aiohttp>=1.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/solace_architect_webui_entrypoint"]
+src-path = "src"
+
+[tool.hatch.build.targets.wheel.force-include]
+"config.yaml" = "solace_architect_webui_entrypoint/config.yaml"
+"README.md" = "solace_architect_webui_entrypoint/README.md"
+"pyproject.toml" = "solace_architect_webui_entrypoint/pyproject.toml"

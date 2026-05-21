@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.solace_architect_blueprint.metadata]
+type = "agent"
+
+[project]
+name = "solace-architect-blueprint"
+version = "0.1.0"
+authors = [{ name = "Solace Architect Contributors" }]
+description = "Solace Architect — final blueprint assembly + 5-audience-pack rendering (html + pdf via weasyprint) + zip export. ships the ported v1 html report generator."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "solace-architect-core>=0.1.0,<1.0.0",
+  "weasyprint>=60.0",  # PDF rendering
+  "jinja2>=3.1",  # HTML templates
+  "markdown>=3.5",  # server-side .md → HTML for audience packs
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/solace_architect_blueprint"]
+src-path = "src"
+# Include non-Python assets — the audience-pack renderer reads
+# report_generator/templates/report.css and report.js at runtime via
+# importlib.resources, so they must ship in the wheel alongside the .py files.
+artifacts = [
+  "src/solace_architect_blueprint/report_generator/templates/*",
+]
+
+# SAM plugin layout — non-source files placed alongside the Python package in the wheel.
+# (The package itself is handled by [tool.hatch.build.targets.wheel].packages above,
+#  so omitting it from force-include keeps editable installs working.)
+[tool.hatch.build.targets.wheel.force-include]
+"config.yaml" = "solace_architect_blueprint/config.yaml"
+"README.md" = "solace_architect_blueprint/README.md"
+"pyproject.toml" = "solace_architect_blueprint/pyproject.toml"
