@@ -4861,6 +4861,20 @@
       try {
         const ev = JSON.parse(e.data);
         if (ev.type === "TaskStatusUpdateEvent") {
+          // STOP-button arming from the SSE stream itself. Any in-flight
+          // task — whether user-typed, form-card answer, quick-reply chip,
+          // an orchestrator-initiated peer delegation, an auto-advance
+          // dispatch, or anything else SAM does internally — emits status
+          // updates here. Treat the first update for a given task_id as
+          // proof of life and arm STOP. The dispatch-site _setChatInflight
+          // calls (chatForm submit, submitAnswer, submitQuickReply) still
+          // run for immediate visual feedback; this is the safety net for
+          // tasks not triggered from a dispatch site we control. Same id
+          // re-armings are no-ops (idempotent).
+          const liveTaskId = ev.data?.task_id || null;
+          if (liveTaskId && liveTaskId !== _currentInflightTaskId) {
+            _setChatInflight(liveTaskId);
+          }
           // Layer B: tool-call traces from SAM data parts.
           for (const d of extractDataParts(ev)) {
             if (d.type === "tool_invocation_start") appendToolTrace(d);
@@ -5058,6 +5072,12 @@
       // handler grows further; for now mirroring is clearer than the
       // alternative of dispatching a MessageEvent.)
       if (ev.type === "TaskStatusUpdateEvent") {
+        // Same STOP-arming logic as the live-SSE branch — any in-flight
+        // task surfaces here via long-poll when EventSource is dropped.
+        const liveTaskId = ev.data?.task_id || null;
+        if (liveTaskId && liveTaskId !== _currentInflightTaskId) {
+          _setChatInflight(liveTaskId);
+        }
         for (const d of extractDataParts(ev)) {
           if (d.type === "tool_invocation_start") appendToolTrace(d);
           else if (d.type === "tool_result") completeToolTrace(d);

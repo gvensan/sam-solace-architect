@@ -202,6 +202,30 @@ def test_progress_cta_has_exec_hint_renderer():
     assert ".cta-exec-hint" in css
 
 
+def test_sse_arms_stop_button_for_any_task_status_update():
+    """STOP-button visibility must be derived from the SSE stream, not
+    only from dispatch sites. Otherwise orchestrator-initiated tasks
+    (peer delegations, auto-advance, anything self-dispatched by the
+    agent without a user click) silently keep SEND visible while the
+    agent works — the bug user reported on 2026-05-21.
+
+    The contract: TaskStatusUpdateEvent SSE handlers call
+    _setChatInflight(ev.data.task_id) when the id differs from the
+    current. Lives in BOTH the live-SSE path AND the long-poll
+    fallback so behavior is identical regardless of transport.
+    """
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    # Both handlers must reference ev.data.task_id and arm STOP.
+    assert js.count("ev.data?.task_id || null") >= 2, (
+        "Expected ev.data.task_id read in both live-SSE and long-poll "
+        "TaskStatusUpdateEvent branches"
+    )
+    # And both must call _setChatInflight conditional on the id changing.
+    assert js.count("_setChatInflight(liveTaskId)") >= 2, (
+        "SSE-driven STOP arming missing from one of the two handlers"
+    )
+
+
 def test_tool_call_pill_supports_3_line_clamp_and_expand():
     """Tool-call pills must clamp to 3 lines by default and toggle via
     click. Prevents the wall-of-text behavior the user reported
