@@ -12,7 +12,7 @@ from typing import Any, Optional
 import yaml
 
 from .._routing import evaluate_when
-from .._storage import read_yaml, write_yaml
+from .._storage import read_yaml, safe_read_yaml, write_yaml
 from ._arg_coercion import coerce_args
 from .artifact_tools import ToolResult
 from .session_tools import read_session_state, update_session_state
@@ -65,7 +65,13 @@ async def get_next_step(engagement_id: str, discovery_brief: Optional[dict] = No
     completed = set(session.get("completed_steps", []))
 
     if discovery_brief is None:
-        brief_res = read_yaml(engagement_id, "discovery/discovery-brief.yaml")
+        # safe_read_yaml: get_next_step is hit on every dashboard "what's
+        # next?" poll. A corrupt brief should yield "no plan" gracefully,
+        # not a 500 — the user can re-import or rewrite the brief from the
+        # UI. Brief writers (Discovery agent) hit write_artifact which now
+        # validates YAML before persisting, so future briefs can't land
+        # corrupt in the first place.
+        brief_res = safe_read_yaml(engagement_id, "discovery/discovery-brief.yaml")
         discovery_brief = brief_res or {}
 
     plan_res = await get_engagement_plan(discovery_brief)

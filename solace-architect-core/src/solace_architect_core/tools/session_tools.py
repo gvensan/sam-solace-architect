@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._storage import read_yaml, write_yaml
+from .._storage import read_yaml, safe_read_yaml, write_yaml
 from ._arg_coercion import coerce_args
 from .artifact_tools import ToolResult
 
@@ -23,7 +23,13 @@ _DEFAULT_SESSION = {
 
 
 async def read_session_state(engagement_id: str) -> ToolResult:
-    data = read_yaml(engagement_id, "meta/session.yaml", default=dict(_DEFAULT_SESSION))
+    # safe_read_yaml: corrupt session.yaml degrades to defaults rather than
+    # crashing the dashboard, which polls this every few seconds. The
+    # update_session_state path below stays on the raising read_yaml so a
+    # parse error there prevents us from overwriting an existing corrupt
+    # file with default state (would silently destroy timing_data /
+    # completed_steps).
+    data = safe_read_yaml(engagement_id, "meta/session.yaml", default=dict(_DEFAULT_SESSION))
     data["engagement_id"] = engagement_id
     return ToolResult(ok=True, data=data)
 

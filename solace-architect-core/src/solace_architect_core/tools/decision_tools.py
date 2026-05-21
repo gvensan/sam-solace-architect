@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any, Optional
 
-from .._storage import next_id, read_yaml, write_yaml
+from .._storage import next_id, read_yaml, safe_read_yaml, write_yaml
 from .._user_context import resolve_user_id as _resolve_user_id, scoped_user as _scoped_user
 from ..schemas import (
     DecisionEntry,
@@ -48,7 +48,12 @@ async def read_decisions(
 ) -> ToolResult:
     """Read meta/decisions.yaml. ``user_id`` auto-resolves from ``tool_context``."""
     with _scoped_user(_resolve_user_id(user_id, tool_context)):
-        data = read_yaml(engagement_id, "meta/decisions.yaml", default={"decisions": []})
+        # safe_read_yaml: this is a read-only request-path consumer (Decisions
+        # tab + dashboard summaries). A corrupt file degrades to empty list +
+        # WARNING log rather than crashing the HTTP request. Write-side
+        # callers (record_decision, etc.) keep the raising read_yaml so a
+        # parse error blocks the write instead of overwriting good data.
+        data = safe_read_yaml(engagement_id, "meta/decisions.yaml", default={"decisions": []})
     return ToolResult(ok=True, data=data["decisions"])
 
 
@@ -82,7 +87,8 @@ async def read_findings(
 ) -> ToolResult:
     """Read meta/findings.yaml. ``user_id`` auto-resolves from ``tool_context``."""
     with _scoped_user(_resolve_user_id(user_id, tool_context)):
-        data = read_yaml(engagement_id, "meta/findings.yaml", default={"findings": []})
+        # safe_read_yaml: read-only HTTP-path consumer (see read_decisions).
+        data = safe_read_yaml(engagement_id, "meta/findings.yaml", default={"findings": []})
     findings = data["findings"]
     if status:
         findings = [f for f in findings if f.get("status") == status]
@@ -161,7 +167,8 @@ async def read_open_items(
 ) -> ToolResult:
     """Read open items. ``user_id`` auto-resolves from ``tool_context``."""
     with _scoped_user(_resolve_user_id(user_id, tool_context)):
-        data = read_yaml(engagement_id, "meta/open-items.yaml", default={"open_items": []})
+        # safe_read_yaml: read-only HTTP-path consumer (see read_decisions).
+        data = safe_read_yaml(engagement_id, "meta/open-items.yaml", default={"open_items": []})
     items = data["open_items"]
     if status:
         items = [q for q in items if q.get("status") == status]
@@ -221,7 +228,8 @@ async def read_feedback(
 ) -> ToolResult:
     """Read meta/feedback.yaml. ``user_id`` auto-resolves from ``tool_context``."""
     with _scoped_user(_resolve_user_id(user_id, tool_context)):
-        data = read_yaml(engagement_id, "meta/feedback.yaml", default={"feedback": []})
+        # safe_read_yaml: read-only HTTP-path consumer (see read_decisions).
+        data = safe_read_yaml(engagement_id, "meta/feedback.yaml", default={"feedback": []})
     items = data["feedback"]
     if scope:
         items = [fb for fb in items if fb.get("scope") == scope]

@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
-from .._storage import list_artifacts as _list_artifacts, read_yaml
+from .._storage import list_artifacts as _list_artifacts, safe_read_yaml as read_yaml
 from .artifact_tools import ToolResult
 from .session_tools import read_session_state
 from .workflow_tools import get_engagement_plan

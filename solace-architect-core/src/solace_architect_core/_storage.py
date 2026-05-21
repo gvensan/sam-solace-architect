@@ -144,10 +144,48 @@ def read_jsonl(engagement_id: str, artifact_name: str) -> list[dict]:
 
 
 def read_yaml(engagement_id: str, artifact_name: str, default: Any = None) -> Any:
-    """Read a YAML artifact. Returns ``default`` if file doesn't exist."""
+    """Read a YAML artifact. Returns ``default`` if file doesn't exist.
+
+    NOTE: This raises ``yaml.YAMLError`` on a malformed file. For request-path
+    code (HTTP handlers, dashboard endpoints) where a corrupt artifact must
+    NOT crash the response, prefer :func:`safe_read_yaml` instead — it logs
+    the parse failure and returns ``default`` so a single bad file degrades
+    one feature gracefully rather than taking down the whole endpoint.
+    """
     try:
         return yaml.safe_load(read_text(engagement_id, artifact_name)) or default
     except FileNotFoundError:
+        return default
+
+
+_LOG = __import__("logging").getLogger(__name__)
+
+
+def safe_read_yaml(engagement_id: str, artifact_name: str, default: Any = None) -> Any:
+    """Read a YAML artifact, tolerating parse errors.
+
+    Same contract as :func:`read_yaml`, but additionally catches
+    ``yaml.YAMLError`` (raised for malformed files) and returns ``default``
+    after logging the failure.
+
+    Use this from request-path code where a single corrupt artifact must
+    not surface as an HTTP 500 — e.g. the dashboard's overview endpoint
+    polls multiple engagements and one bad brief shouldn't break the
+    whole dashboard. The original :func:`read_yaml` still raises, which
+    is the right behavior inside agent tools (an agent that wrote a
+    corrupt YAML wants to know about it so it can retry).
+    """
+    import yaml as _yaml  # local rebind avoids shadowing the module attr
+    try:
+        return _yaml.safe_load(read_text(engagement_id, artifact_name)) or default
+    except FileNotFoundError:
+        return default
+    except _yaml.YAMLError as exc:
+        _LOG.warning(
+            "safe_read_yaml: %s/%s is malformed (%s: %s); returning default.",
+            engagement_id, artifact_name, type(exc).__name__,
+            str(exc).split("\n")[0],
+        )
         return default
 
 

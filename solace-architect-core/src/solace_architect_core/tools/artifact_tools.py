@@ -100,6 +100,45 @@ def _check_grounding(content: str) -> ValidationResult:
     return ValidationResult(ok=True, violations=[])
 
 
+def _check_yaml_well_formed(artifact_name: str, content: str) -> ValidationResult:
+    """For .yaml / .yml writes, confirm the content actually parses.
+
+    Catches the LLM-emits-unquoted-colon class of bug (e.g. ``driver: Some
+    text. Key goals: more text.`` — YAML parses the second colon as a new
+    mapping key, the file lands on disk malformed, and every later reader
+    crashes with ``yaml.scanner.ScannerError: mapping values are not allowed
+    here``).
+
+    For non-YAML artifacts (.md, .json, .txt, etc.) this is a no-op — those
+    formats have their own concerns that this check shouldn't speak to.
+    The agent gets a precise error message back so it can fix the quoting
+    and retry rather than persisting a corrupt file the dashboard / readers
+    will trip over.
+    """
+    lower = artifact_name.lower()
+    if not (lower.endswith(".yaml") or lower.endswith(".yml")):
+        return ValidationResult(ok=True, violations=[])
+    import yaml as _yaml
+    try:
+        _yaml.safe_load(content)
+        return ValidationResult(ok=True, violations=[])
+    except _yaml.YAMLError as exc:
+        # YAMLError exposes problem_mark with line/column for ScannerError
+        # and ParserError. ConstructorError doesn't always — guard the access.
+        mark = getattr(exc, "problem_mark", None)
+        line = (mark.line + 1) if mark is not None else None
+        col = (mark.column + 1) if mark is not None else None
+        loc = f" at line {line}, column {col}" if line is not None else ""
+        msg = (
+            f"YAML parse failed{loc}: {getattr(exc, 'problem', None) or exc}. "
+            "Most common cause: a string value contains an unquoted colon "
+            "(e.g. `driver: Modernize ops. Key goals: ...` — YAML treats "
+            "the second colon as a new mapping key). Wrap such values in "
+            "double quotes: `driver: \"Modernize ops. Key goals: ...\"`."
+        )
+        return ValidationResult(ok=False, violations=[{"detail": msg, "kind": "yaml_parse"}])
+
+
 async def write_artifact(engagement_id: str, artifact_name: str, content: str,
                          user_id: str | None = None,
                          tool_context: Any = None) -> ToolResult:
@@ -119,8 +158,9 @@ async def write_artifact(engagement_id: str, artifact_name: str, content: str,
         terminology_check = _check_terminology(content)
         naming_check = _check_naming(content)
         grounding_check = _check_grounding(content)
+        yaml_check = _check_yaml_well_formed(artifact_name, content)
 
-        if not (terminology_check.ok and naming_check.ok and grounding_check.ok):
+        if not (terminology_check.ok and naming_check.ok and grounding_check.ok and yaml_check.ok):
             return ToolResult(
                 ok=False,
                 error="pre-write validation failed",
@@ -129,6 +169,7 @@ async def write_artifact(engagement_id: str, artifact_name: str, content: str,
                     "terminology_check": {"ok": terminology_check.ok, "violations": terminology_check.violations},
                     "naming_check": {"ok": naming_check.ok, "violations": naming_check.violations},
                     "grounding_check": {"ok": grounding_check.ok, "violations": grounding_check.violations},
+                    "yaml_check": {"ok": yaml_check.ok, "violations": yaml_check.violations},
                 },
             )
 

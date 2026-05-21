@@ -38,7 +38,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from .._storage import read_yaml, write_yaml
+from .._storage import read_yaml, safe_read_yaml, write_yaml
 from .._user_context import resolve_user_id as _resolve_user_id, scoped_user as _scoped_user
 from ._arg_coercion import coerce_args
 from .artifact_tools import ToolResult
@@ -151,7 +151,13 @@ async def get_engagement_status(
     file shape honest about what's been recorded.
     """
     with _scoped_user(_resolve_user_id(user_id, tool_context)):
-        data = read_yaml(engagement_id, _STATUS_FILE, default={"steps": {}}) or {"steps": {}}
+        # safe_read_yaml: read-only, polled by dashboard / lifecycle banner
+        # multiple times per minute. A corrupt status file degrades to
+        # empty-steps + WARNING log rather than 500-ing the HTTP request.
+        # set_step_status / clear_step_status (write paths) stay on
+        # read_yaml so a parse error there blocks the write instead of
+        # silently overwriting a corrupt-but-recoverable file.
+        data = safe_read_yaml(engagement_id, _STATUS_FILE, default={"steps": {}}) or {"steps": {}}
     if "steps" not in data or not isinstance(data["steps"], dict):
         data["steps"] = {}
     return ToolResult(ok=True, data=data)

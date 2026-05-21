@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-from .._storage import read_yaml, write_yaml
+from .._storage import read_yaml, safe_read_yaml, write_yaml
 from .._user_context import (
     get_current_user,
     resolve_user_id as _resolve_user_id,
@@ -43,7 +43,11 @@ async def list_projects(
     ``tool_context`` when not passed explicitly.
     """
     with _scoped_user(_resolve_user_id(user_id, tool_context)):
-        data = read_yaml(_SYSTEM_ENGAGEMENT, _PROJECTS_ARTIFACT, default={"projects": []})
+        # safe_read_yaml: read-only, hit by the projects sidebar in the
+        # dashboard. A corrupt registry should show an empty list (+ log)
+        # rather than 500-ing — every project create/update/archive flow
+        # still uses raising read_yaml below to avoid silent overwrite.
+        data = safe_read_yaml(_SYSTEM_ENGAGEMENT, _PROJECTS_ARTIFACT, default={"projects": []})
         owner = _current_owner()
     projects = data["projects"]
     if owner != "anonymous":
