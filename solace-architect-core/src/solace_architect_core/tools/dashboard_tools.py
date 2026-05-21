@@ -98,6 +98,22 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
     recommended_next = runnable[0]["step"] if runnable else None
 
     artifacts = _list_artifacts(engagement_id)
+    # ARTIFACTS tile counts workflow-PRODUCED deliverables, not system
+    # bookkeeping or user inputs. Without this filter, a freshly-restarted
+    # engagement showed 8-9 "artifacts" — but those were all empty meta/*
+    # containers + the user's submitted intake. The user reasonably expected
+    # the tile to track "what the workflow has produced so far". Filter out:
+    #   * meta/*              — internal state (decisions.yaml, session.yaml, etc.)
+    #   * discovery/intake.*  — user-submitted form, an INPUT not output
+    # Keep everything else: the discovery brief/summary/report, design/*,
+    # reviews/*, validation/*, event-portal/*, blueprint/*, exports/*.
+    def _is_workflow_artifact(path: str) -> bool:
+        if path.startswith("meta/"):
+            return False
+        if path.startswith("discovery/intake."):
+            return False
+        return True
+    workflow_artifacts = [a for a in artifacts if _is_workflow_artifact(a)]
 
     return ToolResult(ok=True, data={
         "skills_completed": len(completes),
@@ -106,7 +122,7 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
         "connected_systems": len(systems),
         "producers": producers,
         "consumers": consumers,
-        "artifacts_count": len(artifacts),
+        "artifacts_count": len(workflow_artifacts),
         "decisions_count": len(decisions),
         "review_findings_count": len(findings),
         "open_items_blocking": sum(1 for q in open_items if q.get("severity") == "blocking" and q.get("status") == "open"),

@@ -159,6 +159,36 @@ async def test_overview_counts_decisions_and_open_items():
     assert r.data["ep_provisioning_status"] == "not-requested"
 
 
+@pytest.mark.asyncio
+async def test_overview_artifacts_count_excludes_meta_and_intake():
+    """ARTIFACTS tile counts workflow-PRODUCED deliverables only — not
+    meta/* system bookkeeping (decisions.yaml, session.yaml, ...) and not
+    discovery/intake.{json,md} (the user's submitted form is an INPUT).
+
+    Without this filter, a freshly-restarted engagement shows 8-9
+    "artifacts" — all empty containers — and the user reasonably reports
+    that Restart didn't clean up (when in fact it did, the count was lying).
+    """
+    p = await project_tools.create_project(name="ArtifactsCount")
+    eid = p.data["id"]
+    # System bookkeeping (should NOT count) — create_project already seeds
+    # meta/decisions.yaml etc., so we just need to seed an additional one.
+    # Plus the user's intake (INPUT, should not count).
+    await artifact_tools.write_artifact(eid, "discovery/intake.json", '{"x": 1}')
+    await artifact_tools.write_artifact(eid, "discovery/intake.md", "# intake")
+    # Real workflow outputs (SHOULD count).
+    await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml",
+                                        "systems: []\nrequirements: {}\npreferences: {}")
+    await artifact_tools.write_artifact(eid, "discovery/discovery-report.md", "# report")
+    await artifact_tools.write_artifact(eid, "design/topic-taxonomy.yaml", "topics: []")
+    await artifact_tools.write_artifact(eid, "design/integration/integration-map.yaml", "links: []")
+    await artifact_tools.write_artifact(eid, "blueprint/architecture.md", "# arch")
+
+    r = await dashboard_tools.compute_overview_stats(eid)
+    # 5 workflow outputs above; meta/* (4 from create_project) + intake.* (2) excluded.
+    assert r.data["artifacts_count"] == 5, r.data
+
+
 # ---------- validation_tools ----------
 
 @pytest.mark.asyncio
