@@ -85,20 +85,26 @@ fi
 [[ -x "$INSTALL"   ]] || { fail "$INSTALL is missing or not executable";   exit 1; }
 
 # ── build common --plugin args once so we forward identically to both ──────
+# macOS ships Bash 3.2 which treats "${arr[@]}" of an empty array as an
+# "unbound variable" error under `set -u`. We guard every empty-array
+# expansion with the ${var+default} trick so the script works on both
+# Bash 3.x (macOS default) and Bash 4+/5+ (Linux, Homebrew Bash).
 plugin_args=()
-for p in "${selected_plugins[@]}"; do
-  plugin_args+=( --plugin "$p" )
-done
+if [[ ${#selected_plugins[@]} -gt 0 ]]; then
+  for p in "${selected_plugins[@]}"; do
+    plugin_args+=( --plugin "$p" )
+  done
+fi
 
 # ── step 1: uninstall (always with --yes for non-interactive run) ──────────
 header "Step 1 of 2 — uninstall"
-"$UNINSTALL" "$sam_dir" --yes "${plugin_args[@]}"
+"$UNINSTALL" "$sam_dir" --yes ${plugin_args[@]+"${plugin_args[@]}"}
 echo
 ok "uninstall complete"
 
 # ── step 2: install (already non-interactive by design) ────────────────────
 header "Step 2 of 2 — install"
-"$INSTALL" "$sam_dir" "${plugin_args[@]}"
+"$INSTALL" "$sam_dir" ${plugin_args[@]+"${plugin_args[@]}"}
 echo
 ok "install complete"
 
