@@ -5000,6 +5000,14 @@
   }
 
   const chatAgentSelect = document.getElementById("chat-agent-select");
+  // Module-scope reference to the SEND/STOP button. There's a same-name
+  // const inside render() at the top of the file — that one shadows this
+  // when render() runs, which is fine (both point at the same DOM node).
+  // We need the module-scope one for _setChatInflight + the STOP click
+  // handler + _recoverFromSubmitError, which all live outside render().
+  // Without this, app.js crashed at load with "chatSend is not defined"
+  // and the whole dashboard hung on "Loading…".
+  const chatSend = document.getElementById("chat-send-btn");
 
   // Sticky agent selection per engagement. Captured on FinalResponse, restored
   // by loadAgents() on page init. Without this, the dropdown reverts to the
