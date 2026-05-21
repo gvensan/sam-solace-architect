@@ -68,6 +68,7 @@ async def record_llm_call_telemetry(
     step_id: Optional[str] = None,
     sam_task_id: Optional[str] = None,
     source: str = "agent",
+    user_id: Optional[str] = None,
 ) -> ToolResult:
     """Extract token usage from a SAM ``LlmResponse`` and append it to the ledger.
 
@@ -75,6 +76,11 @@ async def record_llm_call_telemetry(
     is missing — the agent may be handling a system / discovery / health-check
     request that isn't tied to an engagement, and we'd rather no-op than write
     to a default bucket and pollute the per-project view.
+
+    ``user_id`` is lifted from the same ``[Active engagement: ..., user_id=…]``
+    header the WebUI injects into each agent message; the patch layer parses
+    it from ``callback_context`` and threads it here so the ledger lands under
+    ``users/<user_id>/<engagement_id>/...`` to match every other artifact.
     """
     if not engagement_id:
         return ToolResult(ok=False, error="record_llm_call_telemetry: missing engagement_id; call dropped")
@@ -93,4 +99,5 @@ async def record_llm_call_telemetry(
         step_id=step_id,
         sam_task_id=sam_task_id,
         source=source,
+        user_id=user_id,
     )

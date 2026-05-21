@@ -402,6 +402,79 @@ async def test_read_user_token_usage_empty_when_no_projects():
     assert r.data["project_count"] == 0
 
 
+@pytest.mark.asyncio
+async def test_record_token_usage_writes_under_user_namespace_when_user_id_set(tmp_path):
+    """The SAM after_model_callback runs outside the auth middleware's
+    contextvar, so the writer must accept user_id and bind scoped_user
+    itself. Without this, telemetry lands at <root>/<eid>/... while every
+    other artifact lives at <root>/users/<uid>/<eid>/... — and the Usage
+    page (which reads under the authenticated namespace) shows zeros.
+    """
+    from solace_architect_core._user_context import scoped_user
+    root = os.environ["SA_STORAGE_ROOT"]
+    eid = "eng-scoped-1"
+    uid = "u-abc-123"
+
+    # With user_id → writes under users/<uid>/<eid>/...
+    r = await telemetry_tools.record_token_usage(
+        eid, agent="SADiscoveryAgent", model="m",
+        input_tokens=10, output_tokens=5, user_id=uid,
+    )
+    assert r.ok
+    assert (tmp_path / "artifacts" / "users" / uid / eid / "meta" / "telemetry" / "llm-calls.jsonl").exists()
+    assert not (tmp_path / "artifacts" / eid / "meta" / "telemetry" / "llm-calls.jsonl").exists()
+
+    # Without user_id → falls back to legacy unscoped path (preserves CLI/test back-compat)
+    r = await telemetry_tools.record_token_usage(
+        "eng-anon", agent="SADiscoveryAgent", model="m",
+        input_tokens=10, output_tokens=5,
+    )
+    assert r.ok
+    assert (tmp_path / "artifacts" / "eng-anon" / "meta" / "telemetry" / "llm-calls.jsonl").exists()
+
+    # The reader under scoped_user(uid) sees the user-scoped data; outside, it doesn't.
+    with scoped_user(uid):
+        r = await telemetry_tools.read_token_usage(eid, group_by="agent")
+        assert r.ok
+        assert r.data["totals"]["calls"] == 1
+        assert r.data["totals"]["total_tokens"] == 15
+
+    r = await telemetry_tools.read_token_usage(eid, group_by="agent")
+    assert r.ok
+    assert r.data["totals"]["calls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_record_llm_call_telemetry_forwards_user_id_to_writer(tmp_path):
+    """The patch layer parses user_id from the [Active engagement: ...]
+    header and threads it through record_llm_call_telemetry. Verify the
+    user_id keyword survives the call chain into record_token_usage so
+    the file lands at the user-scoped path.
+    """
+    class _Usage:
+        prompt_token_count = 7
+        candidates_token_count = 3
+        prompt_tokens_details = None
+
+    class _LlmResponse:
+        usage_metadata = _Usage()
+        model = "claude-test"
+
+    eid = "eng-uid-pass-through"
+    uid = "u-xyz-999"
+
+    r = await agent_callbacks.record_llm_call_telemetry(
+        llm_response=_LlmResponse(),
+        agent="SATestAgent",
+        engagement_id=eid,
+        user_id=uid,
+    )
+    assert r.ok
+    assert (tmp_path / "artifacts" / "users" / uid / eid / "meta" / "telemetry" / "llm-calls.jsonl").exists()
+    # And not under the unscoped fallback
+    assert not (tmp_path / "artifacts" / eid / "meta" / "telemetry" / "llm-calls.jsonl").exists()
+
+
 # ---------- lifecycle_tools.record_scope_progress ----------
 
 @pytest.mark.asyncio

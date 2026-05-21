@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 from .._storage import append_jsonl, read_jsonl
+from .._user_context import scoped_user as _scoped_user
 from .artifact_tools import ToolResult
 
 
@@ -49,6 +50,7 @@ async def record_token_usage(
     sam_task_id: Optional[str] = None,
     source: str = "agent",
     ts: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> ToolResult:
     """Append one LLM round-trip's token bill to the engagement's telemetry ledger.
 
@@ -72,6 +74,12 @@ async def record_token_usage(
             ``"agent"`` for the main body, ``"tool"`` for a tool-delegated call).
             Mirrors SAM's ``token_usage_by_source`` split.
         ts: Override timestamp (ISO 8601 UTC). Defaults to now.
+        user_id: When provided, the ledger is written under
+            ``users/<user_id>/<engagement_id>/...`` to match the per-user
+            storage isolation every other write path uses. Without it
+            (or with ``"anonymous"``) the write falls back to the legacy
+            unscoped layout — necessary for tests and CLI but in the
+            running WebUI it would hide the data from the dashboard.
     """
     row = {
         "ts": ts or _utc_now_iso(),
@@ -87,7 +95,8 @@ async def record_token_usage(
         "source": source,
     }
     try:
-        append_jsonl(engagement_id, LEDGER_PATH, row)
+        with _scoped_user(user_id):
+            append_jsonl(engagement_id, LEDGER_PATH, row)
         return ToolResult(ok=True, data=row)
     except (OSError, ValueError) as e:
         return ToolResult(ok=False, error=f"could not append telemetry: {e}")

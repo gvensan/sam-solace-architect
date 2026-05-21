@@ -46,6 +46,7 @@ log = logging.getLogger(__name__)
 
 
 _HEADER_RE = re.compile(r"\[Active engagement:[^\]]*engagement_id=([^\s,\]]+)")
+_USER_HEADER_RE = re.compile(r"\[Active engagement:[^\]]*user_id=([^\s,\]]+)")
 _PATCH_SENTINEL = "_sa_telemetry_patched"
 
 
@@ -117,6 +118,51 @@ def _extract_engagement_id(callback_context: Any) -> str | None:
                     eid = m.group(1)
                     _safe_state_set(callback_context, "engagement_id", eid)
                     return eid
+    except Exception:
+        return None
+    return None
+
+
+def _extract_user_id(callback_context: Any) -> str | None:
+    """Resolve the active user_id, fast path then slow path.
+
+    Mirrors :func:`_extract_engagement_id` but for the ``user_id=…`` slice
+    of the same ``[Active engagement: ...]`` header. Without this, telemetry
+    writes lose the per-user namespace and land in the unscoped storage
+    fallback — invisible to the dashboard's Usage view, which reads under
+    the authenticated user's namespace.
+
+    Returns ``None`` when the header has no ``user_id=…`` (anonymous /
+    dev-bypass mode); the recorder then writes unscoped, matching legacy.
+    """
+    cached = _safe_state_get(callback_context, "user_id")
+    if cached:
+        return cached
+
+    try:
+        invocation_ctx = getattr(callback_context, "_invocation_context", None)
+        session = getattr(invocation_ctx, "session", None) if invocation_ctx else None
+        events = getattr(session, "events", None) if session else None
+        if not events:
+            return None
+    except Exception:
+        return None
+
+    try:
+        for evt in reversed(list(events)):
+            content = getattr(evt, "content", None)
+            parts = getattr(content, "parts", None) if content else None
+            if not parts:
+                continue
+            for p in parts:
+                text = getattr(p, "text", None)
+                if not text or not isinstance(text, str):
+                    continue
+                m = _USER_HEADER_RE.search(text)
+                if m:
+                    uid = m.group(1)
+                    _safe_state_set(callback_context, "user_id", uid)
+                    return uid
     except Exception:
         return None
     return None
@@ -196,6 +242,7 @@ def install() -> None:
             #    swallowed so a bad telemetry write never breaks the agent.
             try:
                 eid = _extract_engagement_id(callback_context)
+                uid = _extract_user_id(callback_context)
                 step_id = _safe_state_get(callback_context, "step_id")
                 sam_task_id = _safe_state_get(callback_context, "logical_task_id")
                 model = _resolve_model_name(callback_context, llm_response)
@@ -206,6 +253,7 @@ def install() -> None:
                     step_id=step_id,
                     sam_task_id=sam_task_id,
                     model=model,
+                    user_id=uid,
                 )
             except Exception as e:
                 log.debug("[SA telemetry] capture failed (suppressed): %s", e)
