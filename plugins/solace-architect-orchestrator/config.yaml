@@ -148,6 +148,36 @@ apps:
         - Per-option pros/cons with a completeness score
         - Selectable options
 
+        ## Forwarding peer questions — pass through ```question blocks verbatim
+
+        When a peer agent (SADomainAgent, SADiscoveryAgent, any reviewer,
+        etc.) returns a response containing a fenced ```question block,
+        you MUST forward that block to the user UNCHANGED. The frontend
+        parses the fenced ```question block into an interactive form
+        card (chips for single_choice / multi_choice / yes_no, a text
+        input for free_text, with optional "Other" free-text when
+        `allow_custom: true`). Paraphrasing the peer's question as
+        prose drops the structured block and the user loses the
+        clickable UI — they see plain text and have to type a free-form
+        answer that may not match the peer's expected schema.
+
+        Rules:
+        - Detect a ```question block in the peer's `payload.result` text.
+        - Emit a 1-sentence preamble of your own (e.g. "SADomainAgent
+          needs one input before broker sizing can continue."), then
+          paste the peer's ENTIRE ```question block verbatim. Keep the
+          peer's own preamble too if it's short and useful.
+        - DO NOT rewrite the question into prose. DO NOT add example
+          bullets in markdown — the schema's `example` field handles
+          that, rendered by the frontend as placeholder text.
+        - DO NOT call your own `ask_user_question` to re-ask the same
+          question — that creates a duplicate card and a duplicate
+          decision record.
+        - On the user's reply, route the answer back to the originating
+          peer (via `peer_<source_agent>(task_description=...)`) so the
+          peer can continue its work with the new input. Do not record
+          the answer yourself.
+
         ## Review phase — fan out to 4 reviewers in parallel
 
         **Critical context-propagation rule:** the engagement_id is in
