@@ -599,3 +599,36 @@ async def test_record_scope_progress_rejects_empty_scope():
     )
     assert not r.ok
     assert "current_scope" in r.error
+
+
+@pytest.mark.asyncio
+async def test_record_scope_progress_coerces_json_string_scopes_done():
+    """Regression for the 2026-05-21 PEP-563 bug: when LiteLLM passes
+    scopes_done as a JSON-encoded STRING (which it sometimes does instead
+    of a native list), the @coerce_args decorator must JSON-parse it.
+    Pre-fix: ``from __future__ import annotations`` left the param
+    annotation as the string ``"Optional[list]"`` at runtime, so
+    ``_is_list_annotation`` failed the type check and the decorator
+    silently skipped coercion. The function body then ran
+    ``[str(s) for s in scopes_done]`` against the raw string, producing
+    a list of CHARACTERS — visible in the wild as scope_progress.done
+    looking like ``['[', '"', 'e', 'v', 'e', 'n', 't', ...]``.
+
+    Fix: _arg_coercion now uses typing.get_type_hints() which resolves
+    string annotations into real types.
+    """
+    r = await lifecycle_tools.record_scope_progress(
+        engagement_id="scope-pep563-eng", step="design",
+        current_scope="event-delivery-characteristics", status="DONE",
+        next_scope="broker-select",
+        # JSON-encoded string — the LiteLLM-misbehaving shape.
+        scopes_done='["event-delivery-characteristics"]',
+    )
+    assert r.ok, r.error
+    from solace_architect_core._storage import read_yaml
+    data = read_yaml("scope-pep563-eng", "meta/engagement-status.yaml")
+    done = data["steps"]["design"]["scope_progress"]["done"]
+    assert done == ["event-delivery-characteristics"], (
+        f"expected a 1-element list of scope names; "
+        f"got list-of-chars (decorator regression): {done}"
+    )

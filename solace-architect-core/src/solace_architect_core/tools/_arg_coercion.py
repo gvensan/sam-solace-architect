@@ -125,16 +125,36 @@ def coerce_args(fn):
             ...
     """
     sig = inspect.signature(fn)
+    # PEP 563 / `from __future__ import annotations` keeps annotations as
+    # STRINGS at runtime — `param.annotation` is "Optional[list]" not the
+    # actual `Optional[list]` type. `_is_list_annotation` then fails its
+    # `origin in (list, _t.List)` check and silently treats every parameter
+    # as "no coercion needed", letting JSON-string args sail through
+    # uncoerced. Found it the hard way on 2026-05-21 when
+    # record_scope_progress wrote a list-of-characters into scope_progress.done
+    # despite the decorator being attached.
+    #
+    # `typing.get_type_hints` resolves the string annotations into real
+    # types using the function's module globals — exactly what we need.
+    # Fall back to raw .annotation values if get_type_hints raises (e.g. a
+    # name in the annotation isn't importable in this scope); that mirrors
+    # the prior behavior (silent no-op coercion) which is preferable to
+    # crashing tool registration.
+    try:
+        hints = _t.get_type_hints(fn)
+    except Exception:
+        hints = {}
     # Pre-compute which params need coercion so the per-call overhead is
     # just one dict lookup per arg.
     list_params: set[str] = set()
     dict_params: set[str] = set()
     for name, param in sig.parameters.items():
-        if param.annotation is inspect.Parameter.empty:
+        ann = hints.get(name, param.annotation)
+        if ann is inspect.Parameter.empty:
             continue
-        if _is_list_annotation(param.annotation):
+        if _is_list_annotation(ann):
             list_params.add(name)
-        if _is_dict_annotation(param.annotation):
+        if _is_dict_annotation(ann):
             dict_params.add(name)
     if not list_params and not dict_params:
         return fn    # nothing to do; return the original function unwrapped

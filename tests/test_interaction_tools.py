@@ -90,7 +90,13 @@ async def test_ask_user_question_accepts_json_string_options():
 
 @pytest.mark.asyncio
 async def test_ask_user_question_rejects_garbage_options():
-    """Malformed JSON string surfaces the canonical 'options must be a list' error."""
+    """Malformed JSON string still gets rejected — but now via the per-item
+    validator. The @coerce_args decorator (after the 2026-05-21 PEP-563
+    fix) sees ``options`` as list-typed, fails to JSON-parse the garbage,
+    and wraps it as ``[value]`` per its single-element-list fallback.
+    The downstream validation then catches that the sole element isn't
+    a dict. Either error wording is a clear "you sent garbage" signal.
+    """
     res = await ask_user_question(
         question_id="t3",
         question="Test?",
@@ -98,7 +104,10 @@ async def test_ask_user_question_rejects_garbage_options():
         options="not really json",
     )
     assert not res.ok
-    assert "must be a list" in res.error
+    # Either "must be a list" (pre-decorator path) or "must be a dict"
+    # (post-decorator wrapping path) qualifies as the canonical
+    # "options rejected" signal.
+    assert "must be a list" in res.error or "must be a dict" in res.error
 
 
 @pytest.mark.asyncio
