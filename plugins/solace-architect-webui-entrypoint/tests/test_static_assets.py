@@ -157,3 +157,64 @@ def test_ep_prov_tile_maps_not_requested_to_na():
     assert '"N/A"' in js
     # And the EP Prov tile uses the mapped variable, not the raw one.
     assert "epProvDisplay" in js, "EP Prov display mapping not wired"
+
+
+def test_form_card_submits_capture_task_id_for_stop():
+    """submitAnswer + submitQuickReply must call _setChatInflight with the
+    task_id from the dispatch response. Without this the STOP button stays
+    invisible while the agent is processing a form-card reply — the same
+    bug user reported on 2026-05-21.
+    """
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    # Both helpers must read task_id from the response and arm STOP.
+    # Brittle on signature, but that's the load-bearing contract.
+    assert "async function submitQuickReply" in js
+    assert "async function submitAnswer" in js
+    # Both should reference data.task_id after a successful POST. We can't
+    # easily verify "inside this specific function" without an AST, so we
+    # at least require both _setChatInflight call AND the data.task_id
+    # pattern to appear in the file. The submit-handler test already
+    # covers the chatForm path; this guards the form-card paths.
+    assert js.count("_setChatInflight(data.task_id)") >= 3, (
+        "Expected ≥3 _setChatInflight(data.task_id) callsites "
+        "(chatForm submit + submitAnswer + submitQuickReply); "
+        "STOP button visibility breaks if any go missing."
+    )
+
+
+def test_progress_cta_has_exec_hint_renderer():
+    """In-progress cards must include the _phaseExecHint() output below the
+    body. Locks in the one-line phase-progress hint feature so a refactor
+    can't silently drop it (the user'd lose the "scope 4/9 · updated 2m
+    ago" current-state cue).
+    """
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    css = (PKG_ROOT / "webui" / "assets" / "styles.css").read_text()
+    # The helper exists.
+    assert "function _phaseExecHint" in js
+    assert "function _relTime" in js
+    # All 6 in-progress branches inject the hint.
+    for phase in ("discovery", "design", "review", "validation",
+                  "event-portal", "blueprint"):
+        marker = f'_phaseExecHint({{ phase: "{phase}"'
+        assert marker in js, f"_phaseExecHint not wired for phase={phase}"
+    # CSS class is styled (subtle muted monospace).
+    assert ".cta-exec-hint" in css
+
+
+def test_tool_call_pill_supports_3_line_clamp_and_expand():
+    """Tool-call pills must clamp to 3 lines by default and toggle via
+    click. Prevents the wall-of-text behavior the user reported
+    (peer_SADomainAgent(task_description='...lots of text...') dumping
+    the entire prompt body into the chat panel).
+    """
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    css = (PKG_ROOT / "webui" / "assets" / "styles.css").read_text()
+    # CSS: clamp to 3 lines on .tool-call-args, removable via .expanded
+    assert ".activity-pill.tool-call .tool-call-args" in css
+    assert "-webkit-line-clamp: 3" in css
+    assert ".activity-pill.tool-call.expanded" in css
+    # JS: delegated click handler on chatLog toggles .expanded
+    assert 'pill.classList.toggle("expanded")' in js
+    # Selection-in-progress guard so text-selection isn't interrupted
+    assert "sel.toString().length" in js

@@ -867,6 +867,16 @@ pre {
 }
 .progress-cta h2 { margin: 4px 0 6px; color: var(--primary); font-size: 18px; }
 .progress-cta p { color: var(--muted); font-size: 13px; line-height: 1.5; max-width: 70ch; margin: 0 0 4px; }
+/* Compact one-line "what's happening RIGHT NOW" hint below the body of
+ * each in-progress card. Mono-spaced + muted so it visually subordinates
+ * to the main body text but still tells you "scope 4/9 · updated 2m ago". */
+.cta-exec-hint {
+  font-family: 'Space Mono', monospace;
+  font-size: 11px; line-height: 1.5;
+  color: var(--muted, #888);
+  margin: 6px 0 0;
+  letter-spacing: 0.02em;
+}
 .progress-cta-actions { flex-shrink: 0; }
 .progress-cta-actions-row { display: flex; gap: 8px; }
 .progress-cta-actions .cta-btn { font-size: 14px; padding: 8px 14px; cursor: pointer; }
@@ -1560,7 +1570,30 @@ pre {
 
 .activity-pill.tool-call { font-family: 'Space Mono', monospace; font-size: 11px; }
 .activity-pill.tool-call .tool-call-name { font-weight: 600; }
-.activity-pill.tool-call .tool-call-args { color: var(--muted, #888); margin-left: 4px; }
+.activity-pill.tool-call .tool-call-args {
+  color: var(--muted, #888); margin-left: 4px;
+  /* Default: clamp at 3 lines so long task_description / multi-arg tool
+   * calls don't dump a wall of text into the chat. Click anywhere on the
+   * pill to toggle .expanded which removes the clamp. -webkit-line-clamp
+   * is supported in every modern browser via the unprefixed form too;
+   * we keep -webkit-* for older WebKit-based browsers. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.activity-pill.tool-call.expanded .tool-call-args {
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  display: block;
+}
+/* Hover hint that the pill is clickable. Short pills (args fit in 3
+ * lines) still get the pointer — clicking is a no-op visually, which is
+ * the right behavior (no surprising state change for unsurprising
+ * content). */
+.activity-pill.tool-call { cursor: pointer; }
+.activity-pill.tool-call:hover { background: rgba(0, 0, 0, 0.02); }
 /* Friendly-label tool pills use the regular UI font (not mono) so the
    human-readable label reads cleanly; the monospace look stays for the
    raw-args fallback when a tool isn't in the friendly-label map. */

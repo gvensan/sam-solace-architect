@@ -652,6 +652,9 @@
           : [];
 
         // One contextual CTA, always shown — content depends on lifecycle state.
+        // lifecycle + stats are forwarded so the in-progress cards can render
+        // a one-line execution hint (current scope / open items / "updated Xm ago")
+        // below the body. See _phaseExecHint() for what each phase contributes.
         const cta = renderProgressCta({
           eid, hasIntake, discoveryStatus, discoveryNote,
           discoveryInProgress, openItemsCount,
@@ -660,7 +663,7 @@
           validationStatus, validationNote, validationDone, validationInProgress,
           eventPortalStatus, eventPortalNote, eventPortalDone, eventPortalInProgress,
           blueprintStatus, blueprintNote, blueprintDone, blueprintInProgress,
-          blueprintBlockers,
+          blueprintBlockers, lifecycle, stats,
         });
 
         root.innerHTML = `
@@ -1258,6 +1261,68 @@
   //   - Discovery DONE          → Start Design (the canonical handoff)
   //   - Discovery in progress   → Continue Discovery in chat
   //   - Intake exists, idle     → Start Discovery
+  // Compact "what's happening RIGHT NOW" hint for in-progress cards.
+  // One line, muted, monospace — fills the silent gap between the card
+  // body and the action buttons. Non-redundant with the phase tiles row
+  // (which shows state) and the Stats sidebar (which shows totals): this
+  // line answers "where are we INSIDE the current phase, and when was
+  // the last sign of life?". Each phase contributes whatever's most
+  // useful from what we already have on the dashboard payload.
+  function _relTime(iso) {
+    if (!iso) return null;
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return null;
+    const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+    if (s < 30)        return "just now";
+    if (s < 90)        return "a moment ago";
+    if (s < 60 * 60)   return Math.round(s / 60) + "m ago";
+    if (s < 86400)     return Math.round(s / 3600) + "h ago";
+    return Math.round(s / 86400) + "d ago";
+  }
+
+  function _phaseExecHint({ phase, lifecycle, stats }) {
+    const step = lifecycle?.steps?.[phase] || {};
+    const pieces = [];
+
+    if (phase === "discovery") {
+      const open = (stats?.open_items_blocking || 0) + (stats?.open_items_advisory || 0);
+      if (open) pieces.push(`${open} open item${open === 1 ? "" : "s"}`);
+    } else if (phase === "design") {
+      const sp = step.scope_progress || {};
+      const done = (sp.done || []).length;
+      const applicable = Array.isArray(sp.applicable) ? sp.applicable.length : 0;
+      if (applicable) {
+        pieces.push(`${done} of ${applicable} scope${applicable === 1 ? "" : "s"} done`);
+      } else if (done) {
+        pieces.push(`${done} scope${done === 1 ? "" : "s"} done`);
+      }
+      if (sp.next) pieces.push(`on ${sp.next}`);
+    } else if (phase === "review") {
+      // We don't have per-reviewer breakdown in stats; surface decisions
+      // accumulated so far + the agent's own note when present.
+      const d = stats?.decisions_count || 0;
+      if (d) pieces.push(`${d} decision${d === 1 ? "" : "s"} so far`);
+    } else if (phase === "validation") {
+      const open = (stats?.open_items_blocking || 0);
+      if (open) pieces.push(`${open} blocking item${open === 1 ? "" : "s"}`);
+    } else if (phase === "event-portal" || phase === "blueprint") {
+      // No phase-specific counters; rely on the timestamp + note alone.
+    }
+
+    // Short note from the agent (set via set_step_status note=…) — adds
+    // qualitative context the counters miss. Truncate so it stays one line.
+    if (step.note && step.note.length > 0) {
+      const trimmed = step.note.length > 80 ? step.note.slice(0, 77) + "…" : step.note;
+      pieces.push(`"${trimmed}"`);
+    }
+
+    const age = _relTime(step.updated_at);
+    if (age) pieces.push(`updated ${age}`);
+
+    if (!pieces.length) return "";
+    return `<p class="cta-exec-hint">→ ${pieces.map(escapeHtml).join(" · ")}</p>`;
+  }
+
   function renderProgressCta({
     eid, hasIntake, discoveryStatus, discoveryNote, discoveryInProgress, openItemsCount,
     designStatus, designNote, designDone, designInProgress,
@@ -1265,7 +1330,7 @@
     validationStatus, validationNote, validationDone, validationInProgress,
     eventPortalStatus, eventPortalNote, eventPortalDone, eventPortalInProgress,
     blueprintStatus, blueprintNote, blueprintDone, blueprintInProgress,
-    blueprintBlockers,
+    blueprintBlockers, lifecycle, stats,
   }) {
     blueprintBlockers = blueprintBlockers || [];
     if (!hasIntake) {
@@ -1341,6 +1406,7 @@
             ${blueprintNote ? `<em>${escapeHtml(blueprintNote)}</em> ` : ""}
             Click <strong>Continue in chat →</strong> to follow along —
             the package ZIP appears under <code>exports/</code> when ready.</p>
+            ${_phaseExecHint({ phase: "blueprint", lifecycle, stats })}
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
             <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
@@ -1386,6 +1452,7 @@
             In Interactive mode, the agent pauses between layers for
             Apply / Skip confirmation. Click <strong>Continue in chat →</strong>
             to answer the next prompt.</p>
+            ${_phaseExecHint({ phase: "event-portal", lifecycle, stats })}
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
             <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
@@ -1453,6 +1520,7 @@
             schema sanity, and terminology.
             ${validationNote ? `<em>${escapeHtml(validationNote)}</em> ` : ""}
             Click <strong>Continue in chat →</strong> to follow along.</p>
+            ${_phaseExecHint({ phase: "validation", lifecycle, stats })}
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
             <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
@@ -1498,6 +1566,7 @@
             Each runs as a separate task; findings appear in chat once all
             four return. Click <strong>Continue in chat →</strong> to follow
             along.</p>
+            ${_phaseExecHint({ phase: "review", lifecycle, stats })}
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
             <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
@@ -1542,6 +1611,7 @@
             Click <strong>Continue in chat →</strong> to open the chat panel
             and answer the next form — each scope's artifact appears on the
             Artifacts tab as the agent finishes.</p>
+            ${_phaseExecHint({ phase: "design", lifecycle, stats })}
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
             <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
@@ -1589,6 +1659,7 @@
             Click <strong>Continue in chat →</strong> to answer the next
             question — the brief appears here once the agent finishes its
             pass.</p>
+            ${_phaseExecHint({ phase: "discovery", lifecycle, stats })}
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
             <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
@@ -2480,6 +2551,19 @@
   const chatLog = document.getElementById("chat-log");
   const chatForm = document.getElementById("chat-form");
   const chatInput = document.getElementById("chat-input");
+
+  // Click-to-expand for tool-call pills (3-line clamp by default).
+  // Delegated on chatLog so dynamically-added pills get this for free.
+  // We bail if the user is mid-selection — clicking to expand should NOT
+  // interrupt a text-selection drag (the click event fires AFTER mouseup;
+  // a non-empty selection means the user was selecting, not clicking).
+  chatLog?.addEventListener("click", (e) => {
+    const pill = e.target.closest(".activity-pill.tool-call");
+    if (!pill) return;
+    const sel = window.getSelection();
+    if (sel && sel.toString().length > 0) return;   // selection in progress
+    pill.classList.toggle("expanded");
+  });
 
   // Chat history is persisted per project in localStorage. The session id is
   // derived from the active project PLUS a per-tab suffix — two tabs of the
@@ -4659,6 +4743,14 @@
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // STOP button visibility — quick-reply chips dispatch a task just
+      // like the main chat form does. Capture the task_id so the SEND
+      // button flips to STOP for the duration of the agent run, instead
+      // of staying on SEND while the agent silently spins.
+      try {
+        const data = await res.json();
+        if (data && data.task_id) _setChatInflight(data.task_id);
+      } catch { /* response body missing — leave button in SEND mode */ }
     } catch (err) {
       _recoverFromSubmitError("could not send reply: " + err.message, cardEl);
     }
@@ -4741,6 +4833,14 @@
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // STOP button visibility — form-card answers dispatch a task too;
+      // capture task_id so SEND flips to STOP for the duration of the
+      // agent run. Without this the user sees the agent doing work
+      // ("Reading discovery/discovery-brief.yaml…") but no way to stop it.
+      try {
+        const data = await res.json();
+        if (data && data.task_id) _setChatInflight(data.task_id);
+      } catch { /* leave button in SEND mode if response body missing */ }
     } catch (err) {
       _recoverFromSubmitError("could not submit answer: " + err.message, cardEl);
     }
