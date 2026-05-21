@@ -306,3 +306,77 @@ async def test_reset_discovery_drops_phase_decisions_but_keeps_orchestrator():
     assert len(remaining) == 1, remaining
     assert remaining[0]["source_agent"] == "SAOrchestratorAgent"
     assert remaining[0]["context"] == "orchestrator flow context"
+
+
+@pytest.mark.asyncio
+async def test_reset_discovery_resets_token_usage_for_phase_agents():
+    """Restart Discovery clears every llm-calls.jsonl row whose agent
+    maps to a phase that was wiped; orchestrator-authored rows survive
+    (matches the decisions policy). Without this, the existing
+    step_id-keyed filter misses 100% of real rows since the recorder
+    almost never tags step_id, leaving the Usage tile stale forever.
+    """
+    from solace_architect_core.tools import telemetry_tools
+    from solace_architect_webui_entrypoint.routes.api import reset_discovery
+
+    eid = "telemetry-restart-eng"
+
+    # One row per agent, matching the decisions test's seed.
+    seed = [
+        ("SADiscoveryAgent", 100),
+        ("SADomainAgent", 200),
+        ("SAArchitectReviewerAgent", 50),
+        ("SADeveloperReviewerAgent", 50),
+        ("SAValidationAgent", 80),
+        ("SAEventPortalAgent", 40),
+        ("SABlueprintAgent", 90),
+        ("SAOrchestratorAgent", 30),
+    ]
+    for agent, tok in seed:
+        await telemetry_tools.record_token_usage(
+            eid, agent=agent, model="m",
+            input_tokens=tok, output_tokens=tok // 10,
+        )
+
+    result = await reset_discovery(eid)
+
+    # Seven phase-owner rows wiped; orchestrator row survives.
+    assert result["telemetry_rows_cleared"] == 7, result
+    remaining = (await telemetry_tools.read_token_usage(eid, group_by="agent")).data
+    assert remaining["totals"]["calls"] == 1, remaining
+    assert remaining["rows"][0]["key"] == "SAOrchestratorAgent"
+
+
+@pytest.mark.asyncio
+async def test_reset_design_resets_only_design_and_downstream_telemetry():
+    """Restart Design wipes design + downstream (review/validation/EP/
+    blueprint) telemetry rows; upstream Discovery rows AND orchestrator
+    rows survive.
+    """
+    from solace_architect_core.tools import telemetry_tools
+    from solace_architect_webui_entrypoint.routes.api import reset_design
+
+    eid = "telemetry-design-restart-eng"
+
+    seed = [
+        ("SADiscoveryAgent", 100),
+        ("SADomainAgent", 200),
+        ("SAArchitectReviewerAgent", 50),
+        ("SAValidationAgent", 80),
+        ("SAEventPortalAgent", 40),
+        ("SABlueprintAgent", 90),
+        ("SAOrchestratorAgent", 30),
+    ]
+    for agent, tok in seed:
+        await telemetry_tools.record_token_usage(
+            eid, agent=agent, model="m",
+            input_tokens=tok, output_tokens=tok // 10,
+        )
+
+    result = await reset_design(eid)
+
+    # 5 wiped (design + 4 downstream); discovery + orchestrator survive.
+    assert result["telemetry_rows_cleared"] == 5, result
+    remaining = (await telemetry_tools.read_token_usage(eid, group_by="agent")).data
+    survivors = {row["key"] for row in remaining["rows"]}
+    assert survivors == {"SADiscoveryAgent", "SAOrchestratorAgent"}, survivors

@@ -274,6 +274,40 @@ async def _drop_decisions_for_phases(engagement_id: str, phases: set[str]) -> in
     return dropped
 
 
+async def _drop_telemetry_for_phases(engagement_id: str, phases: set[str]) -> int:
+    """Remove every llm-calls.jsonl row whose agent maps into ``phases``.
+
+    Mirrors :func:`_drop_decisions_for_phases` so a restart wipes the
+    token-usage rows for the same phases it wipes decisions for.
+    Orchestrator-authored rows (cross-cutting flow routing) are preserved,
+    matching the decisions policy.
+
+    The existing per-step ``_clear_step_telemetry`` filter keys off
+    ``step_id``, which is ``None`` for almost every row in practice
+    (only orchestrator-routed calls tag a step) — so without this
+    agent-based filter, restarts effectively never reset the token tile.
+    """
+    path = "meta/telemetry/llm-calls.jsonl"
+    try:
+        rows = read_jsonl(engagement_id, path)
+    except Exception:
+        return 0
+    if not rows:
+        return 0
+    kept = [
+        r for r in rows
+        if _AGENT_TO_PHASE.get(r.get("agent", "")) not in phases
+    ]
+    dropped = len(rows) - len(kept)
+    if dropped:
+        import json as _json
+        content = "\n".join(_json.dumps(r, sort_keys=False) for r in kept)
+        if content:
+            content += "\n"
+        write_text(engagement_id, path, content)
+    return dropped
+
+
 async def reset_discovery(engagement_id: str) -> Any:
     """Hard-reset the discovery step.
 
@@ -317,10 +351,11 @@ async def reset_discovery(engagement_id: str) -> Any:
                 )
                 superseded += 1
 
-    # Drop discovery-authored decisions before cascading. The cascade drops
-    # downstream-phase decisions in its own loop, so by the time we return
-    # decisions_cleared = discovery + every downstream phase.
+    # Drop discovery-authored decisions + telemetry rows before cascading.
+    # The cascade drops downstream-phase rows in its own loop, so by the time
+    # we return these counts cover discovery + every downstream phase.
     decisions_cleared = await _drop_decisions_for_phases(engagement_id, {"discovery"})
+    telemetry_rows_cleared = await _drop_telemetry_for_phases(engagement_id, {"discovery"})
 
     # Cascade-wipe every downstream phase (design through blueprint) — they
     # all derive from Discovery, so re-running with stale design/review/etc
@@ -329,12 +364,14 @@ async def reset_discovery(engagement_id: str) -> Any:
     removed.extend(cascade.get("cascaded_artifacts", []))
     superseded += cascade.get("cascaded_open_items_superseded", 0)
     decisions_cleared += cascade.get("cascaded_decisions_cleared", 0)
+    telemetry_rows_cleared += cascade.get("cascaded_telemetry_rows_cleared", 0)
 
     return {
         "removed_artifacts": removed,
         "open_items_superseded": superseded,
         "findings_cleared": cascade.get("cascaded_findings_cleared", 0),
         "decisions_cleared": decisions_cleared,
+        "telemetry_rows_cleared": telemetry_rows_cleared,
         "cascaded_steps": cascade.get("cascaded_steps", []),
         **telemetry_cleared,
     }
@@ -408,8 +445,9 @@ async def reset_design(engagement_id: str) -> Any:
                 )
                 superseded += 1
 
-    # Drop design-authored decisions before cascading.
+    # Drop design-authored decisions + telemetry rows before cascading.
     decisions_cleared = await _drop_decisions_for_phases(engagement_id, {"design"})
+    telemetry_rows_cleared = await _drop_telemetry_for_phases(engagement_id, {"design"})
 
     # Cascade-wipe every phase downstream of design — review, validation,
     # event-portal, blueprint — since they all derive from the design
@@ -420,12 +458,14 @@ async def reset_design(engagement_id: str) -> Any:
     removed.extend(cascade.get("cascaded_artifacts", []))
     superseded += cascade.get("cascaded_open_items_superseded", 0)
     decisions_cleared += cascade.get("cascaded_decisions_cleared", 0)
+    telemetry_rows_cleared += cascade.get("cascaded_telemetry_rows_cleared", 0)
 
     return {
         "removed_artifacts": removed,
         "open_items_superseded": superseded,
         "findings_cleared": cascade.get("cascaded_findings_cleared", 0),
         "decisions_cleared": decisions_cleared,
+        "telemetry_rows_cleared": telemetry_rows_cleared,
         "review_step_cleared": True,
         "cascaded_steps": cascade.get("cascaded_steps", []),
         **telemetry_cleared,
@@ -447,6 +487,7 @@ async def reset_review(engagement_id: str) -> Any:
         "open_items_superseded": cascade.get("cascaded_open_items_superseded", 0),
         "findings_cleared": cascade.get("cascaded_findings_cleared", 0),
         "decisions_cleared": cascade.get("cascaded_decisions_cleared", 0),
+        "telemetry_rows_cleared": cascade.get("cascaded_telemetry_rows_cleared", 0),
         "cascaded_steps": cascade.get("cascaded_steps", []),
     }
 
@@ -458,6 +499,7 @@ async def reset_validation(engagement_id: str) -> Any:
         "removed_artifacts": cascade.get("cascaded_artifacts", []),
         "open_items_superseded": cascade.get("cascaded_open_items_superseded", 0),
         "decisions_cleared": cascade.get("cascaded_decisions_cleared", 0),
+        "telemetry_rows_cleared": cascade.get("cascaded_telemetry_rows_cleared", 0),
         "cascaded_steps": cascade.get("cascaded_steps", []),
     }
 
@@ -475,6 +517,7 @@ async def reset_event_portal(engagement_id: str) -> Any:
         "removed_artifacts": cascade.get("cascaded_artifacts", []),
         "open_items_superseded": cascade.get("cascaded_open_items_superseded", 0),
         "decisions_cleared": cascade.get("cascaded_decisions_cleared", 0),
+        "telemetry_rows_cleared": cascade.get("cascaded_telemetry_rows_cleared", 0),
         "cascaded_steps": cascade.get("cascaded_steps", []),
     }
 
@@ -486,6 +529,7 @@ async def reset_blueprint(engagement_id: str) -> Any:
         "removed_artifacts": cascade.get("cascaded_artifacts", []),
         "open_items_superseded": cascade.get("cascaded_open_items_superseded", 0),
         "decisions_cleared": cascade.get("cascaded_decisions_cleared", 0),
+        "telemetry_rows_cleared": cascade.get("cascaded_telemetry_rows_cleared", 0),
         "cascaded_steps": cascade.get("cascaded_steps", []),
     }
 
@@ -569,9 +613,10 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
     removed = []
     findings_cleared = 0
     superseded = 0
-    # Drop every decision authored by an agent that owns one of the cascaded
-    # phases — done in a single pass so we rewrite decisions.yaml just once.
+    # Drop every decision + telemetry row authored by an agent that owns one
+    # of the cascaded phases — single pass for each file so we rewrite once.
     decisions_cleared = await _drop_decisions_for_phases(engagement_id, set(to_wipe))
+    telemetry_rows_cleared = await _drop_telemetry_for_phases(engagement_id, set(to_wipe))
 
     if "design" in to_wipe:
         for scope in _DESIGN_SCOPE_FOLDERS:
@@ -660,6 +705,7 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
         "cascaded_findings_cleared": findings_cleared,
         "cascaded_open_items_superseded": superseded,
         "cascaded_decisions_cleared": decisions_cleared,
+        "cascaded_telemetry_rows_cleared": telemetry_rows_cleared,
     }
 
 
