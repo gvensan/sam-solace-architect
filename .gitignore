@@ -5,8 +5,6 @@
 # tests/, plus top-level config (.github/, README.md, pytest.ini).
 #
 # It does NOT track:
-#   - plugins/   — separate git repo (sam-solace-architect-agents) for contributing to
-#                  solacecommunity/solace-agent-mesh-plugins
 #   - sam/       — SAM runtime workspace (SQLite state, logs, generated configs)
 #   - .venv/     — Python virtual environment
 #   - .env       — local secrets
@@ -14,7 +12,6 @@
 # ============================================================================
 # Separate repos / runtime workspaces
 # ============================================================================
-plugins/
 sam/
 
 # ============================================================================
