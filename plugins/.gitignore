@@ -92,3 +92,4 @@ Thumbs.db
 # ============================================================================
 .ipynb_checkpoints/
 *.ipynb_checkpoints
+solace_ai_connector.log
