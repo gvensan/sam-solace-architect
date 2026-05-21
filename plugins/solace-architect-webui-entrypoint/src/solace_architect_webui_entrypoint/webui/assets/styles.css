@@ -604,6 +604,15 @@ body[data-chat="closed"] .chat-panel { display: none; }
 }
 .chat-form button:hover:not(:disabled) { background: var(--accent); color: var(--primary); }
 .chat-form button:disabled { opacity: 0.5; cursor: not-allowed; }
+/* STOP mode — applied while a chat task is in flight (see _setChatInflight
+ * in app.js). Destructive-tint so it visually contrasts with the default
+ * Send button. Reverts to Send on FinalResponse / Error SSE events. */
+.chat-form button.stop-mode {
+  background: #b00020; color: white;
+}
+.chat-form button.stop-mode:hover:not(:disabled) {
+  background: #c0392b; color: white;
+}
 
 /* ──────────────────────────────────────────────────────────────────────────
  * Home / empty state
@@ -1130,7 +1139,7 @@ pre {
   background: var(--accent); color: white; font-size: 10px; font-weight: 700;
   display: flex; align-items: center; justify-content: center;
 }
-.progress-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.progress-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; text-align: center; }
 /* Restart footer on each phase tile. Only shown for active/done phases
  * (canRestart in renderProgressBanner) — clicking opens the phase-specific
  * confirm modal that POSTs DELETE /api/engagements/{eid}/{phase} and

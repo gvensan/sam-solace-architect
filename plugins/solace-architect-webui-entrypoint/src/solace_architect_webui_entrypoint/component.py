@@ -259,6 +259,16 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 # replay buffer with id > since query param.
                 self._app.router.add_get("/api/chat/poll/{session_id}", self._chat_poll)
                 self._app.router.add_post("/api/chat/message", self._chat_message)
+                # Cancel an in-flight chat task. Frontend swaps the SEND button
+                # to STOP while a task is in flight; clicking STOP calls this
+                # route with the task_id returned from /api/chat/message.
+                # Mechanically the same as SAM's native webui — we publish a
+                # `tasks/cancel` A2A request to the target agent; the agent's
+                # ADK runner checks the cancel flag between LLM calls / tool
+                # calls and bails on the next yield point. Already-in-flight
+                # LLM calls finish (cost is sunk); subsequent calls are
+                # short-circuited. See cancel_task() below for details.
+                self._app.router.add_post("/api/chat/cancel", self._chat_cancel)
                 self._app.router.add_get("/api/agents", self._agents_list)
                 # Health probes (unauthenticated)
                 self._app.router.add_get("/health",  self._health)
@@ -648,6 +658,104 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
 
         return web.json_response(
             {"session_id": session_id, "task_id": task_id, "accepted": True},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def cancel_task(self, task_id: str) -> bool:
+        """Publish a tasks/cancel A2A request for an in-flight task.
+
+        Mirrors :meth:`solace_agent_mesh.gateway.generic.component.GenericGatewayComponent.cancel_task`
+        — BaseGatewayComponent doesn't expose a high-level cancel helper, only
+        the building blocks (``core_a2a_service.cancel_task`` for the message,
+        ``task_context_manager`` for the lookup, ``publish_a2a_message`` for
+        the send), so we replicate the assembly here rather than inheriting
+        from the generic component (we depend on BaseGatewayComponent).
+
+        Cancellation is cooperative: the agent's ADK runner checks the cancel
+        flag between LLM calls / tool calls, so already-running LLM calls
+        finish. Typical real-world cost when STOP is clicked mid-run is
+        1-3 LLM calls' worth of tokens (better than letting the agent run
+        to completion, but not free).
+
+        Returns True if the cancel request was published; False if the task
+        context can't be found (already finalized, never existed, or
+        belongs to a different session).
+        """
+        log_id = f"{self.log_identifier}[CancelTask]"
+        context = self.task_context_manager.get_context(task_id)
+        if not context:
+            log.warning("%s no context for task %s — already finalized?", log_id, task_id)
+            return False
+
+        target_agent_name = context.get("target_agent_name")
+        user_id = context.get("user_id_for_a2a")
+        if not target_agent_name:
+            log.error("%s target_agent_name missing for task %s", log_id, task_id)
+            return False
+
+        log.info(
+            "%s publishing cancel for task=%s agent=%s user_id=%s",
+            log_id, task_id, target_agent_name, user_id,
+        )
+        topic, payload, user_properties = self.core_a2a_service.cancel_task(
+            agent_name=target_agent_name,
+            task_id=task_id,
+            client_id=self.gateway_id,
+            user_id=user_id,
+        )
+        self.publish_a2a_message(
+            topic=topic, payload=payload, user_properties=user_properties,
+        )
+        return True
+
+    async def _chat_cancel(self, request: web.Request) -> web.Response:
+        """Cancel an in-flight chat task by id.
+
+        Body: ``{"task_id": "<id from /api/chat/message response>"}``.
+        Returns 200 ``{"cancel_requested": true}`` if the request was
+        published, 404 ``{"error": "task_not_found"}`` if the task context
+        is unknown (already finalized or never existed). The actual cancel
+        completes asynchronously when the agent reaches its next yield
+        point — clients should wait for the next FinalResponse SSE event
+        (state will be ``canceled``) before re-enabling input.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400,
+                                     headers={"Cache-Control": "no-store"})
+        task_id = (body or {}).get("task_id", "")
+        if not task_id or not isinstance(task_id, str):
+            return web.json_response({"error": "task_id required"}, status=400,
+                                     headers={"Cache-Control": "no-store"})
+
+        # Cross loops the same way _chat_message does — cancel_task wants
+        # SAM's loop (touches the broker via publish_a2a_message).
+        try:
+            sam_loop = self.get_async_loop()
+            coro = self.cancel_task(task_id)
+            if sam_loop is None or sam_loop is asyncio.get_event_loop():
+                ok = await coro
+            else:
+                fut = asyncio.run_coroutine_threadsafe(coro, sam_loop)
+                ok = await asyncio.wrap_future(fut)
+        except Exception:
+            log.exception("%s Cancel publish failed", self.log_identifier)
+            # M2 fix: don't echo the exception message into the response —
+            # could leak broker URLs / internal paths / claim values.
+            # The log.exception above carries full diagnostics for the
+            # operator; the client just needs to know the cancel failed.
+            return web.json_response({"error": "cancel failed"}, status=502,
+                                     headers={"Cache-Control": "no-store"})
+
+        if not ok:
+            return web.json_response(
+                {"error": "task_not_found",
+                 "hint": "task may have already completed or never existed"},
+                status=404, headers={"Cache-Control": "no-store"},
+            )
+        return web.json_response(
+            {"cancel_requested": True, "task_id": task_id},
             headers={"Cache-Control": "no-store"},
         )
 

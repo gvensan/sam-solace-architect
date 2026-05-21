@@ -272,16 +272,23 @@ async def test_reset_discovery_cascades_through_full_lifecycle():
 
 
 @pytest.mark.asyncio
-async def test_reset_discovery_drops_phase_decisions_but_keeps_orchestrator():
-    """Restart wipes phase-authored decisions; orchestrator flow decisions
-    survive. Counts come back in the response payload.
+async def test_reset_discovery_wipes_all_engagement_decisions():
+    """Restart Discovery clears EVERY decision in meta/decisions.yaml,
+    including SAOrchestratorAgent-authored rows. Phase restarts
+    (Design / Review / Validation / EP / Blueprint) still preserve
+    orchestrator decisions; only a full Discovery restart treats the
+    engagement as a clean slate.
+
+    Rationale: with SAOrchestratorAgent as the default chat agent,
+    design/EP decisions get recorded under the orchestrator and the
+    user-visible "Decisions: N" tile never resets. Matches the
+    Discovery-restart full-wipe policy already shipped for telemetry.
     """
     from solace_architect_core.tools import decision_tools
     from solace_architect_webui_entrypoint.routes.api import reset_discovery
 
     eid = "decisions-restart-eng"
 
-    # Record one decision per phase + one orchestrator decision.
     seed = [
         ("SADiscoveryAgent", "discovery context"),
         ("SADomainAgent", "design context"),
@@ -300,12 +307,84 @@ async def test_reset_discovery_drops_phase_decisions_but_keeps_orchestrator():
 
     result = await reset_discovery(eid)
 
-    # Seven phase-authored decisions wiped; one orchestrator decision survives.
-    assert result["decisions_cleared"] == 7, result
+    # All 8 cleared — orchestrator included.
+    assert result["decisions_cleared"] == 8, result
+    remaining = (await decision_tools.read_decisions(eid)).data
+    assert remaining == [], remaining
+
+
+@pytest.mark.asyncio
+async def test_reset_design_preserves_orchestrator_decisions():
+    """Inverse contract: phase restarts (here, Design) must NOT touch
+    orchestrator decisions — only Discovery restart is a full-engagement
+    clean slate. Without this, EVERY restart would wipe cross-cutting
+    flow choices, defeating their purpose.
+    """
+    from solace_architect_core.tools import decision_tools
+    from solace_architect_webui_entrypoint.routes.api import reset_design
+
+    eid = "design-restart-preserves-orch"
+
+    await decision_tools.record_decision(
+        eid, context="design choice", recommendation="r", selected="s",
+        rationale="r", source_agent="SADomainAgent",
+    )
+    await decision_tools.record_decision(
+        eid, context="orchestrator flow choice", recommendation="r", selected="s",
+        rationale="r", source_agent="SAOrchestratorAgent",
+    )
+
+    await reset_design(eid)
+
     remaining = (await decision_tools.read_decisions(eid)).data
     assert len(remaining) == 1, remaining
     assert remaining[0]["source_agent"] == "SAOrchestratorAgent"
-    assert remaining[0]["context"] == "orchestrator flow context"
+
+
+@pytest.mark.asyncio
+async def test_reset_discovery_unlinks_design_folder_files():
+    """The cascade must wipe files written to the current ``design/`` layout
+    (design/topic-taxonomy.yaml, design/integration/integration-map.yaml,
+    etc.), not just the legacy per-scope folders (topic-design/, broker-select/,
+    etc.). Before this fix, real engagements showed 17 ARTIFACTS after a
+    Restart Discovery — none of the design/ files got wiped because the
+    cascade only iterated the legacy folder list.
+    """
+    from solace_architect_core.tools import artifact_tools
+    from solace_architect_webui_entrypoint.routes.api import reset_discovery
+
+    eid = "design-folder-wipe-eng"
+
+    # Seed the current-layout design files (what real engagements have).
+    for name in (
+        "design/topic-taxonomy.yaml",
+        "design/broker-recommendation.yaml",
+        "design/integration/integration-map.yaml",
+        "design/protocol-map.yaml",
+        # Plus a legacy-layout file to verify both still get wiped.
+        "topic-design/legacy-doc.yaml",
+        # And the user's submitted intake — the docstring on reset_discovery
+        # promises these survive. Without these assertions, a regression
+        # that nuked intake.json/intake.md would slip through the test net.
+        "discovery/intake.json",
+        "discovery/intake.md",
+    ):
+        body = "topics: []" if name.endswith(".yaml") else "# stub"
+        await artifact_tools.write_artifact(eid, name, body)
+
+    await reset_discovery(eid)
+
+    remaining = (await artifact_tools.list_artifacts(eid)).data or []
+    design_left = [a for a in remaining if a.startswith(("design/", "topic-design/"))]
+    assert design_left == [], f"design files still present after restart: {design_left}"
+    # M1 fix: intake artifacts must SURVIVE — they're the user's submitted
+    # form and a new Discovery run reads them as source-of-truth.
+    assert "discovery/intake.json" in remaining, (
+        f"intake.json was wiped — must survive Restart Discovery. remaining={remaining}"
+    )
+    assert "discovery/intake.md" in remaining, (
+        f"intake.md was wiped — must survive Restart Discovery. remaining={remaining}"
+    )
 
 
 @pytest.mark.asyncio

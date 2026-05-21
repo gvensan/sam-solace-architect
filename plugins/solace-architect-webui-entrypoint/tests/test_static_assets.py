@@ -121,3 +121,39 @@ def test_sidebar_has_no_visualizer_link():
     js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
     assert "visualizer-link" not in js, "app.js still wires the removed visualizer link"
     assert "/visualizer" not in js, "app.js still references /visualizer URLs"
+
+
+def test_chat_send_button_supports_stop_mode():
+    """The chat send button must support a STOP mode that POSTs to
+    /api/chat/cancel while a task is in flight. Locks in the wiring so
+    nobody silently removes the cancel handler.
+    """
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    css = (PKG_ROOT / "webui" / "assets" / "styles.css").read_text()
+    # The toggle helper exists and toggles a `stop-mode` class.
+    assert "_setChatInflight" in js, "STOP-mode helper _setChatInflight missing"
+    assert "stop-mode" in js, "stop-mode class application missing in app.js"
+    # The cancel endpoint is targeted.
+    assert "/api/chat/cancel" in js, "STOP button doesn't POST /api/chat/cancel"
+    # The CSS styles the STOP variant distinctly.
+    assert ".chat-form button.stop-mode" in css, "STOP-mode CSS variant missing"
+
+
+def test_styles_centers_progress_label():
+    """`progress-label` must be center-aligned so multi-word labels like
+    'Event Portal' don't left-align inside the centered tile."""
+    css = (PKG_ROOT / "webui" / "assets" / "styles.css").read_text()
+    # The exact selector + property; brittle on purpose so reformatting
+    # doesn't accidentally drop the rule.
+    assert ".progress-label" in css
+    assert "text-align: center" in css
+
+
+def test_ep_prov_tile_maps_not_requested_to_na():
+    """The EP Prov dashboard tile must render 'N/A' instead of the raw
+    'not-requested' enum value (which reads as opaque dashboard noise)."""
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    assert '"not-requested"' in js
+    assert '"N/A"' in js
+    # And the EP Prov tile uses the mapped variable, not the raw one.
+    assert "epProvDisplay" in js, "EP Prov display mapping not wired"

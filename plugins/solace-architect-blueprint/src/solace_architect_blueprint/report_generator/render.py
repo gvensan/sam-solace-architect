@@ -1635,11 +1635,25 @@ def render_audience_pack_html(*, engagement_id: str, audience: str, artifacts: l
     toc_html = _build_toc(pack, sections_meta, artifacts_grouped)
     css, js = _load_templates()
 
+    # Inline favicon as a data URL — the report HTML is often opened
+    # standalone (file://) or served from a different origin than the
+    # WebUI, so /assets/favicon.svg wouldn't resolve. Matches the in-app
+    # SA chip exactly (accent #00C895 background, primary #093B5F text).
+    favicon_svg = (
+        "data:image/svg+xml;utf8,"
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+        "<rect width='32' height='32' rx='7' ry='7' fill='%2300C895'/>"
+        "<text x='16' y='22' font-family='Space Mono, monospace' "
+        "font-weight='700' font-size='14' text-anchor='middle' "
+        "fill='%23093B5F'>SA</text></svg>"
+    )
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <title>{esc(project)} — {esc(pack_label)}</title>
+<link rel="icon" type="image/svg+xml" href="{favicon_svg}">
 <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>{css}</style>
 </head>

@@ -58,3 +58,34 @@ def test_app_returns_component_class():
     inst = SolaceArchitectWebuiApp.__new__(SolaceArchitectWebuiApp)
     cls = inst._get_gateway_component_class()
     assert issubclass(cls, BaseGatewayComponent)
+
+
+def test_component_exposes_cancel_task_and_chat_cancel_handler():
+    """The STOP-button feature requires both a high-level cancel_task()
+    method (publishes the tasks/cancel A2A request) and the matching
+    /api/chat/cancel HTTP handler (_chat_cancel). Lock in their presence
+    so a refactor can't silently break the STOP button.
+    """
+    pytest.importorskip("solace_agent_mesh.gateway.base.component")
+    from solace_architect_webui_entrypoint.component import SolaceArchitectWebuiComponent
+    import inspect
+
+    assert hasattr(SolaceArchitectWebuiComponent, "cancel_task"), "cancel_task method missing"
+    assert hasattr(SolaceArchitectWebuiComponent, "_chat_cancel"), "_chat_cancel handler missing"
+    # Signatures: cancel_task(self, task_id) and _chat_cancel(self, request).
+    ct_sig = inspect.signature(SolaceArchitectWebuiComponent.cancel_task)
+    assert "task_id" in ct_sig.parameters
+    cc_sig = inspect.signature(SolaceArchitectWebuiComponent._chat_cancel)
+    assert "request" in cc_sig.parameters
+
+
+def test_component_source_registers_cancel_route():
+    """Smoke-check that the route table registers /api/chat/cancel — the
+    actual handler binding happens inside _start_http() which we can't
+    invoke without a running event loop. Reading the source is good enough
+    to catch the wiring regressing."""
+    from pathlib import Path
+    src = Path(__file__).parent.parent / "src" / "solace_architect_webui_entrypoint" / "component.py"
+    body = src.read_text()
+    assert "/api/chat/cancel" in body, "cancel route not registered in component.py"
+    assert "self._chat_cancel" in body, "_chat_cancel handler not bound to route"

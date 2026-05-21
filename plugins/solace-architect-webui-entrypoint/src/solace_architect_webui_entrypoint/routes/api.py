@@ -274,6 +274,41 @@ async def _drop_decisions_for_phases(engagement_id: str, phases: set[str]) -> in
     return dropped
 
 
+async def _wipe_engagement_decisions(engagement_id: str) -> int:
+    """Remove EVERY decision for this engagement, including orchestrator-authored.
+
+    Mirrors :func:`_wipe_engagement_telemetry` for decisions.yaml. The
+    phase-targeted :func:`_drop_decisions_for_phases` deliberately preserves
+    SAOrchestratorAgent rows as cross-cutting flow choices, but the same
+    issue that bit telemetry hits here: with SAOrchestratorAgent as the
+    default chat agent, design/EP decisions get recorded under the
+    orchestrator and survive a Discovery restart. User reports it as
+    "Restart Discovery left 16 decisions behind."
+
+    Used ONLY by reset_discovery (full clean-slate). Phase restarts
+    (Design / Review / Validation / EP / Blueprint) should not wipe
+    orchestrator decisions — those flow choices apply across phases.
+    """
+    try:
+        existing = read_yaml(engagement_id, "meta/decisions.yaml", default={"decisions": []})
+    except Exception as exc:
+        # I3 fix: log the failure so a permissions/lock error is visible in
+        # sam.log even when the response reports decisions_cleared=0. The
+        # alternative — silent swallow — masks a corrupt-or-locked file
+        # behind a misleading "success" payload.
+        import logging as _logging
+        _logging.getLogger(__name__).exception(
+            "_wipe_engagement_decisions: read failed for %s/meta/decisions.yaml: %s",
+            engagement_id, exc,
+        )
+        return 0
+    n = len((existing or {}).get("decisions", []) or [])
+    if n == 0:
+        return 0
+    write_yaml(engagement_id, "meta/decisions.yaml", {"decisions": []})
+    return n
+
+
 async def _wipe_engagement_telemetry(engagement_id: str) -> int:
     """Remove EVERY telemetry row for this engagement, including orchestrator.
 
@@ -396,8 +431,13 @@ async def reset_discovery(engagement_id: str) -> Any:
                 )
                 superseded += 1
 
-    # Drop discovery-authored decisions before cascading.
-    decisions_cleared = await _drop_decisions_for_phases(engagement_id, {"discovery"})
+    # Wipe EVERY decision for this engagement — orchestrator included.
+    # Same rationale as telemetry below: with SAOrchestratorAgent as the
+    # default chat agent, even design/EP decisions get authored by the
+    # orchestrator and survive a phase-targeted drop. User-visible symptom
+    # is "Restart Discovery left 16 decisions behind." See
+    # _wipe_engagement_decisions for the design rationale.
+    decisions_cleared = await _wipe_engagement_decisions(engagement_id)
 
     # Wipe EVERY telemetry row for this engagement — orchestrator included.
     # Discovery restart means "clean slate"; the phase-targeted wipe preserved
@@ -427,11 +467,22 @@ async def reset_discovery(engagement_id: str) -> Any:
     }
 
 
-# Folders SADomainAgent writes into — one per design scope.
-_DESIGN_SCOPE_FOLDERS = (
+# Folders SADomainAgent writes into. The CURRENT layout is a single top-level
+# ``design/`` directory whose files are named per scope (design/topic-taxonomy.yaml,
+# design/broker-recommendation.yaml, design/integration/integration-map.yaml,
+# etc.). The LEGACY layout used a top-level folder per scope (topic-design/...,
+# broker-select/..., integration/...). Both are listed so that engagements
+# created at any point in the project's history get fully wiped on Restart.
+# _unlink_category() is recursive (rglob) so subdirectories under design/ are
+# also cleaned. Empty legacy folders are no-ops; missing folders are no-ops.
+_DESIGN_FOLDERS = (
+    "design",                  # current single-folder layout (rglob handles subdirs)
     "topic-design", "broker-select", "protocol-select", "integration",
     "mesh-design", "ha-dr", "sam-design", "event-portal", "migration",
 )
+# Backwards-compatibility alias for any external caller that imported the
+# old name. Will be removed once nothing references it.
+_DESIGN_SCOPE_FOLDERS = _DESIGN_FOLDERS
 
 
 async def reset_design(engagement_id: str) -> Any:
@@ -461,7 +512,7 @@ async def reset_design(engagement_id: str) -> Any:
     removed = []
     # list_artifacts(engagement_id, category=<scope>) returns names like
     # "<scope>/foo.yaml"; iterate each and delete via safe_artifact_path.
-    for scope in _DESIGN_SCOPE_FOLDERS:
+    for scope in _DESIGN_FOLDERS:
         try:
             res = await artifact_tools.list_artifacts(engagement_id, category=scope)
             if not res.ok or not res.data:
@@ -669,7 +720,7 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
     telemetry_rows_cleared = await _drop_telemetry_for_phases(engagement_id, set(to_wipe))
 
     if "design" in to_wipe:
-        for scope in _DESIGN_SCOPE_FOLDERS:
+        for scope in _DESIGN_FOLDERS:
             removed.extend(await _unlink_category(engagement_id, scope))
         items_res = await decision_tools.read_open_items(engagement_id, source="domain")
         if items_res.ok and items_res.data:

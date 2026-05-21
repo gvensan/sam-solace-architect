@@ -167,7 +167,7 @@
       const logoutBtn = document.getElementById("logout-btn");
       const settingsLink = document.getElementById("settings-link");
       if (d.authenticated) {
-        chip.textContent = d.user.name + (d.user.is_admin ? " (admin)" : "");
+        chip.textContent = d.user.name;
         chip.title = d.user.email || "";
         chip.classList.add("authenticated");
         logoutBtn?.classList.remove("hidden");
@@ -4614,6 +4614,22 @@
       Array.from(cardEl.querySelectorAll("input, button, textarea")).forEach(el => el.disabled = false);
       cardEl.classList.remove("question-answered");
     }
+    // M5 fix: do NOT unconditionally clear _currentInflightTaskId here.
+    // This helper is called from:
+    //   * chatForm submit handler — dispatch failed BEFORE _setChatInflight
+    //     was called, so _currentInflightTaskId is still whatever the
+    //     PRIOR task left it. Clearing it would orphan an actually-running
+    //     task and surface SEND when STOP is still semantically correct.
+    //   * submitQuickReply / submitAnswer — these dispatch via /api/chat/message
+    //     too; their failure mode is identical (prior task may still run).
+    // The submit handler's own catch needs to re-enable the button it
+    // disabled (C2 fix), but it should NOT change the STOP/SEND mode —
+    // that's owned by the task lifecycle (SSE FinalResponse/Error).
+    if (chatSend && chatSend.disabled) {
+      // Submit handler disabled the button as part of C2; restore so the
+      // user can retry. Mode (STOP vs SEND) is unchanged.
+      chatSend.disabled = false;
+    }
     appendChatMessage("agent", `[error] ${errMsg} — please retry`);
   }
 
@@ -4760,6 +4776,10 @@
           const ag = _extractRespondingAgent(ev) || (chatAgentSelect?.value || null);
           if (ag) setStickyAgent(currentProjectId(), ag);
           finalizeAgentBubble(extractAgentText(ev));
+          // C1 fix: only restore SEND if THIS task is the one currently
+          // tracked. A delayed FinalResponse for an older task must not
+          // clobber a newer task's STOP state.
+          _clearChatInflightIfMatches(ev.data?.id || null);
         } else if (ev.type === "Error") {
           const msg = ev.data?.message || ev.data?.error || "(error)";
           const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
@@ -4783,6 +4803,14 @@
           // Clear the sticky activity bar — without this it stays pinned
           // on "Thinking…" while the bubble shows the error message.
           setActivityBar(null);
+          // Error events don't carry task_id, so we can't precision-match.
+          // Conservative: clear inflight unconditionally. The cost of a
+          // mismatched clear here is small (user sees SEND when STOP would
+          // be more accurate; typing a new message recovers cleanly via
+          // the C2-fixed submit-disable). The cost of NOT clearing is
+          // worse: the button is stuck on STOP after an error and clicking
+          // it returns 404. Pick the lesser evil.
+          _setChatInflight("");
         }
       } catch (err) { /* ignore malformed */ }
     };
@@ -4938,6 +4966,8 @@
         if (text) startOrUpdateAgentBubble(text);
       } else if (ev.type === "FinalResponse" || ev.type === "Task") {
         finalizeAgentBubble(extractAgentText(ev));
+        // Mirror of live-SSE: only clear if this task matches the in-flight one.
+        _clearChatInflightIfMatches(ev.data?.id || null);
       } else if (ev.type === "Error") {
         const msg = ev.data?.message || ev.data?.error || "(error)";
         const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
@@ -4948,6 +4978,8 @@
         chatLog.appendChild(wrap);
         chatLog.scrollTop = chatLog.scrollHeight;
         setActivityBar(null);
+        // Same conservative-clear rationale as the live-SSE Error path.
+        _setChatInflight("");
       }
     } catch { /* malformed payload; skip */ }
   }
@@ -5426,10 +5458,113 @@
   // unchanged in shape — it just writes to this single source of truth.
   window.__setPendingDispatchAgent = (name) => { _pendingDispatchAgent = name || ""; };
 
+  // In-flight task tracking for the STOP button. Set after a successful
+  // /api/chat/message dispatch; cleared on a FinalResponse/Error SSE event
+  // that matches the same task_id, or after a successful /api/chat/cancel
+  // POST. The chat-send button reads this to decide whether it acts as
+  // SEND or STOP.
+  //
+  // Why match on task_id (C1 fix): a delayed FinalResponse for task A
+  // arriving after task B has already been dispatched would otherwise clear
+  // _currentInflightTaskId while B is still running — making the STOP
+  // button silently flip back to SEND and clicking STOP a no-op (the
+  // taskId is empty). Always compare before clearing.
+  let _currentInflightTaskId = "";
+
+  function _setChatInflight(taskId) {
+    _currentInflightTaskId = taskId || "";
+    if (!chatSend) return;
+    // Always re-enable the button when we change mode — the submit handler
+    // disables it during dispatch (C2 fix), and we want it clickable in
+    // BOTH modes (STOP click to cancel, or SEND click for the next turn).
+    chatSend.disabled = false;
+    if (_currentInflightTaskId) {
+      // STOP mode — black-square unicode glyph (■) + "Stop" label so screen
+      // readers + a-keyboard users have something semantic. The CSS adds
+      // the destructive-action tint.
+      chatSend.classList.add("stop-mode");
+      chatSend.setAttribute("type", "button");   // prevent form submit on click
+      chatSend.setAttribute("title", "Stop the running agent task");
+      chatSend.setAttribute("aria-label", "Stop");
+      chatSend.innerHTML = "■ Stop";
+    } else {
+      chatSend.classList.remove("stop-mode");
+      chatSend.setAttribute("type", "submit");
+      chatSend.removeAttribute("title");
+      chatSend.setAttribute("aria-label", "Send");
+      chatSend.textContent = "Send";
+    }
+  }
+
+  // Clear inflight ONLY if the terminating event matches the current
+  // in-flight task. Prevents a stale FinalResponse from clobbering a
+  // newer task's STOP state. If task_id can't be extracted from the
+  // event (e.g. Error event with no task association), the caller can
+  // pass null and we conservatively clear — see callers for rationale.
+  function _clearChatInflightIfMatches(taskId) {
+    if (!_currentInflightTaskId) return;
+    if (taskId && taskId !== _currentInflightTaskId) return;
+    _setChatInflight("");
+  }
+
+  // STOP click handler — independent of form submit. Always reads
+  // _currentInflightTaskId at click time so a stale closure can't fire
+  // cancel on a wrong task.
+  chatSend?.addEventListener("click", async (e) => {
+    if (!_currentInflightTaskId) return;   // SEND mode — let the form submit
+    e.preventDefault();
+    const taskId = _currentInflightTaskId;
+    chatSend.disabled = true;
+    const prevHTML = chatSend.innerHTML;
+    chatSend.innerHTML = "■ Stopping…";
+    // I1 fix: 10s abort timeout. If /api/chat/cancel hangs (network drop,
+    // idle proxy, SAM loop stuck) we'd otherwise leave the button disabled
+    // forever and the user would have to reload. With the timeout, the
+    // fetch throws AbortError, we hit the catch, restore the previous
+    // state, and surface a hint that the cancel didn't take.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    try {
+      const res = await fetch("/api/chat/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_id: taskId }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      if (!res.ok) {
+        // 404 = task already finalized; treat as a successful stop.
+        if (res.status !== 404) throw new Error(`HTTP ${res.status}`);
+      }
+      // We don't reset the button here — wait for the agent's FinalResponse
+      // (which will carry state=canceled) or Error SSE to flip the UI back
+      // to SEND via _setChatInflight(""). That way the UI matches the
+      // actual SAM state instead of guessing.
+    } catch (err) {
+      clearTimeout(timeoutId);
+      chatSend.disabled = false;
+      chatSend.innerHTML = prevHTML;
+      const reason = err?.name === "AbortError"
+        ? "cancel timed out (10s) — the agent may still be running"
+        : ("cancel failed: " + (err?.message || err));
+      console.error(reason);
+      // Surface the failure as a chat message so the user knows to retry
+      // or reload — silent disable-recovery hides the problem.
+      try { appendChatMessage("agent", "[stop] " + reason); } catch {}
+    }
+  });
+
   chatForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = chatInput.value.trim();
     if (!text) return;
+    // C2 fix: disable SEND immediately so a double-click during the dispatch
+    // round-trip can't fire two POSTs and produce two in-flight tasks the
+    // user can't both cancel. The button stays disabled until either:
+    //   * _setChatInflight(task_id) sets STOP mode (success path), or
+    //   * _recoverFromSubmitError fires (dispatch failure), or
+    //   * the dispatch returns without a task_id (re-enables SEND).
+    if (chatSend) chatSend.disabled = true;
     const eid = currentProjectId();
     // Prefer the one-shot override (set by phase-handoff CTAs) so the
     // kickoff lands on the right agent without disturbing the dropdown.
@@ -5457,6 +5592,21 @@
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Capture the task_id so STOP can cancel it. The backend returns
+      // {"session_id", "task_id", "accepted": true} per component.py's
+      // _chat_message handler.
+      let gotTaskId = false;
+      try {
+        const data = await res.json();
+        if (data && data.task_id) {
+          _setChatInflight(data.task_id);   // flips button to STOP mode + clears disabled
+          gotTaskId = true;
+        }
+      } catch { /* response without JSON body */ }
+      // If the response had no task_id (legacy server, parse error, etc),
+      // re-enable SEND so the user isn't stranded with a permanently
+      // disabled button. _setChatInflight handles the success path.
+      if (!gotTaskId && chatSend) chatSend.disabled = false;
     } catch (err) {
       _recoverFromSubmitError("could not dispatch: " + err.message);
     }
@@ -5810,9 +5960,16 @@
       <div class="stat-tile-value">${stats.open_items_blocking}/${stats.open_items_advisory}</div>
       <div class="stat-tile-meta">blocking/advisory</div>
     </div>`);
+    // Map "not-requested" → "N/A" for the EP Prov tile. The internal status
+    // string is informative for tooling but reads as opaque noise in the
+    // dashboard — "N/A" matches user mental model (provisioning isn't
+    // applicable to this engagement).
+    const epProvDisplay = (stats.ep_provisioning_status === "not-requested")
+      ? "N/A"
+      : stats.ep_provisioning_status;
     tiles.push(`<div class="stat-tile">
       <div class="stat-tile-label">EP Prov</div>
-      <div class="stat-tile-value">${stats.ep_provisioning_status}</div>
+      <div class="stat-tile-value">${epProvDisplay}</div>
     </div>`);
 
     return `<div class="tile-row">${tiles.join("")}</div>`;
