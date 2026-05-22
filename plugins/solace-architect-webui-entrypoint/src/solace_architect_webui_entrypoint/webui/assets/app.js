@@ -2951,11 +2951,25 @@
     } else {
       div.textContent = text;
     }
+    // Tag the message visually when the user routed it to SAM. Badge is
+    // appended AFTER the role-based content render because
+    // renderAgentMarkdown / textContent both clobber children. CSS
+    // positions it at the top-right of the bubble.
+    if (opts.routedToSam) {
+      div.classList.add("routed-to-sam");
+      const badge = document.createElement("span");
+      badge.className = "chat-msg-routing-badge";
+      badge.textContent = "→ SAM";
+      badge.title = "Sent to SAM's stock OrchestratorAgent (bypassed the SA family)";
+      div.appendChild(badge);
+    }
     chatLog.appendChild(div);
     chatLog.scrollTop = chatLog.scrollHeight;
     if (!opts.skipPersist && chatSessionId) {
       const log = loadChatHistory(chatSessionId);
-      log.push({ role, text, ts: Date.now() });
+      const entry = { role, text, ts: Date.now() };
+      if (opts.routedToSam) entry.routedToSam = true;
+      log.push(entry);
       saveChatHistory(chatSessionId, log);
       updateLoadHistoryButton?.();
     }
@@ -3481,7 +3495,10 @@
     // wiping never loses anything that wasn't already in the saved log.
     chatLog.innerHTML = "";
     const log = loadChatHistory(chatSessionId);
-    log.forEach(m => appendChatMessage(m.role, m.text, { skipPersist: true }));
+    log.forEach(m => appendChatMessage(m.role, m.text, {
+      skipPersist: true,
+      routedToSam: !!m.routedToSam,
+    }));
     if (!chatEventSource) openSseStream(chatSessionId);
   }
   document.getElementById("chat-load-history")?.addEventListener("click", loadHistoryForCurrentContext);
@@ -5846,6 +5863,10 @@
   // SAOrchestratorAgent isn't discoverable OR the user's previous manual pick
   // has gone away from the mesh.
   const PREFERRED_DEFAULT_AGENT = "SAOrchestratorAgent";
+  // Routing target for the "Send to SAM" escape hatch — the stock SAM
+  // orchestrator that ships outside the SA family. Bypasses the SA
+  // workflow for one-off mesh queries (weather, find-my-ip, etc.).
+  const SAM_FALLBACK_AGENT = "OrchestratorAgent";
   const _USER_PICK_KEY = "sa.chat_agent_pick";
   function _getUserPickedAgent() {
     try { return localStorage.getItem(_USER_PICK_KEY) || ""; } catch { return ""; }
@@ -5871,7 +5892,36 @@
         chatAgentSelect.innerHTML = `<option value="">${escapeHtml(defaultName || "(no agents discovered)")}</option>`;
         return;
       }
-      const names = new Set(agents.map(a => a.name));
+      // Discovery returns every agent on the mesh — but the dropdown
+      // exposes only the SA family. Non-SA agents (stock OrchestratorAgent,
+      // find-my-ip, sam-mermaid, …) are routable via the "Send to SAM"
+      // checkbox in the chat form, not via the dropdown. Hiding them from
+      // the picker eliminates the misclick trap where users picked
+      // "OrchestratorAgent" thinking it was ours.
+      const saAgents = agents.filter(a => a.name in AGENT_DOMAIN_HINTS);
+      const names = new Set(saAgents.map(a => a.name));
+
+      // Show / hide the "Send to SAM" escape hatch based on whether the
+      // stock SAM_FALLBACK_AGENT is actually on this mesh. Offering it
+      // when no one's home would silently 404 every dispatch.
+      const samAvailable = agents.some(a => a.name === SAM_FALLBACK_AGENT);
+      const samWrap = document.getElementById("chat-send-to-sam-wrap");
+      if (samWrap) samWrap.classList.toggle("hidden", !samAvailable);
+
+      // Auto-clear a sticky `_userPickedAgent` that points at a non-SA
+      // agent (e.g. someone misclicked OrchestratorAgent before the
+      // dropdown filtered to SA-only). Without this, the precedence
+      // chain below would silently keep falling through, and the
+      // dropdown's `desired` couldn't ever land on the stale pick (it's
+      // not rendered) so the change would feel surprising. Better to
+      // null it out so the precedence cleanly resolves to
+      // SAOrchestratorAgent.
+      let userPick = _getUserPickedAgent();
+      if (userPick && !names.has(userPick)) {
+        _setUserPickedAgent("");
+        userPick = "";
+      }
+
       // Resolve which agent should end up selected, in this preference order:
       //   1. User's current session pick (the dropdown value right now) — keeps
       //      the 15s re-poll from snapping the selection back to the default.
@@ -5884,34 +5934,16 @@
       // NOT in this chain — it would override the user's choice every time an
       // orchestrator delegated to a sub-agent, which is the opposite of the
       // requested behavior.
-      const userPick = _getUserPickedAgent();
       const desired = (previousChoice && names.has(previousChoice)) ? previousChoice
                     : (userPick && names.has(userPick))             ? userPick
                     : (names.has(PREFERRED_DEFAULT_AGENT))           ? PREFERRED_DEFAULT_AGENT
-                    : defaultName;
-      // Split agents into two groups so the SA family is visually
-      // separated from stock SAM agents that happen to be on the same
-      // mesh (main_orchestrator, find-my-ip, sam-mermaid, etc.). Avoids
-      // the trap where the user picks plain "OrchestratorAgent" thinking
-      // it's ours — that one has no SA knowledge and silently produces
-      // wrong answers. Both groups stay accessible; ordering nudges the
-      // right choice.
+                    : (names.has(defaultName) ? defaultName : "");
+
       const renderOption = (a) => {
         const hint = AGENT_DOMAIN_HINTS[a.name] || _DEFAULT_HINT;
         return `<option value="${escapeHtml(a.name)}" title="${escapeHtml(hint)}"${a.name === desired ? " selected" : ""}>${escapeHtml(a.name)}</option>`;
       };
-      const saAgents    = agents.filter(a => a.name in AGENT_DOMAIN_HINTS);
-      const otherAgents = agents.filter(a => !(a.name in AGENT_DOMAIN_HINTS));
-      let html = "";
-      if (saAgents.length) {
-        html += `<optgroup label="Solace Architect agents">${saAgents.map(renderOption).join("")}</optgroup>`;
-      }
-      if (otherAgents.length) {
-        html += `<optgroup label="Other SAM agents on this mesh">${otherAgents.map(renderOption).join("")}</optgroup>`;
-      }
-      // Fallback if for some reason both groups are empty (shouldn't happen
-      // once agents are discovered, but keep the dropdown well-formed).
-      chatAgentSelect.innerHTML = html || agents.map(renderOption).join("");
+      chatAgentSelect.innerHTML = saAgents.map(renderOption).join("");
       if (desired) chatAgentSelect.value = desired;
       // Mirror the selected option's hint onto the <select> itself so the
       // tooltip is visible even on the closed dropdown (not just per-option
@@ -6163,6 +6195,17 @@
     return true;
   }
 
+  // Wire the "Send to SAM" checkbox to gate the dropdown. While ticked,
+  // the routing target is fixed to SAM_FALLBACK_AGENT — leaving the
+  // dropdown live would be ambiguous about which agent the next message
+  // hits. Auto-reset on dispatch (see chatForm submit handler below).
+  const sendToSamCheckbox = document.getElementById("chat-send-to-sam");
+  function _syncDropdownToCheckbox() {
+    if (!chatAgentSelect) return;
+    chatAgentSelect.disabled = !!(sendToSamCheckbox && sendToSamCheckbox.checked);
+  }
+  sendToSamCheckbox?.addEventListener("change", _syncDropdownToCheckbox);
+
   chatForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = chatInput.value.trim();
@@ -6175,24 +6218,47 @@
     //   * the dispatch returns without a task_id (re-enables SEND).
     if (chatSend) chatSend.disabled = true;
     const eid = currentProjectId();
-    // Prefer the one-shot override (set by phase-handoff CTAs) so the
-    // kickoff lands on the right agent without disturbing the dropdown.
-    // Clear it after read so the NEXT message returns to using the
-    // dropdown — the override is for ONE dispatch only.
-    const agent = _pendingDispatchAgent || (chatAgentSelect?.value || "");
+    // Three sources of the agent target, in precedence order:
+    //   1. _pendingDispatchAgent — one-shot override set by phase-handoff
+    //      CTAs (kickoff lands on the right agent without disturbing the
+    //      dropdown). Wins over everything else: "Start Discovery"
+    //      always goes to SADiscoveryAgent regardless of checkbox state.
+    //   2. "Send to SAM" checkbox — explicit per-message escape hatch
+    //      to the stock SAM orchestrator. Auto-resets after dispatch.
+    //   3. Dropdown value — the user's standing pick from the SA family.
+    const pendingAgent = _pendingDispatchAgent || "";
     if (_pendingDispatchAgent) _pendingDispatchAgent = "";
+    const sendToSam = !pendingAgent && !!(sendToSamCheckbox && sendToSamCheckbox.checked);
+    const agent = pendingAgent
+      || (sendToSam ? SAM_FALLBACK_AGENT : (chatAgentSelect?.value || ""));
 
     // Ensure the per-project sessionId is current and the SSE stream is live.
     if (!chatSessionId) chatSessionId = deriveChatSessionId();
     if (!chatEventSource) openSseStream(chatSessionId);
 
-    appendChatMessage("user", text);
+    appendChatMessage("user", text, { routedToSam: sendToSam });
     chatInput.value = "";
     openThinkingBubble();
 
     const body = { text, session_id: chatSessionId };
     if (agent) body.agent = agent;
-    if (eid) body.engagement_id = eid;
+    // Engagement context only flows to SA agents. The stock SAM
+    // orchestrator has no SA knowledge / engagement-aware tools; sending
+    // engagement_id pollutes its A2A header with useless context AND
+    // tags any telemetry/logs as if the engagement triggered the work.
+    if (eid && !sendToSam) body.engagement_id = eid;
+
+    // One-shot semantic: untick the checkbox + re-enable the dropdown
+    // so the NEXT message returns to the SA family. Reset on EVERY
+    // dispatch — not just SAM-routed ones — so a phase-CTA kickoff
+    // (which uses pendingAgent and ignores the checkbox) doesn't
+    // leave the checkbox stuck-ticked for the next user message.
+    // Done BEFORE the fetch so even a slow dispatch doesn't leave the
+    // UI mis-stated.
+    if (sendToSamCheckbox && sendToSamCheckbox.checked) {
+      sendToSamCheckbox.checked = false;
+      _syncDropdownToCheckbox();
+    }
 
     try {
       const res = await fetch("/api/chat/message", {

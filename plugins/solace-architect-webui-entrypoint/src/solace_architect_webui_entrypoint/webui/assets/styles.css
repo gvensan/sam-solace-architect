@@ -357,6 +357,18 @@ body[data-chat="closed"] .chat-panel { display: none; }
 }
 .chat-msg.user { align-self: flex-end; background: var(--accent); color: var(--primary); }
 .chat-msg.agent { align-self: flex-start; background: var(--bg); border: 1px solid var(--border); color: var(--text); word-wrap: break-word; }
+/* SAM-routed message — visual marker so the chat history makes clear
+   which messages bypassed the SA family. Sits at top-right of the
+   bubble; muted tint so it doesn't compete with the message text. */
+.chat-msg.routed-to-sam { position: relative; padding-right: 56px; }
+.chat-msg-routing-badge {
+  position: absolute; top: 6px; right: 8px;
+  font-family: 'Space Mono', monospace; font-size: 9px;
+  letter-spacing: 0.06em; font-weight: 700;
+  padding: 2px 5px; border-radius: 3px;
+  background: rgba(0, 0, 0, 0.18); color: inherit;
+  pointer-events: auto;
+}
 /* Markdown elements inside an agent bubble — reset stock browser margins
    so the bubble feels compact; style tables/code so they're readable. */
 .chat-msg.agent p { margin: 0 0 8px; }
@@ -613,6 +625,22 @@ body[data-chat="closed"] .chat-panel { display: none; }
 }
 #chat-agent-select:focus { outline: none; border-color: var(--accent); }
 #chat-agent-select:disabled { background: var(--surface); color: var(--muted); cursor: not-allowed; }
+
+/* "Send to SAM" escape hatch — small inline label/checkbox between
+   the dropdown and the Send button. Hidden via .hidden when stock
+   OrchestratorAgent isn't on the mesh. Ticking it disables the agent
+   dropdown (visual cue that the routing target is unambiguous). */
+.chat-send-to-sam {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 11px; color: var(--muted);
+  font-family: 'Space Mono', monospace;
+  text-transform: uppercase; letter-spacing: 1px;
+  font-weight: 700;
+  cursor: pointer; user-select: none;
+  white-space: nowrap;
+}
+.chat-send-to-sam input[type="checkbox"] { margin: 0; cursor: pointer; }
+.chat-send-to-sam.hidden { display: none; }
 
 .chat-form button {
   padding: 8px 16px; background: var(--primary); color: white;

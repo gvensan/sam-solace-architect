@@ -142,6 +142,17 @@
             <span class="chat-agent-label">Agent:</span>
             <select id="chat-agent-select" aria-label="Target agent"></select>
           </label>
+          <!-- Per-message escape hatch: tick this to route the SINGLE next
+               message to the stock SAM OrchestratorAgent instead of the
+               SA family. Auto-resets after dispatch. Disables the agent
+               dropdown while ticked so the routing target is unambiguous.
+               Hidden when the stock OrchestratorAgent isn't discovered
+               on this mesh (no point in offering a dead route). -->
+          <label class="chat-send-to-sam hidden" id="chat-send-to-sam-wrap"
+                 title="Send this single message to SAM's stock OrchestratorAgent instead of the SA family (for general queries unrelated to the engagement).">
+            <input type="checkbox" id="chat-send-to-sam">
+            <span>Send to SAM</span>
+          </label>
           <button id="chat-send-btn" type="submit">Send</button>
         </div>
       </form>
