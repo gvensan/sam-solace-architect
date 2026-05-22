@@ -114,8 +114,40 @@ apps:
           2. **Failure modes** — Are failure modes enumerated (broker
              failure, WAN partition, agent failure, message loss)
              with detection + recovery defined for each?
-          3. **Capacity planning** — Is capacity planning addressed
-             (current sizing, growth headroom, scaling triggers)?
+          3. **Capacity planning** — Apply four sub-checks AND
+             produce a concrete `reviews/capacity-baselines.yaml`
+             artifact (machine-readable so ops can wire alerts).
+             SADomainAgent's broker-select scope writes a `sizing:`
+             block in `broker-select/broker-recommendation.yaml`
+             with computed inputs/outputs; the intake form also
+             carries `requirements.retention_hours`,
+             `requirements.event_rate_per_sec`,
+             `requirements.avg_message_size_kb`, and
+             `requirements.admin_connections`. Use those as the
+             source of truth — never invent numbers.
+             Sub-checks:
+              a. **Throughput baseline** — Are RPS targets (current
+                 + 12-month growth headroom from
+                 `requirements.growth_expectations`) explicit, per
+                 delivery mode? Missing → **critical**.
+              b. **Latency targets** — Are p95 latency SLOs named
+                 per topic class (Direct vs Guaranteed)?
+                 Without these, "is the broker slow?" has no
+                 answer → **important**.
+              c. **Spool / queue-depth alerts** — Are warn/critical
+                 thresholds defined as a percentage of the computed
+                 spool from the `sizing:` block (e.g. 70% warn / 90%
+                 critical)? Dashboards without alerts are read-only
+                 → **important**.
+              d. **Connection-count alerts** — Are alerts defined
+                 against the per-tier connection limits
+                 (Developer / Enterprise / Enterprise Kilo) using
+                 the computed connection count from the sizing
+                 block? Missing → **advisory**.
+             The `capacity-baselines.yaml` MUST include
+             `throughput / latency / spool_alerts / connection_alerts`
+             top-level keys with inputs cited back to the source
+             artifact (`broker-recommendation.yaml` or the brief).
              "Pick the biggest broker" is not capacity planning.
           4. **Operational procedures** — Deploy, upgrade, rollback,
              DR failover — are these defined as runbooks or assumed?

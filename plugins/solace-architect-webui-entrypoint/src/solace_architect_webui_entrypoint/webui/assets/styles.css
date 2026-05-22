@@ -219,6 +219,15 @@ body[data-sidebar="open"] .sidebar-rail { display: none; }
 }
 .sidebar-search:focus { outline: none; border-color: var(--accent); }
 
+/* "Show archived" toggle directly below the search input */
+.sidebar-toggle {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 16px 8px; padding: 2px 4px;
+  font-size: 12px; color: var(--muted);
+  cursor: pointer; user-select: none;
+}
+.sidebar-toggle input { margin: 0; cursor: pointer; }
+
 /* Project link with row of action buttons */
 .project-link-row { display: flex; align-items: stretch; }
 .project-link-row .project-link { flex: 1; min-width: 0; }
@@ -227,6 +236,13 @@ body[data-sidebar="open"] .sidebar-rail { display: none; }
   color: var(--muted); padding: 0 8px; font-size: 14px;
 }
 .project-link-row .project-action-btn:hover { color: var(--accent); }
+.project-link-row.archived .project-link { opacity: 0.6; font-style: italic; }
+.archived-tag {
+  margin-left: 6px; padding: 0 5px;
+  font-size: 10px; font-style: normal; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); border: 1px solid var(--border); border-radius: 3px;
+}
 
 /* Header settings + logout */
 .settings-link, .logout-btn { padding: 6px 8px; }
@@ -828,6 +844,15 @@ pre {
   background: transparent; color: var(--muted); border: 1px solid var(--border);
 }
 .modal-card .modal-btn-secondary:hover { color: var(--primary); border-color: var(--primary); }
+.modal-card .modal-btn-danger {
+  background: transparent; color: #b00020; border: 1px solid #b00020;
+}
+.modal-card .modal-btn-danger:hover:not(:disabled) {
+  background: #b00020; color: white;
+}
+.modal-card .modal-btn-danger:disabled {
+  opacity: 0.45; cursor: not-allowed;
+}
 .modal-card .modal-error { color: #b00020; font-size: 13px; margin-top: 8px; }
 .modal-card .modal-success { color: #00866a; font-size: 13px; margin-top: 8px; }
 

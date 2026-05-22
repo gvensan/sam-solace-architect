@@ -294,32 +294,47 @@
   // ============================================================================
   let projects = [];
   let projectSearchTerm = "";
+  // Sidebar always loads the full list (archived included) so the "Show
+  // archived" toggle is a pure client-side filter — no extra round-trip
+  // when the user flips it. Persisted across reloads via localStorage so
+  // a user who normally works with archived projects doesn't have to
+  // re-enable it every session.
+  let showArchived = localStorage.getItem("sa-show-archived") === "1";
   async function loadProjects() {
-    const r = await fetch("/api/projects");
+    const r = await fetch("/api/projects?include_archived=1");
     projects = await r.json();
     renderSidebarProjects();
   }
   function renderSidebarProjects() {
     const list = document.getElementById("project-list");
+    const toggle = document.getElementById("show-archived");
+    if (toggle) toggle.checked = showArchived;
     const filter = projectSearchTerm.trim().toLowerCase();
-    const filtered = filter
-      ? projects.filter(p => (p.name || "").toLowerCase().includes(filter))
-      : projects;
+    const visible = projects.filter(p => {
+      if (!showArchived && p.status === "archived") return false;
+      if (filter && !(p.name || "").toLowerCase().includes(filter)) return false;
+      return true;
+    });
     if (!projects.length) {
       list.innerHTML = '<div class="empty-hint">No projects yet.</div>';
-    } else if (!filtered.length) {
-      list.innerHTML = '<div class="empty-hint">No projects match.</div>';
+    } else if (!visible.length) {
+      list.innerHTML = filter
+        ? '<div class="empty-hint">No projects match.</div>'
+        : '<div class="empty-hint">No active projects. Enable "Show archived" to see archived ones.</div>';
     } else {
       const active = currentProjectId();
-      list.innerHTML = filtered.map(p =>
-        `<div class="project-link-row">
+      list.innerHTML = visible.map(p => {
+        const isArchived = p.status === "archived";
+        const label = isArchived ? `${escapeHtml(p.name)} <span class="archived-tag">archived</span>`
+                                 : escapeHtml(p.name);
+        return `<div class="project-link-row${isArchived ? " archived" : ""}">
            <a href="/projects/${encodeURIComponent(p.id)}/overview"
               class="project-link${p.id === active ? " active" : ""}"
-              data-route>${escapeHtml(p.name)}</a>
+              data-route>${label}</a>
            <button class="project-action-btn" title="Project actions"
                    data-project-actions="${escapeHtml(p.id)}" aria-label="Project actions">⋯</button>
-         </div>`
-      ).join("");
+         </div>`;
+      }).join("");
     }
     renderSidebarRail();
   }
@@ -327,6 +342,14 @@
   // Wire sidebar search filter
   document.getElementById("project-search")?.addEventListener("input", (e) => {
     projectSearchTerm = e.target.value || "";
+    renderSidebarProjects();
+  });
+
+  // "Show archived" toggle — pure client-side filter; we already loaded
+  // the full list (include_archived=1) when the sidebar booted.
+  document.getElementById("show-archived")?.addEventListener("change", (e) => {
+    showArchived = !!e.target.checked;
+    localStorage.setItem("sa-show-archived", showArchived ? "1" : "0");
     renderSidebarProjects();
   });
 
@@ -2166,8 +2189,14 @@
   });
 
   function openProjectActionsModal(project) {
+    const isArchived = project.status === "archived";
+    // For archived projects we swap the Archive button for Unarchive, so the
+    // dialog stays the user's single point of contact regardless of state.
+    const archiveBtnHtml = isArchived
+      ? `<button class="modal-btn modal-btn-secondary" data-action="unarchive">Unarchive</button>`
+      : `<button class="modal-btn modal-btn-secondary" data-action="archive">Archive</button>`;
     openModal(`
-      <h2>Project: ${escapeHtml(project.name)}</h2>
+      <h2>Project: ${escapeHtml(project.name)}${isArchived ? ' <span class="archived-tag">archived</span>' : ''}</h2>
       <div class="modal-body">
         <div class="modal-field">
           <label for="proj-rename-name">Rename</label>
@@ -2181,7 +2210,8 @@
       </div>
       <div class="modal-actions">
         <button class="modal-btn modal-btn-secondary" data-action="clone">Clone…</button>
-        <button class="modal-btn modal-btn-secondary" data-action="archive">${project.status === "archived" ? "(archived)" : "Archive"}</button>
+        ${archiveBtnHtml}
+        <button class="modal-btn modal-btn-danger" data-action="delete">Delete…</button>
         <button class="modal-btn modal-btn-secondary" data-modal-close>Cancel</button>
         <button class="modal-btn modal-btn-primary" data-action="rename">Save</button>
       </div>
@@ -2210,9 +2240,8 @@
       openCloneProjectModal(project);
     });
 
-    modalCard.querySelector('[data-action="archive"]').addEventListener("click", async () => {
-      if (project.status === "archived") return;
-      if (!confirm(`Archive "${project.name}"? You can still view it but no new activity will run.`)) return;
+    modalCard.querySelector('[data-action="archive"]')?.addEventListener("click", async () => {
+      if (!confirm(`Archive "${project.name}"? It will be hidden from the sidebar — toggle "Show archived" to find it again.`)) return;
       try {
         const r = await fetch(`/api/projects/${encodeURIComponent(project.id)}/archive`, { method: "POST" });
         if (!r.ok) throw new Error(await r.text());
@@ -2222,6 +2251,77 @@
       } catch (err) {
         modalCard.querySelector("#proj-action-msg").innerHTML =
           `<div class="modal-error">${escapeHtml(String(err.message || err))}</div>`;
+      }
+    });
+
+    modalCard.querySelector('[data-action="unarchive"]')?.addEventListener("click", async () => {
+      try {
+        const r = await fetch(`/api/projects/${encodeURIComponent(project.id)}/unarchive`, { method: "POST" });
+        if (!r.ok) throw new Error(await r.text());
+        await loadProjects();
+        closeModal();
+      } catch (err) {
+        modalCard.querySelector("#proj-action-msg").innerHTML =
+          `<div class="modal-error">${escapeHtml(String(err.message || err))}</div>`;
+      }
+    });
+
+    modalCard.querySelector('[data-action="delete"]').addEventListener("click", () => {
+      openDeleteProjectModal(project);
+    });
+  }
+
+  function openDeleteProjectModal(project) {
+    // Type-to-confirm sub-modal. Replaces the existing modal contents so
+    // there's a single modal-root in flight at any time — preserves the
+    // Escape-to-close behavior wired on modalRoot.
+    openModal(`
+      <h2>Delete project</h2>
+      <div class="modal-body">
+        <p>This will <strong>permanently delete</strong> <code>${escapeHtml(project.name)}</code>
+           and all its artifacts, decisions, and telemetry. This cannot be undone.</p>
+        <div class="modal-field">
+          <label for="proj-delete-confirm">
+            Type the project name (<code>${escapeHtml(project.name)}</code>) to enable Delete:
+          </label>
+          <input id="proj-delete-confirm" type="text" autocomplete="off" spellcheck="false">
+        </div>
+        <div id="proj-delete-msg"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn modal-btn-secondary" data-modal-close>Cancel</button>
+        <button class="modal-btn modal-btn-danger" data-action="delete-go" disabled>Delete permanently</button>
+      </div>
+    `, { focus: "#proj-delete-confirm" });
+
+    const input = modalCard.querySelector("#proj-delete-confirm");
+    const goBtn = modalCard.querySelector('[data-action="delete-go"]');
+    input.addEventListener("input", () => {
+      goBtn.disabled = input.value !== project.name;
+    });
+
+    goBtn.addEventListener("click", async () => {
+      if (input.value !== project.name) return;     // belt-and-braces
+      const msg = modalCard.querySelector("#proj-delete-msg");
+      goBtn.disabled = true;
+      goBtn.textContent = "Deleting…";
+      try {
+        const r = await fetch(`/api/projects/${encodeURIComponent(project.id)}`, {
+          method: "DELETE",
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const result = await r.json();
+        // 409 mid-flight comes through as a 200 body with {error, status_code: 409}
+        // (the adapter doesn't translate to a real 4xx for these handlers).
+        // Surface it before assuming success.
+        if (result?.error) throw new Error(result.hint || result.error);
+        await loadProjects();
+        closeModal();
+        if (currentProjectId() === project.id) navigate("/");
+      } catch (err) {
+        goBtn.disabled = false;
+        goBtn.textContent = "Delete permanently";
+        msg.innerHTML = `<div class="modal-error">${escapeHtml(String(err.message || err))}</div>`;
       }
     });
   }
@@ -2254,10 +2354,19 @@
           body: JSON.stringify({ new_name }),
         });
         if (!r.ok) throw new Error(await r.text());
-        const created = await r.json();
+        const result = await r.json();
+        // Response shape from clone_project: { source, clone: {id, name, ...},
+        // brief_seeded, intake_seeded }. Older callers expected the project
+        // directly at the top level — guard against both.
+        const newId = result?.clone?.id || result?.id;
         await loadProjects();
         closeModal();
-        if (created?.id) navigate(`/projects/${encodeURIComponent(created.id)}/overview`);
+        // Drop the user into the intake editor for the new project so they
+        // can fill in gaps / new fields. Falls back to the overview if we
+        // somehow couldn't extract an id (defensive).
+        if (newId) {
+          window.location.href = `/intake/edit/${encodeURIComponent(newId)}`;
+        }
       } catch (err) {
         msg.innerHTML = `<div class="modal-error">${escapeHtml(String(err.message || err))}</div>`;
       }

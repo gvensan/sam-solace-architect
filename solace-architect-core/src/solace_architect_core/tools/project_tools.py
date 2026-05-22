@@ -118,11 +118,14 @@ async def update_project_metadata(
 async def clone_project(
     source_project_id: str, *, new_name: Optional[str] = None,
 ) -> ToolResult:
-    """Create a new project seeded from another's discovery brief.
+    """Create a new project seeded from another's discovery brief + intake.
 
-    Use case: 'I want to revise inputs without losing the original audit trail.'
-    Decisions/findings/provisioning state from the source are NOT copied — those
-    belong to the source's history. Only the discovery brief carries over.
+    Use case: 'I want to revise inputs without losing the original audit trail,
+    or fill in fields a newer intake form added.' We copy the three discovery
+    inputs (brief.yaml, intake.json, intake.md). Decisions / findings / phase
+    outputs from the source are NOT copied — those belong to the source's
+    history. The clone is intended to be opened in the intake editor next so
+    the user can fill gaps before re-running Discovery.
 
     Owner enforcement: clone target gets the current user as owner regardless
     of the source's owner. Reading the source requires read access (own project,
@@ -137,18 +140,22 @@ async def clone_project(
     if owner != "anonymous" and source.get("owner") != owner and not is_admin:
         return ToolResult(ok=False, error="forbidden: source project belongs to another user")
 
-    # Read the source's discovery brief (under whichever user owns it).
+    # Read the source's discovery inputs (under whichever user owns it).
     # Temporarily impersonate the source's owner to read across namespaces.
     from .._user_context import current_user as _cu, ANONYMOUS_USER
     source_owner_id = source.get("owner") or "anonymous"
     if source_owner_id != owner:
         ctx_token = _cu.set({**ANONYMOUS_USER, "id": source_owner_id, "is_admin": True})
         try:
-            brief_text = _read_brief(source_project_id)
+            brief_text = _read_artifact(source_project_id, "discovery/discovery-brief.yaml")
+            intake_json = _read_artifact(source_project_id, "discovery/intake.json")
+            intake_md = _read_artifact(source_project_id, "discovery/intake.md")
         finally:
             _cu.reset(ctx_token)
     else:
-        brief_text = _read_brief(source_project_id)
+        brief_text = _read_artifact(source_project_id, "discovery/discovery-brief.yaml")
+        intake_json = _read_artifact(source_project_id, "discovery/intake.json")
+        intake_md = _read_artifact(source_project_id, "discovery/intake.md")
 
     # Create the clone under the current user
     base = new_name or (source["name"] + " (copy)")
@@ -158,23 +165,36 @@ async def clone_project(
         return new
     new_id = new.data["id"]
 
-    # Seed the brief on the new project (under the current user's namespace)
+    # Seed discovery inputs on the new project (under the current user's namespace).
+    # All three are best-effort; the intake editor only strictly needs intake.json
+    # to re-hydrate, but copying all three keeps downstream tools' assumptions intact.
+    from .artifact_tools import write_artifact
     if brief_text:
-        from .artifact_tools import write_artifact
         await write_artifact(new_id, "discovery/discovery-brief.yaml", brief_text)
+    if intake_json:
+        await write_artifact(new_id, "discovery/intake.json", intake_json)
+    if intake_md:
+        await write_artifact(new_id, "discovery/intake.md", intake_md)
 
     return ToolResult(ok=True, data={
         "source": source_project_id, "clone": new.data,
         "brief_seeded": bool(brief_text),
+        "intake_seeded": bool(intake_json),
     })
 
 
-def _read_brief(project_id: str) -> Optional[str]:
+def _read_artifact(project_id: str, name: str) -> Optional[str]:
     try:
         from .._storage import read_text
-        return read_text(project_id, "discovery/discovery-brief.yaml")
+        return read_text(project_id, name)
     except FileNotFoundError:
         return None
+
+
+# Kept under the old name for any external callers that imported it; new
+# code should use _read_artifact() with an explicit name.
+def _read_brief(project_id: str) -> Optional[str]:
+    return _read_artifact(project_id, "discovery/discovery-brief.yaml")
 
 
 async def archive_project(project_id: str) -> ToolResult:
@@ -189,6 +209,89 @@ async def archive_project(project_id: str) -> ToolResult:
     project["last_active_at"] = _now()
     write_yaml(_SYSTEM_ENGAGEMENT, _PROJECTS_ARTIFACT, data)
     return ToolResult(ok=True, data=project)
+
+
+async def unarchive_project(project_id: str) -> ToolResult:
+    """Restore an archived project to active status.
+
+    Mirror of ``archive_project``: same owner check, opposite status flip.
+    No mid-flight guard needed — an archived project has no steps in flight.
+    """
+    data = read_yaml(_SYSTEM_ENGAGEMENT, _PROJECTS_ARTIFACT, default={"projects": []})
+    owner = _current_owner()
+    project = next((p for p in data["projects"] if p["id"] == project_id), None)
+    if not project:
+        return ToolResult(ok=False, error=f"project {project_id} not found")
+    if owner != "anonymous" and project.get("owner") != owner and not get_current_user().get("is_admin"):
+        return ToolResult(ok=False, error="forbidden: project belongs to another user")
+    project["status"] = "active"
+    project["last_active_at"] = _now()
+    write_yaml(_SYSTEM_ENGAGEMENT, _PROJECTS_ARTIFACT, data)
+    return ToolResult(ok=True, data=project)
+
+
+async def delete_project(project_id: str) -> ToolResult:
+    """Permanently delete a project: remove its registry entry AND wipe its
+    on-disk engagement directory (artifacts, meta, telemetry — everything).
+
+    Irreversible. The frontend gates this behind a type-to-confirm dialog;
+    the lifecycle/api adapter additionally refuses mid-flight projects.
+
+    Owner enforcement: only the owner (or an admin) can delete. The active-
+    project marker is cleared if the deleted project was active.
+    """
+    import shutil
+    from .._storage import _engagement_root
+
+    data = read_yaml(_SYSTEM_ENGAGEMENT, _PROJECTS_ARTIFACT, default={"projects": []})
+    owner = _current_owner()
+    project = next((p for p in data["projects"] if p["id"] == project_id), None)
+    if not project:
+        return ToolResult(ok=False, error=f"project {project_id} not found")
+    if owner != "anonymous" and project.get("owner") != owner and not get_current_user().get("is_admin"):
+        return ToolResult(ok=False, error="forbidden: project belongs to another user")
+
+    # Wipe the engagement directory under the owner's namespace. We resolve
+    # against the OWNER's namespace, not the caller's — an admin deleting
+    # another user's project still needs to hit the right directory.
+    from .._user_context import current_user as _cu, ANONYMOUS_USER
+    owner_id = project.get("owner") or "anonymous"
+    if owner_id != owner:
+        ctx_token = _cu.set({**ANONYMOUS_USER, "id": owner_id, "is_admin": True})
+        try:
+            eng_root = _engagement_root(project_id)
+        finally:
+            _cu.reset(ctx_token)
+    else:
+        eng_root = _engagement_root(project_id)
+
+    artifacts_removed = False
+    try:
+        if eng_root.exists():
+            shutil.rmtree(eng_root)
+            artifacts_removed = True
+    except Exception as exc:
+        # Registry drop is the source-of-truth: even if filesystem cleanup
+        # fails, dropping the entry hides the project from every list. We
+        # surface the error so the caller (and ops) know cleanup was partial.
+        import logging as _logging
+        _logging.getLogger(__name__).exception(
+            "delete_project: filesystem cleanup failed for %s at %s: %s",
+            project_id, eng_root, exc,
+        )
+
+    # Drop from registry
+    data["projects"] = [p for p in data["projects"] if p["id"] != project_id]
+    write_yaml(_SYSTEM_ENGAGEMENT, _PROJECTS_ARTIFACT, data)
+
+    # Clear active-project marker if it pointed at the just-deleted project.
+    if _ACTIVE_PROJECT.get("id") == project_id:
+        _ACTIVE_PROJECT["id"] = ""
+
+    return ToolResult(ok=True, data={
+        "id": project_id,
+        "artifacts_removed": artifacts_removed,
+    })
 
 
 # In-memory active-project marker (Phase 2+: SAM session-state-backed)

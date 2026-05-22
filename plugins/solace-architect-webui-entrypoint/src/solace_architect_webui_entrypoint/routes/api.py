@@ -82,8 +82,13 @@ def _parse_iso(ts: str | None) -> datetime | None:
 
 # ----- Project lifecycle -----
 
-async def list_engagements(include_archived: bool = False) -> Any:
-    return (await project_tools.list_projects(include_archived=include_archived)).data
+async def list_engagements(include_archived: Any = False) -> Any:
+    # Query params arrive as strings via the aiohttp adapter — accept the
+    # usual truthy spellings so /api/projects?include_archived=1 (or =true)
+    # both flip the filter off.
+    if isinstance(include_archived, str):
+        include_archived = include_archived.lower() in ("1", "true", "yes", "on")
+    return (await project_tools.list_projects(include_archived=bool(include_archived))).data
 
 
 async def create_engagement(name: str, owner: str = "anonymous") -> Any:
@@ -127,6 +132,28 @@ async def archive_engagement(project_id: str) -> Any:
             ),
         }
     return (await project_tools.archive_project(project_id)).data
+
+
+async def unarchive_engagement(project_id: str) -> Any:
+    return (await project_tools.unarchive_project(project_id)).data
+
+
+async def delete_engagement(project_id: str) -> Any:
+    # Mid-flight guard mirrors archive — refuses to wipe state out from under
+    # a running agent. Type-to-confirm in the UI guards against fat-fingers.
+    active = await _active_step(project_id)
+    if active:
+        return {
+            "error": "engagement is mid-flight",
+            "active_step": active,
+            "status_code": 409,
+            "hint": (
+                f"Step '{active}' is currently waiting on you or running. "
+                "Either answer the agent's pending question, restart that step, "
+                "or wait for it to settle before deleting."
+            ),
+        }
+    return (await project_tools.delete_project(project_id)).data
 
 
 async def update_engagement(project_id: str, name: str | None = None,
@@ -1460,6 +1487,8 @@ API_ROUTES = [
     ("GET",  "/api/projects",                                list_engagements),
     ("POST", "/api/projects",                                create_engagement),
     ("POST", "/api/projects/{project_id}/archive",            archive_engagement),
+    ("POST", "/api/projects/{project_id}/unarchive",          unarchive_engagement),
+    ("DELETE","/api/projects/{project_id}",                   delete_engagement),
     ("PATCH","/api/projects/{project_id}",                    update_engagement),
     ("POST", "/api/projects/{source_project_id}/clone",       clone_engagement),
     # Dashboard data

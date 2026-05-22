@@ -60,6 +60,67 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _update_step_timing(
+    session: dict, step: str, prev_status: str, new_status: str,
+    started_at: str, now_iso: str, now_dt: datetime,
+) -> dict:
+    """Maintain ``timing_data[step]`` across step-status transitions.
+
+    Clocks time spent in NEEDS_CONTEXT as ``user_wait_sec`` (per
+    block, summed across re-entries) and derives
+    ``execution_sec = wall_sec - user_wait_sec`` on finalize. Without
+    this, ``user_wait_sec`` was hardcoded to 0 and ``execution_sec``
+    equalled wall_sec — the Stats "user wait" and "execution" tiles
+    were identical and meaningless.
+
+    Internal ``_blocked_at`` key holds the open NEEDS_CONTEXT
+    timestamp; popped when the block closes or the step finalizes.
+    BLOCKED is NOT counted as user-wait (the agent is blocked, not
+    the user) — only NEEDS_CONTEXT contributes.
+    """
+    timing = dict(session.get("timing_data", {}) or {})
+    entry = dict(timing.get(step, {}) or {})
+
+    # Closing a NEEDS_CONTEXT block — accumulate the wait into a
+    # running total so re-entries (user answers, agent asks again)
+    # add up across the step's lifetime.
+    if prev_status == "NEEDS_CONTEXT" and new_status != "NEEDS_CONTEXT":
+        blocked_at = entry.get("_blocked_at")
+        if blocked_at:
+            blocked_dt = _iso_to_dt(blocked_at)
+            if blocked_dt:
+                wait_delta = max(0, int((now_dt - blocked_dt).total_seconds()))
+                entry["user_wait_sec"] = int(entry.get("user_wait_sec", 0)) + wait_delta
+            entry.pop("_blocked_at", None)
+
+    # Opening a NEEDS_CONTEXT block.
+    if new_status == "NEEDS_CONTEXT" and prev_status != "NEEDS_CONTEXT":
+        entry["_blocked_at"] = now_iso
+        entry.setdefault("user_wait_sec", 0)
+
+    # Finalize — compute wall_sec + the corrected execution_sec.
+    # Always seed user_wait_sec to 0 on finalize so the field is present
+    # even for steps that never entered NEEDS_CONTEXT (e.g. BLOCKED →
+    # DONE). Stats consumers can then `t.get("user_wait_sec", 0)` AND
+    # also see the field exists in the serialized YAML.
+    if new_status in ("DONE", "DONE_WITH_CONCERNS"):
+        started_dt = _iso_to_dt(started_at)
+        if started_dt:
+            wall_sec = max(0, int((now_dt - started_dt).total_seconds()))
+            wait_sec = int(entry.get("user_wait_sec", 0))
+            entry["wall_sec"] = wall_sec
+            entry["user_wait_sec"] = wait_sec
+            entry["execution_sec"] = max(0, wall_sec - wait_sec)
+            entry["recorded_at"] = now_iso
+        # Drop any open block — the step is over, nothing more to wait on.
+        entry.pop("_blocked_at", None)
+
+    if entry:
+        timing[step] = entry
+        session["timing_data"] = timing
+    return session
+
+
 async def set_step_status(
     engagement_id: str, step: str, status: str,
     note: Optional[str] = None, agent: Optional[str] = None,
@@ -115,25 +176,21 @@ async def set_step_status(
         }
         write_yaml(engagement_id, _STATUS_FILE, data)
 
-        # When a step completes, mirror the duration into meta/session.yaml's
-        # timing_data so compute_timeline / Stats view reflect it. Never break
-        # the status write if the timing append fails.
-        if status in ("DONE", "DONE_WITH_CONCERNS"):
-            try:
-                started_dt = _iso_to_dt(started_at) or datetime.now(timezone.utc)
-                wall_sec = max(0, int((datetime.now(timezone.utc) - started_dt).total_seconds()))
-                session = read_yaml(engagement_id, "meta/session.yaml", default={}) or {}
-                timing = dict(session.get("timing_data", {}) or {})
-                timing[step] = {
-                    "wall_sec": wall_sec,
-                    "execution_sec": wall_sec,
-                    "user_wait_sec": 0,
-                    "recorded_at": now_iso,
-                }
-                session["timing_data"] = timing
-                write_yaml(engagement_id, "meta/session.yaml", session)
-            except Exception:
-                pass
+        # Maintain timing_data on EVERY transition (not just finalize),
+        # so user_wait_sec accumulates while the step sits in
+        # NEEDS_CONTEXT. The finalize branch inside the helper computes
+        # the corrected execution_sec = wall_sec - user_wait_sec. Never
+        # break the status write if the timing update fails.
+        try:
+            prev_status = prev.get("status", "NOT_STARTED")
+            now_dt = datetime.now(timezone.utc)
+            session = read_yaml(engagement_id, "meta/session.yaml", default={}) or {}
+            session = _update_step_timing(
+                session, step, prev_status, status, started_at, now_iso, now_dt,
+            )
+            write_yaml(engagement_id, "meta/session.yaml", session)
+        except Exception:
+            pass
     return ToolResult(ok=True, data={"step": step, "status": status, "started_at": started_at})
 
 

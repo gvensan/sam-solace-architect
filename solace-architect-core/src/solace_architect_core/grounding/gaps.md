@@ -16,23 +16,10 @@ Format:
 
 ### Platform Services (Layer 3) — highest impact
 
-- **Schema Registry design:** ⚙ PARTIALLY ADDRESSED (2026-05-21). Checked as a yes/no question but never designed. No skill produces schema definitions, evolution rules, compatibility policies, deployment configuration, or SERDES integration guidance.
-  - Skill: /solace-dev-review (evaluation rubric extended), /solace-validate (TODO)
-  - Workaround → Done: `/solace-dev-review` rubric item 3 now applies five sub-checks (definitions present / registry usage / compatibility policy / SERDES / deployment+auth) and grades severity per dimension. Grounding for the concept model lives in `solace-platform-reference.md → Solace Schema Registry`. **Remaining**: `/solace-validate` should fail-fast when blocking sub-checks are missing; the design phase (e.g. a SADomainAgent scope) should *produce* concrete schema definitions and compatibility policy rather than only reviewing for them.
-  - Priority: High — schema governance is foundational for event-driven systems
-  - Phase: 4 (extend /solace-dev-review) → done; Phase 5 for production + validation
-  - Date: 2026-05-03 (raised) / 2026-05-21 (dev-reviewer rubric extended)
-
 - **Solace Insights monitoring strategy:** Checked as present/absent but never designed. No skill specifies which of the 50+ pre-built monitors to enable, alert threshold values, custom monitors, log forwarding configuration, or integration with external observability platforms (Datadog, Grafana, etc.).
   - Skill: /solace-ops-review
   - Workaround: Ops review asks "Are Solace Insights configured?" and mentions Datadog export
   - Priority: High — monitoring is a production readiness requirement
-  - Date: 2026-05-03
-
-- **Solace Cloud Console:** Not referenced in any skill template. No guidance on Console-based provisioning, management workflows, or team/role configuration.
-  - Skill: none
-  - Workaround: None
-  - Priority: Medium
   - Date: 2026-05-03
 
 - **Event Mesh Visualizer:** Not mentioned anywhere in grounding docs or skills.
@@ -42,12 +29,6 @@ Format:
   - Date: 2026-05-03
 
 ### Application Services (Layer 2)
-
-- **SEMP v2 for infrastructure-as-code:** Platform reference documents SEMP v2 (Config and Monitor APIs). No skill recommends SEMP usage for CI/CD automation, infrastructure-as-code pipelines, or custom monitoring dashboards.
-  - Skill: /solace-ops-review, /solace-blueprint
-  - Workaround: Grounding available; skill extension needed (Phase 3)
-  - Priority: High — IaC is expected in modern deployments
-  - Date: 2026-05-03
 
 - **SDKPerf:** Official Solace performance testing tool not referenced. No skill recommends performance baseline testing or load validation methodology.
   - Skill: /solace-ops-review, /solace-validate
@@ -63,12 +44,12 @@ Format:
 
 ### Event Mesh (Layer 1)
 
-- **Sizing and capacity planning in skills:** ⚙ PARTIALLY ADDRESSED (2026-05-21). Platform reference now documents sizing methodology and tuning areas. No skill uses this grounding to produce sizing recommendations — broker-select does not calculate spool or map service classes, ops-review does not produce capacity baselines.
-  - Skill: /solace-broker-select (extended), /solace-ops-review (TODO)
-  - Workaround → Done: SADomainAgent's broker-select scope prompt now has a "Per-scope methodology — broker-select" section that walks the agent through (1) computing connection count + peak event rate + avg message size + retention from the brief (asking via `ask_user_question` when missing, never inventing), (2) calculating spool size as msg_rate × size × retention, (3) classifying throughput qualitatively + citing the canonical service-class-comparison URL for tier verification, (4) recording the rationale via `record_decision`. The `broker-recommendation.yaml` now requires an explicit `sizing:` block with inputs/computed/recommendation sub-keys. **Remaining**: extend /solace-ops-review to produce capacity baselines (RPS / latency targets / queue-depth alerts) using the same inputs.
+- **Sizing and capacity planning in skills:** ✓ RESOLVED (2026-05-22). Both halves shipped: broker-select computes a defensible `sizing:` block from the brief; ops-review extends rubric item 3 with 4 sub-checks AND emits `reviews/capacity-baselines.yaml` (throughput / latency / spool_alerts / connection_alerts) using the same sizing-block numbers.
+  - Skill: /solace-broker-select (extended 2026-05-21) + /solace-ops-review (extended 2026-05-22)
+  - Workaround → Done: SADomainAgent's broker-select scope prompt now has a "Per-scope methodology — broker-select" section that walks the agent through (1) computing connection count + peak event rate + avg message size + retention from the brief (intake form collects these as `requirements.retention_hours / event_rate_per_sec / avg_message_size_kb / admin_connections`; agent asks via `ask_user_question` only when still missing, never invents), (2) calculating spool size as msg_rate × size × retention, (3) classifying throughput qualitatively + citing the canonical service-class-comparison URL for tier verification, (4) recording the rationale via `record_decision`. The `broker-recommendation.yaml` now requires an explicit `sizing:` block with inputs/computed/recommendation sub-keys. SAOpsReviewerAgent's rubric item 3 now reads that sizing block, applies 4 sub-checks (throughput baseline, latency targets, spool/queue-depth alerts, connection-count alerts) using the same numbers as source of truth, and emits `reviews/capacity-baselines.yaml` as a machine-readable artifact for the ops side.
   - Priority: High
-  - Phase: 3 done for broker-select; Phase 3 still owed for /solace-ops-review
-  - Date: 2026-04-29 (raised) / 2026-05-03 (updated) / 2026-05-21 (broker-select extended)
+  - Phase: 3 done for both broker-select and ops-review
+  - Date: 2026-04-29 (raised) / 2026-05-03 (updated) / 2026-05-21 (broker-select extended) / 2026-05-22 (ops-review extended)
 
 - **Message VPN design guidance:** Platform reference documents VPNs thoroughly but no skill provides VPN design — how many VPNs, naming conventions, when to use multiple VPNs vs. multiple brokers, quota sizing per VPN, isolation boundaries.
   - Skill: /solace-broker-select, /solace-security-review
@@ -110,29 +91,6 @@ Format:
   - Skill: /solace-ops-review
   - Workaround: "Is Distributed Tracing configured?" question
   - Priority: Medium
-  - Date: 2026-05-03
-
-### Security
-
-- **Kerberos, LDAP, RADIUS authentication:** Platform reference documents all three. No skill asks about enterprise identity provider integration or recommends configuration.
-  - Skill: /solace-security-review
-  - Workaround: OAuth and client certificate auth covered; enterprise IdP patterns missing
-  - Priority: Medium
-  - Phase: 4 (extend /solace-security-review)
-  - Date: 2026-05-03
-
-- **Rate limiting / Connection limits:** Platform reference mentions per-VPN quotas and client profile rate limits. No skill designs rate limiting strategy.
-  - Skill: /solace-security-review, /solace-ops-review
-  - Workaround: None
-  - Priority: Medium
-  - Phase: 4 (extend /solace-security-review)
-  - Date: 2026-05-03
-
-- **Client profile configuration:** Mentioned in security review but no skill generates specific client profile configs (max connections, max subscriptions, rate limits, guaranteed messaging properties).
-  - Skill: /solace-security-review, /solace-blueprint
-  - Workaround: Generic "per-client profile" recommendation
-  - Priority: Medium
-  - Phase: 4 (extend /solace-security-review)
   - Date: 2026-05-03
 
 ### Operational
@@ -253,13 +211,26 @@ Order reflects priority × cost-to-fix (grounding already exists for items marke
 | # | Gap | Owner skill | Grounding present? | Notes |
 |---|---|---|---|---|
 | 1 | **Solace Insights monitoring strategy** | /solace-ops-review | ✓ (platform-reference) | Extend prompt to recommend specific monitors from the 50+, alert thresholds, Datadog/Grafana forwarding |
-| 2 | **SEMP v2 for infrastructure-as-code** | /solace-ops-review, /solace-blueprint | ✓ | Extend prompts to recommend SEMP usage for CI/CD pipelines and IaC |
-| 3 | ~~**Sizing and capacity planning** (broker-select done)~~ — /solace-ops-review still owed | /solace-ops-review | ✓ | broker-select extended 2026-05-21. Next: ops-review capacity baselines (RPS / latency targets / queue-depth alerts) |
-| 4 | **Message VPN design guidance** | /solace-broker-select, /solace-security-review | ✓ | Extend prompts with VPN-count guidance, naming conventions, multi-VPN-vs-multi-broker decision |
-| 5 | **Performance tuning** | /solace-ops-review, /solace-dev-review | partial | Extend prompts with connection pooling, session mgmt, publisher flow control, consumer prefetch, batching |
-| 6 | **Schema Registry — Phase 5** | /solace-validate, design-phase | n/a | Validation step + design-phase production of concrete schemas (rubric review-side already done) |
+| 2 | **Message VPN design guidance** | /solace-broker-select, /solace-security-review | ✓ | Extend prompts with VPN-count guidance, naming conventions, multi-VPN-vs-multi-broker decision |
+| 3 | **Performance tuning** | /solace-ops-review, /solace-dev-review | partial | Extend prompts with connection pooling, session mgmt, publisher flow control, consumer prefetch, batching |
+
+Resolved while this table was open: **Sizing and capacity planning** (2026-05-22, both broker-select and ops-review extended).
 
 The same pattern applies to most medium-priority items below — they're "extend the prompt to consult grounding that's already there" rather than "go author new grounding". Tackle one per review session.
+
+## Out of scope (decided 2026-05-22)
+
+The following gaps were explicitly de-scoped. Listed here for audit
+trail so they aren't re-discovered and re-added to "Next-up" in a
+future review pass. If priorities change, move the relevant entry
+back to the active sections above (and add a dated rationale here).
+
+- **Schema Registry design** — won't author a registry-design skill. Dev-reviewer's 5-sub-check rubric stays as-is; we will NOT add Phase 5 (validate fail-fast + design-phase schema authoring).
+- **SEMP v2 for infrastructure-as-code** — won't extend prompts to recommend SEMP for CI/CD. Customers wanting IaC drive Solace via their own SEMP / Operator pipelines.
+- **Solace Cloud Console workflows** — won't add Console-driven provisioning / team-role guidance. EP Designer MCP + the dashboard cover what the agents need.
+- **Kerberos / LDAP / RADIUS authentication** — won't extend security-review with enterprise IdP guidance. OAuth + client-certificate auth already covered.
+- **Rate limiting / connection limits** — won't add a per-VPN quota / client-profile rate-limit design strategy.
+- **Client profile configuration generation** — won't generate concrete client-profile configs from security-review. Generic recommendation stands.
 
 ## Housekeeping (separate from grounding gaps)
 

@@ -110,6 +110,89 @@ async def test_archive_hides_from_default_list():
     assert any(x["id"] == p.data["id"] for x in lr2.data)
 
 
+@pytest.mark.asyncio
+async def test_unarchive_restores_to_default_list():
+    p = await project_tools.create_project(name="ToRestore")
+    pid = p.data["id"]
+    await project_tools.archive_project(pid)
+    # Sanity: gone from the default list before restore.
+    lr = await project_tools.list_projects()
+    assert not any(x["id"] == pid for x in lr.data)
+
+    r = await project_tools.unarchive_project(pid)
+    assert r.ok and r.data["status"] == "active"
+
+    lr2 = await project_tools.list_projects()
+    assert any(x["id"] == pid and x.get("status") == "active" for x in lr2.data)
+
+
+@pytest.mark.asyncio
+async def test_unarchive_missing_project_errors():
+    r = await project_tools.unarchive_project("does-not-exist")
+    assert not r.ok
+    assert "not found" in (r.error or "")
+
+
+@pytest.mark.asyncio
+async def test_clone_copies_intake_json():
+    """Clone seeds intake.json (and brief / md) so the intake editor can
+    re-hydrate the form on the cloned project."""
+    src = await project_tools.create_project(name="CloneSrc")
+    src_id = src.data["id"]
+    await artifact_tools.write_artifact(src_id, "discovery/intake.json", '{"project": {"name": "CloneSrc"}}')
+    await artifact_tools.write_artifact(src_id, "discovery/discovery-brief.yaml", "project_name: CloneSrc\n")
+    await artifact_tools.write_artifact(src_id, "discovery/intake.md", "# CloneSrc")
+
+    r = await project_tools.clone_project(src_id, new_name="CloneTarget")
+    assert r.ok, r.error
+    assert r.data["intake_seeded"] is True
+    assert r.data["brief_seeded"] is True
+
+    new_id = r.data["clone"]["id"]
+    intake = await artifact_tools.read_artifact(new_id, "discovery/intake.json")
+    assert intake.ok and "CloneSrc" in intake.data
+    brief = await artifact_tools.read_artifact(new_id, "discovery/discovery-brief.yaml")
+    assert brief.ok and "CloneSrc" in brief.data
+
+
+@pytest.mark.asyncio
+async def test_delete_removes_project_and_artifacts():
+    p = await project_tools.create_project(name="ToDelete")
+    pid = p.data["id"]
+    await artifact_tools.write_artifact(pid, "discovery/intake.json", '{"x": 1}')
+
+    r = await project_tools.delete_project(pid)
+    assert r.ok, r.error
+    assert r.data["artifacts_removed"] is True
+
+    # No longer in any list (including include_archived).
+    lr = await project_tools.list_projects(include_archived=True)
+    assert not any(x["id"] == pid for x in lr.data)
+
+    # Re-reading the deleted artifact should fail (the engagement dir is gone).
+    rd = await artifact_tools.read_artifact(pid, "discovery/intake.json")
+    assert not rd.ok
+
+
+@pytest.mark.asyncio
+async def test_delete_missing_project_errors():
+    r = await project_tools.delete_project("does-not-exist")
+    assert not r.ok
+    assert "not found" in (r.error or "")
+
+
+@pytest.mark.asyncio
+async def test_delete_clears_active_marker_when_deleting_active():
+    p = await project_tools.create_project(name="ActiveDelete")
+    pid = p.data["id"]
+    await project_tools.switch_active_project(pid)
+    assert project_tools.get_active_project_id() == pid
+
+    r = await project_tools.delete_project(pid)
+    assert r.ok
+    assert project_tools.get_active_project_id() == ""
+
+
 # ---------- intake_tools ----------
 
 @pytest.mark.asyncio
@@ -669,3 +752,102 @@ async def test_record_scope_progress_coerces_json_string_scopes_done():
         f"expected a 1-element list of scope names; "
         f"got list-of-chars (decorator regression): {done}"
     )
+
+
+# ---------- lifecycle_tools.set_step_status — timing instrumentation ----------
+
+@pytest.mark.asyncio
+async def test_set_step_status_clocks_user_wait_sec_on_needs_context_block(monkeypatch):
+    """A step that goes IN_PROGRESS → NEEDS_CONTEXT → IN_PROGRESS → DONE
+    must accumulate user_wait_sec from the NEEDS_CONTEXT block, and
+    execution_sec must equal wall_sec - user_wait_sec.
+
+    Before this fix user_wait_sec was hardcoded to 0 and execution_sec
+    equalled wall_sec — the Stats tile was meaningless. Test pins the
+    new behavior with deterministic time via monkeypatch on
+    `datetime.now`.
+    """
+    from datetime import datetime, timedelta, timezone
+    from solace_architect_core._storage import read_yaml
+    from solace_architect_core.tools import lifecycle_tools as lt
+
+    eid = "timing-eng-1"
+
+    # Monotonic fake clock; tests bump t["sec"] between transitions.
+    # Uses timedelta arithmetic so we don't trip on second > 59.
+    t = {"sec": 0}
+    real_dt = datetime
+    _BASE = real_dt(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    class _FakeDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = _BASE if tz is None else _BASE.astimezone(tz)
+            return base + timedelta(seconds=t["sec"])
+
+    monkeypatch.setattr(lt, "datetime", _FakeDT)
+
+    # t=0 — step starts (set IN_PROGRESS via set_step_status). The
+    # status's started_at is recorded by _now_iso which uses
+    # datetime.now() (patched), so wall-time math stays in our control.
+    await lt.set_step_status(eid, step="discovery", status="NEEDS_CONTEXT", agent="SADiscoveryAgent")
+    # Step enters NEEDS_CONTEXT immediately (started_at = NOW). t still 0.
+    # User waits for 30s before answering.
+    t["sec"] += 30
+    await lt.set_step_status(eid, step="discovery", status="NEEDS_CONTEXT", agent="SADiscoveryAgent")
+    # Self-transition NEEDS_CONTEXT → NEEDS_CONTEXT must NOT close+reopen
+    # the block (would over-count wait). Verified by elapsed-time math below.
+    t["sec"] += 10  # 40s of NEEDS_CONTEXT total now
+    # User answers; agent goes back to IN_PROGRESS for compute.
+    await lt.set_step_status(eid, step="discovery", status="NOT_STARTED")  # any non-NEEDS_CONTEXT closes the block
+    # Wait closed: user_wait_sec should be 40 (30 + 10) — single block.
+    session = read_yaml(eid, "meta/session.yaml") or {}
+    assert session["timing_data"]["discovery"]["user_wait_sec"] == 40, session
+
+    # Agent does another 20s of compute, asks ANOTHER question, user waits 15s.
+    t["sec"] += 20
+    await lt.set_step_status(eid, step="discovery", status="NEEDS_CONTEXT")
+    t["sec"] += 15
+    await lt.set_step_status(eid, step="discovery", status="DONE", note="brief written")
+
+    timing = read_yaml(eid, "meta/session.yaml")["timing_data"]["discovery"]
+    # Total wall = 30 + 10 + 20 + 15 = 75s. Wait blocks total = 40 + 15 = 55s.
+    # Execution = wall - wait = 75 - 55 = 20s (the compute window between blocks).
+    assert timing["wall_sec"] == 75, timing
+    assert timing["user_wait_sec"] == 55, timing
+    assert timing["execution_sec"] == 20, timing
+    # _blocked_at must be dropped on finalize.
+    assert "_blocked_at" not in timing, timing
+
+
+@pytest.mark.asyncio
+async def test_set_step_status_blocked_does_not_count_as_user_wait(monkeypatch):
+    """BLOCKED is an agent-side block, not a user-wait. A step that
+    transitions IN_PROGRESS → BLOCKED → IN_PROGRESS → DONE should
+    register zero user_wait_sec.
+    """
+    from datetime import datetime, timedelta, timezone
+    from solace_architect_core._storage import read_yaml
+    from solace_architect_core.tools import lifecycle_tools as lt
+
+    eid = "timing-eng-2"
+    t = {"sec": 0}
+    real_dt = datetime
+    _BASE = real_dt(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    class _FakeDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = _BASE if tz is None else _BASE.astimezone(tz)
+            return base + timedelta(seconds=t["sec"])
+
+    monkeypatch.setattr(lt, "datetime", _FakeDT)
+
+    await lt.set_step_status(eid, step="design", status="BLOCKED")
+    t["sec"] += 50
+    await lt.set_step_status(eid, step="design", status="DONE")
+
+    timing = read_yaml(eid, "meta/session.yaml")["timing_data"]["design"]
+    assert timing["user_wait_sec"] == 0, timing
+    assert timing["execution_sec"] == 50, timing
+    assert timing["wall_sec"] == 50, timing
