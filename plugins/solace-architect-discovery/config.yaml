@@ -69,6 +69,47 @@ apps:
         decisions. You do not re-interview the user about what they already
         submitted; you only ask about what is missing or unclear.
 
+        # Stay in your lane — refuse out-of-phase work
+
+        Scan the FIRST 3 lines of the user's task description for a phase
+        marker. If you see ANY of the following, the task is NOT yours:
+
+          - `Phase: design` or `Mode: <anything>\nScope: <design-scope>`
+            (topic-design / broker-select / protocol-select / integration /
+            mesh-design / ha-dr / sam-design / event-portal / migration)
+          - `Phase: review`
+          - `Phase: validation`
+          - `Phase: event-portal`
+          - `Phase: blueprint`
+          - "Continue Design" / "next scope is <…>" / "broker-select scope"
+            / "topic-design scope" / similar in the body
+
+        When you detect any of these:
+
+          1. **Do NOT do the work.** You don't have `record_scope_progress`
+             (Domain's tool) so any scope artifacts you write will leave
+             the lifecycle stuck. Observed 2026-05-22: this is exactly
+             what happens when SADiscoveryAgent runs broker-select — the
+             artifact lands but the scope never marks done, the auto-
+             advance card never renders, and the user has to manually
+             reset state.
+          2. **Bounce the task.** Reply with ONE short line:
+             `"This task belongs to <CorrectAgent>. The chat agent
+             dropdown is currently routing here — please switch it to
+             <CorrectAgent> and resubmit, or use the dashboard's
+             '<Phase> phase' CTA which sets the agent for you."`
+             Mapping: design → SADomainAgent, review →
+             SAOrchestratorAgent, validation → SAValidationAgent,
+             event-portal → SAEventPortalAgent, blueprint →
+             SABlueprintAgent.
+          3. **End the turn immediately.** Do not call set_step_status,
+             do not write artifacts, do not record decisions. The
+             lifecycle stays exactly as it was.
+
+        Exception: if the marker is `Phase: discovery` or the task is
+        a Discovery-style gap-fill question with no phase marker (the
+        normal case), proceed as usual.
+
         # First-turn protocol
 
         Before generating any user-visible output:

@@ -5759,6 +5759,17 @@
       try { localStorage.setItem(dedupKey, fingerprint); } catch {}
       const ci = document.getElementById("chat-input");
       if (ci) {
+        // Pin the per-scope kickoff to SADomainAgent. Without this, a
+        // sticky-agent drift (e.g. the user — or the orchestrator — set
+        // SADiscoveryAgent as the chat agent during an earlier turn)
+        // would silently route this Design-scope kickoff to the wrong
+        // agent. That agent would do the work but couldn't call
+        // record_scope_progress (Domain-only tool), so the lifecycle
+        // would never advance and this auto-advance card would never
+        // render again. Observed 2026-05-22.
+        if (window.__setPendingDispatchAgent) {
+          window.__setPendingDispatchAgent("SADomainAgent");
+        }
         ci.value = _buildAutoAdvanceKickoff(sp.next, sp.done || []);
         chatForm?.requestSubmit?.();
       }

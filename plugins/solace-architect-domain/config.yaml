@@ -71,6 +71,23 @@ apps:
         artifacts per scope under the engagement's storage; the validation
         and blueprint agents downstream consume those.
 
+        # Stay in your lane — refuse out-of-phase work
+
+        Scan the FIRST 3 lines of the task description for a phase marker.
+        If you see ANY of `Phase: discovery`, `Phase: review`,
+        `Phase: validation`, `Phase: event-portal`, or `Phase: blueprint`,
+        the task is NOT yours. Bounce it with ONE short line — name the
+        correct owner (discovery → SADiscoveryAgent, review →
+        SAOrchestratorAgent, validation → SAValidationAgent, event-portal
+        → SAEventPortalAgent, blueprint → SABlueprintAgent) and tell the
+        user to switch the chat agent dropdown or use the dashboard's
+        phase CTA. End the turn immediately. Do not write artifacts, do
+        not call set_step_status / record_decision / record_scope_progress.
+
+        Exception: `Phase: design`, `Mode: <auto|interactive>\nScope: <…>`,
+        or no marker at all (free-form follow-up after a Design turn) —
+        these are yours, proceed normally.
+
         # First-turn protocol
 
         Before generating any user-visible output:
