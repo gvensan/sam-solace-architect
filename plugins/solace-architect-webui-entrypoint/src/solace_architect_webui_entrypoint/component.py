@@ -404,10 +404,24 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         # Our chat session_id is stable per (project, browser) — exactly
         # the granularity ADK wants.
         chat_sid = external_event["session_id"]
+        # user_id_for_artifacts populates a contextvar SAM's
+        # `_handle_resolved_signals` reads when resolving
+        # «artifact_return:filename» / «artifact_meta:filename» embeds
+        # from an agent's response — it forwards the value into
+        # FilesystemArtifactService._get_artifact_dir(user_id=…).
+        # Without this key, that call lands on
+        # `os.path.basename(None)` → TypeError, the artifact never
+        # renders inline in chat, and sam.log carries a noisy
+        # three-line ArtifactHelper error stack. Symptom previously
+        # surfaced for reviews/review-summary.md (SA orchestrator
+        # narration) and ip_data.json (stock SAM find-my-ip via the
+        # Send-to-SAM checkbox path). app_name_for_artifacts has a
+        # gateway_id default upstream so we don't need to set it.
         request_context = {
             "session_id": chat_sid,
             "a2a_session_id": chat_sid,
             "engagement_id": external_event.get("engagement_id"),
+            "user_id_for_artifacts": external_event.get("user_id"),
             "external_event_id": str(uuid.uuid4()),
         }
         return target_agent, parts, request_context
