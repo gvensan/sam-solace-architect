@@ -780,6 +780,15 @@
         // lifecycle + stats are forwarded so the in-progress cards can render
         // a one-line execution hint (current scope / open items / "updated Xm ago")
         // below the body. See _phaseExecHint() for what each phase contributes.
+        // execution_mode comes from the intake form (auto | interactive),
+        // propagated into session.yaml at intake-submit time and surfaced
+        // here by compute_overview_stats. Drives single-button CTAs for
+        // Design + Event Portal (the only two phases with a mode choice)
+        // instead of asking the user to pick the pace again. Cached in
+        // localStorage so renderPhaseHandoffCard (called from SSE
+        // handlers, no direct access to stats here) can pick it up.
+        const executionMode = (stats?.execution_mode === "auto") ? "auto" : "interactive";
+        rememberExecutionMode(eid, executionMode);
         const cta = renderProgressCta({
           eid, hasIntake, discoveryStatus, discoveryNote,
           discoveryInProgress, openItemsCount,
@@ -788,7 +797,7 @@
           validationStatus, validationNote, validationDone, validationInProgress,
           eventPortalStatus, eventPortalNote, eventPortalDone, eventPortalInProgress,
           blueprintStatus, blueprintNote, blueprintDone, blueprintInProgress,
-          blueprintBlockers, lifecycle, stats,
+          blueprintBlockers, lifecycle, stats, executionMode,
         });
 
         root.innerHTML = `
@@ -1549,9 +1558,14 @@
     validationStatus, validationNote, validationDone, validationInProgress,
     eventPortalStatus, eventPortalNote, eventPortalDone, eventPortalInProgress,
     blueprintStatus, blueprintNote, blueprintDone, blueprintInProgress,
-    blueprintBlockers, lifecycle, stats,
+    blueprintBlockers, lifecycle, stats, executionMode,
   }) {
     blueprintBlockers = blueprintBlockers || [];
+    // Default to interactive (safer — agent confirms decisions) when
+    // execution_mode isn't surfaced. Drives Design + Event Portal CTAs
+    // to show one primary button matching the intake-time preference
+    // and one small text-link override for the opposite mode.
+    const prefersAuto = executionMode === "auto";
     if (!hasIntake) {
       return `
         <div class="progress-cta" role="region" aria-label="Intake required">
@@ -1713,14 +1727,21 @@
             compliance, and schema sanity. Next step:
             <strong>Event Portal</strong> — SAEventPortalAgent provisions
             the designed application domains, applications, events, schemas,
-            and AsyncAPI specs live in your Solace Cloud tenant (Interactive
-            mode pauses per layer; Auto mode runs to completion).</p>
+            and AsyncAPI specs live in your Solace Cloud tenant.
+            ${prefersAuto
+              ? `Your intake set the pace to <strong>auto</strong> — runs all layers to completion (first error halts and reports).`
+              : `Your intake set the pace to <strong>interactive</strong> — pauses per layer for your confirmation.`}</p>
             ${blockerList}
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
-            <button id="start-event-portal-btn" class="cta-btn" data-mode="interactive" ${epBtnAttrs}>Start Event Portal →</button>
-            <button id="start-event-portal-auto-btn" class="cta-btn cta-btn-auto" data-mode="auto" ${epBtnAttrs}
-                    title="Auto mode: provision all layers without per-layer confirmation; first error halts and reports.">Start Auto ⚡</button>
+            ${prefersAuto
+              ? `<button id="start-event-portal-auto-btn" class="cta-btn cta-btn-auto" data-mode="auto" ${epBtnAttrs}
+                          title="Auto mode (intake preference): provision all layers without per-layer confirmation; first error halts and reports.">Start Event Portal ⚡</button>
+                 <button id="start-event-portal-btn" type="button" class="cta-mode-override" data-mode="interactive" ${epBtnAttrs}
+                          title="Override to interactive — pause for confirmation per provisioning layer.">Confirm each layer instead</button>`
+              : `<button id="start-event-portal-btn" class="cta-btn" data-mode="interactive" ${epBtnAttrs}>Start Event Portal →</button>
+                 <button id="start-event-portal-auto-btn" type="button" class="cta-mode-override" data-mode="auto" ${epBtnAttrs}
+                          title="Override to auto — provision all layers without per-layer confirmation.">Run on auto instead ⚡</button>`}
             <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View validation →</a>
             ${blockedByOpenItems ? `<a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/open-items">View open items →</a>` : ""}
           </div>
@@ -1852,15 +1873,19 @@
             <p>Next step: <strong>Design</strong>. SADomainAgent will walk
             the nine design scopes (topic taxonomy, broker selection,
             protocols, integration, mesh, HA/DR, SAM, event-portal,
-            migration). Pick the pace: <strong>Start Design</strong>
-            confirms every decision with you; <strong>Start Auto ⚡</strong>
-            takes the recommended option for each and runs to the end —
-            every decision still surfaces in chat as it's made.</p>
+            migration). ${prefersAuto
+              ? `Your intake set the pace to <strong>auto</strong> — every decision still surfaces in chat as it's made.`
+              : `Your intake set the pace to <strong>interactive</strong> — you'll confirm each decision before it lands.`}</p>
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
-            <button id="start-design-btn" class="cta-btn" data-mode="interactive">Start Design →</button>
-            <button id="start-design-auto-btn" class="cta-btn cta-btn-auto" data-mode="auto"
-                    title="Auto mode: take all recommended options; every decision still appears live in chat and is recorded in decisions.yaml with rationale.">Start Auto ⚡</button>
+            ${prefersAuto
+              ? `<button id="start-design-auto-btn" class="cta-btn cta-btn-auto" data-mode="auto"
+                          title="Auto mode (intake preference): take all recommended options; every decision still appears live in chat.">Start Design ⚡</button>
+                 <button id="start-design-btn" type="button" class="cta-mode-override" data-mode="interactive"
+                          title="Override to interactive — confirm each decision before it lands.">Confirm each decision instead</button>`
+              : `<button id="start-design-btn" class="cta-btn" data-mode="interactive">Start Design →</button>
+                 <button id="start-design-auto-btn" type="button" class="cta-mode-override" data-mode="auto"
+                          title="Override to auto — take recommended options without per-decision confirmation.">Run on auto instead ⚡</button>`}
             <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View brief →</a>
           </div>
           ${restartDiscoveryRow}
@@ -4089,9 +4114,21 @@
 
     const card = document.createElement("div");
     card.className = "chat-msg agent phase-handoff";
-    const showBothModes = cfg.agent && cfg.kickoff && !cfg.singleAction;
-    const bodyText = showBothModes
-      ? `Ready to move forward? Pick the pace: <strong>${escapeHtml(cfg.ctaLabel)}</strong> walks you through every decision; <strong>Start Auto ⚡</strong> takes the recommended option for each and runs straight to the end — every decision shows up live in chat so you can review.`
+    // Honor intake-time execution_mode (auto | interactive) when the
+    // phase supports both. Cached by the Overview render via
+    // rememberExecutionMode; defaults to interactive when missing.
+    const hasModeChoice = cfg.agent && cfg.kickoff && !cfg.singleAction;
+    const prefersAutoHandoff = hasModeChoice && recallExecutionMode(eid) === "auto";
+    const primaryLabel = prefersAutoHandoff
+      ? cfg.ctaLabel.replace(/→\s*$/, "⚡").trim()
+      : cfg.ctaLabel;
+    const overrideLabel = prefersAutoHandoff
+      ? "Confirm each decision instead"
+      : "Run on auto instead ⚡";
+    const bodyText = hasModeChoice
+      ? (prefersAutoHandoff
+          ? `Your intake set the pace to <strong>auto</strong>. <strong>${escapeHtml(primaryLabel)}</strong> takes the recommended option for each decision and runs to the end — every decision still surfaces in chat as it's made.`
+          : `Your intake set the pace to <strong>interactive</strong>. <strong>${escapeHtml(primaryLabel)}</strong> walks you through every decision before it lands.`)
       : (cfg.agent && cfg.kickoff)
         ? `Ready to move forward? Click <strong>${escapeHtml(cfg.ctaLabel)}</strong> to begin.`
         : escapeHtml(cfg.pendingMessage || `Next phase (${cfg.nextLabel}) isn't wired up yet — check back soon.`);
@@ -4100,18 +4137,27 @@
       <h3 class="phase-handoff-title">${escapeHtml(stepDisplay)} is ${statusPhrase}</h3>
       <p class="phase-handoff-body">${bodyText}</p>
       <div class="phase-handoff-actions">
-        ${cfg.agent ? `<button type="button" class="phase-handoff-cta" data-mode="interactive">${escapeHtml(cfg.ctaLabel)}</button>` : ""}
-        ${showBothModes ? `<button type="button" class="phase-handoff-cta phase-handoff-cta-auto" data-mode="auto" title="Take all recommended options; each decision still appears in chat as it's made.">Start Auto ⚡</button>` : ""}
+        ${cfg.agent && !hasModeChoice
+          ? `<button type="button" class="phase-handoff-cta" data-mode="interactive">${escapeHtml(cfg.ctaLabel)}</button>`
+          : ""}
+        ${hasModeChoice ? (prefersAutoHandoff
+          ? `<button type="button" class="phase-handoff-cta phase-handoff-cta-auto" data-mode="auto" title="Auto mode (intake preference): take all recommended options; each decision still appears in chat as it's made.">${escapeHtml(primaryLabel)}</button>
+             <button type="button" class="cta-mode-override" data-mode="interactive" title="Override to interactive — confirm each decision before it lands.">${escapeHtml(overrideLabel)}</button>`
+          : `<button type="button" class="phase-handoff-cta" data-mode="interactive">${escapeHtml(primaryLabel)}</button>
+             <button type="button" class="cta-mode-override" data-mode="auto" title="Override to auto — take recommended options without per-decision confirmation.">${escapeHtml(overrideLabel)}</button>`) : ""}
         <a class="phase-handoff-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View artifacts</a>
       </div>
       <small class="phase-handoff-hint">To redo ${escapeHtml(stepDisplay)} from scratch, use <em>Restart ${escapeHtml(stepDisplay)}</em> on the Progress page (rare; only when requirements have materially changed).</small>
     `;
 
-    card.querySelectorAll(".phase-handoff-cta").forEach(btn => {
+    // Bind both the primary phase-handoff-cta button AND the
+    // cta-mode-override text-link button. Either firing dispatches the
+    // matching mode; the disable-on-click guard then covers both
+    // shapes so a fast double-tap can't fire interactive AND auto for
+    // the same phase transition.
+    card.querySelectorAll(".phase-handoff-cta, .cta-mode-override").forEach(btn => {
       btn.addEventListener("click", () => {
-        // Disable BOTH mode buttons on click so a fast double-tap can't
-        // fire interactive AND auto for the same phase transition.
-        card.querySelectorAll(".phase-handoff-cta").forEach(b => b.disabled = true);
+        card.querySelectorAll(".phase-handoff-cta, .cta-mode-override").forEach(b => b.disabled = true);
         const mode = btn.dataset.mode || "interactive";
         btn.textContent = mode === "auto" ? "Starting Auto…" : `${cfg.ctaLabel.replace(/→$/,"").trim()}…`;
         applyChat("open");
@@ -5713,6 +5759,23 @@
     if (!eid) return false;
     try { return localStorage.getItem(_autoModeKey(eid)) === "1"; }
     catch { return false; }
+  }
+
+  // Per-engagement intake-time execution_mode cache. Stamped by the
+  // Overview render every poll (10s). Read by renderPhaseHandoffCard
+  // (which runs from SSE handlers and doesn't see the Overview's
+  // local executionMode variable) to decide which mode is the user's
+  // intake preference. Fall back to "interactive" when the cache is
+  // empty (engagement loaded mid-session, etc.).
+  function _execModeKey(eid) { return `sa.exec_mode.${eid}`; }
+  function rememberExecutionMode(eid, mode) {
+    if (!eid || (mode !== "auto" && mode !== "interactive")) return;
+    try { localStorage.setItem(_execModeKey(eid), mode); } catch {}
+  }
+  function recallExecutionMode(eid) {
+    if (!eid) return "interactive";
+    try { return localStorage.getItem(_execModeKey(eid)) === "auto" ? "auto" : "interactive"; }
+    catch { return "interactive"; }
   }
   function setAutoMode(eid, active) {
     if (!eid) return;

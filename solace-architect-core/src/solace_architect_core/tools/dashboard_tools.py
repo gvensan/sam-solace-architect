@@ -129,6 +129,12 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
         "open_items_advisory": sum(1 for q in open_items if q.get("severity") == "advisory" and q.get("status") == "open"),
         "execution_time_seconds": sum(t.get("execution_sec", 0) for t in session.get("timing_data", {}).values()),
         "user_wait_seconds": sum(t.get("user_wait_sec", 0) for t in session.get("timing_data", {}).values()),
+        # Intake-time pace preference (auto | interactive). Surfaces here
+        # so the Progress CTA can render ONE primary button matching the
+        # user's stated preference instead of asking them to pick the
+        # pace again. Defaults to "interactive" when missing — safer
+        # default since the agent always confirms decisions.
+        "execution_mode": (session.get("execution_mode") or "interactive"),
         "ep_provisioning_status": _ep_status(brief, completed),
         "phase_progress": {k: f"{v[0]}/{v[1]}" for k, v in phase_counts.items()},
         "recommended_next_step": recommended_next,
