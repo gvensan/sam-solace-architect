@@ -234,6 +234,23 @@ def test_every_restart_phase_modal_auto_dispatches_kickoff():
     )
 
 
+def test_chat_input_and_agent_select_disabled_during_inflight():
+    """While a task is in flight, the chat textarea AND the agent
+    dropdown must be set to disabled=true (not just visually dimmed)
+    so the user can't type a second submission or change the target
+    agent mid-flight. `pointer-events: none` alone doesn't block
+    keyboard input on a focused textarea, which is why we need the
+    actual `disabled` attribute.
+    """
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    assert "chatInput.disabled = !!_currentInflightTaskId" in js, (
+        "chat textarea isn't toggled disabled by _setChatInflight"
+    )
+    assert "chatAgentSelect.disabled = !!_currentInflightTaskId" in js, (
+        "agent dropdown isn't toggled disabled by _setChatInflight"
+    )
+
+
 def test_progress_cta_buttons_disabled_during_inflight():
     """While a chat task is in flight, the Start/Continue/View buttons in
     the green progress-CTA box must be disabled to prevent duplicate

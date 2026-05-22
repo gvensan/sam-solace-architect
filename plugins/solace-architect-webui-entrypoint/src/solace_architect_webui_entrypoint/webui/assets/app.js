@@ -5668,6 +5668,17 @@
       if (_currentInflightTaskId) document.body.dataset.inflight = "1";
       else delete document.body.dataset.inflight;
     } catch { /* document.body unreachable in some test envs — ignore */ }
+    // Lock the chat input + agent dropdown while a task is in flight so the
+    // user can't type-and-Enter a second submission AND can't change the
+    // target agent mid-flight (which would route the next message to a
+    // different agent without their explicit intent). `disabled` attribute
+    // is the only thing that actually blocks keyboard input on a focused
+    // textarea — `pointer-events: none` does NOT. STOP button stays
+    // enabled (it has its own toggle below) so the user can always cancel.
+    try {
+      if (chatInput) chatInput.disabled = !!_currentInflightTaskId;
+      if (chatAgentSelect) chatAgentSelect.disabled = !!_currentInflightTaskId;
+    } catch { /* defensive — never let a missing element break the toggle */ }
     if (!chatSend) return;
     // Always re-enable the button when we change mode — the submit handler
     // disables it during dispatch (C2 fix), and we want it clickable in
