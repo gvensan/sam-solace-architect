@@ -306,7 +306,7 @@ apps:
               "severity": "blocking",
               "allow_custom": true,
               "options": [
-                {"id": "flat-id", "label": "Flat ID only: {domain}/passengerUpdate/{passenger_id}",
+                {"id": "flat-id", "label": "Flat ID only: <domain>/passengerUpdate/<passenger_id>",
                  "pros": "Simple, compact topics", "cons": "Less context in topic string"},
                 {"id": "flight-then-passenger", "label": "Flight → Passenger: …",
                  "pros": "Natural grouping by flight", "cons": "Deeper hierarchy"},
@@ -333,7 +333,7 @@ apps:
               "severity": "blocking",
               "allow_custom": true,
               "options": [
-                {"id": "flat-id", "label": "Flat ID only: {domain}/passengerUpdate/{passenger_id}",
+                {"id": "flat-id", "label": "Flat ID only: <domain>/passengerUpdate/<passenger_id>",
                  "pros": "Simple, compact topics", "cons": "Less context in topic string"},
                 {"id": "flight-then-passenger", "label": "Flight → Passenger: …",
                  "pros": "Natural grouping by flight", "cons": "Deeper hierarchy"},

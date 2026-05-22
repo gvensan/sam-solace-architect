@@ -150,7 +150,7 @@ apps:
              - `>` followed by another `/` (i.e. the pattern matches
                regex `>/`). Example: `airport/>/v1` or `airport/>/`.
              - More than one `>` in a single subscription string
-               (regex: `>.*>`). Example: `airport/{noun}/>/v1/>`.
+               (regex: `>.*>`). Example: `airport/<noun>/>/v1/>`.
              - `>` at the start of the subscription
                (regex: `^>` or `>` immediately after a leading `/`).
 
