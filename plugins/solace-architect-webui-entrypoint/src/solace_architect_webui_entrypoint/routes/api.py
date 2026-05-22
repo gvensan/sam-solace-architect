@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from solace_architect_core.tools import (
     artifact_tools, decision_tools, project_tools,
     dashboard_tools, intake_tools, blueprint_tools,
-    telemetry_tools, lifecycle_tools,
+    telemetry_tools, lifecycle_tools, session_tools,
 )
 from solace_architect_core._storage import (
     read_jsonl, read_yaml, safe_artifact_path, write_text, write_yaml,
@@ -442,6 +442,10 @@ async def reset_discovery(engagement_id: str) -> Any:
     # Clear status entry
     await lifecycle_tools.clear_step_status(engagement_id, "discovery")
 
+    # Clear the resume checkpoint so a fresh Discovery run doesn't skip
+    # sub-work based on stale "we already did X" hints from the prior run.
+    await session_tools.clear_checkpoint(engagement_id, "discovery")
+
     # Drop the metrics tied to this step — timing_data + per-step telemetry rows.
     # Without this, Stats keeps showing pre-restart numbers (see issue d).
     telemetry_cleared = await _clear_step_telemetry(engagement_id, "discovery")
@@ -559,6 +563,7 @@ async def reset_design(engagement_id: str) -> Any:
     # are superseded inside _reset_downstream's cascade below — keeping the
     # logic in one place.)
     await lifecycle_tools.clear_step_status(engagement_id, "design")
+    await session_tools.clear_checkpoint(engagement_id, "design")
     telemetry_cleared = await _clear_step_telemetry(engagement_id, "design")
 
     # Supersede domain-sourced open-items.
@@ -677,7 +682,9 @@ async def _reset_review_state(engagement_id: str) -> dict:
     except Exception:
         pass
 
-    # Unlink reviews/*.md narrative artifacts.
+    # Unlink everything under reviews/ — narrative .md files (per-reviewer
+    # + summary) AND machine-readable artifacts like capacity-baselines.yaml.
+    # No extension filter; the whole category gets cleared.
     removed = []
     try:
         res = await artifact_tools.list_artifacts(engagement_id, category="reviews")
@@ -759,6 +766,7 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
                     )
                     superseded += 1
         await lifecycle_tools.clear_step_status(engagement_id, "design")
+        await session_tools.clear_checkpoint(engagement_id, "design")
         await _clear_step_telemetry(engagement_id, "design")
 
     if "review" in to_wipe:
@@ -775,6 +783,7 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
                     )
                     superseded += 1
         await lifecycle_tools.clear_step_status(engagement_id, "review")
+        await session_tools.clear_checkpoint(engagement_id, "review")
         await _clear_step_telemetry(engagement_id, "review")
 
     if "validation" in to_wipe:
@@ -789,6 +798,7 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
                     )
                     superseded += 1
         await lifecycle_tools.clear_step_status(engagement_id, "validation")
+        await session_tools.clear_checkpoint(engagement_id, "validation")
         await _clear_step_telemetry(engagement_id, "validation")
 
     if "event-portal" in to_wipe:
@@ -819,12 +829,14 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
                     )
                     superseded += 1
         await lifecycle_tools.clear_step_status(engagement_id, "event-portal")
+        await session_tools.clear_checkpoint(engagement_id, "event-portal")
         await _clear_step_telemetry(engagement_id, "event-portal")
 
     if "blueprint" in to_wipe:
         removed.extend(await _unlink_category(engagement_id, "blueprint"))
         removed.extend(await _unlink_category(engagement_id, "exports"))
         await lifecycle_tools.clear_step_status(engagement_id, "blueprint")
+        await session_tools.clear_checkpoint(engagement_id, "blueprint")
         await _clear_step_telemetry(engagement_id, "blueprint")
 
     return {

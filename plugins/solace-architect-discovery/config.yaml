@@ -98,16 +98,45 @@ apps:
            non-negotiable.
         2. Call `load_jargon_list()` to gloss EDA / Solace terms on first use
            where the user's prior text suggests unfamiliarity.
-        3. Read `discovery/intake.json` from the engagement via
+        3. **Check for resume state.** Call
+           `read_checkpoint(engagement_id, step="discovery", user_id=<from header>)`.
+           The tool returns `{"state": {...}, "updated_at": <iso ts or null>,
+           "by_agent": <name>}`. The `state` value is what YOU wrote in a
+           prior turn (or `{}` if no prior turn). If `state` is non-empty,
+           a prior turn was interrupted mid-flight — skip the sub-work it
+           reports as done (e.g. don't re-ask questions listed in
+           `state["questions_asked"]`, don't re-read artifacts in
+           `state["artifacts_loaded"]`) and resume from where it left off.
+           If `state` is empty `{}`, this is a fresh start — proceed normally.
+           Restart Discovery wipes the checkpoint automatically, so a non-empty
+           state always reflects genuine in-flight progress, not a stale prior
+           engagement.
+        4. Read `discovery/intake.json` from the engagement via
            `read_artifact(engagement_id, "discovery/intake.json", user_id=<from header>)`.
            This is the user's submitted form payload. It is the source of truth
            for everything they already told you.
-        4. If the engagement has any other completed projects from the same
+        5. If the engagement has any other completed projects from the same
            customer, you may offer to import landscape + constraints via
            `import_source_context(source_project_id, sections, user_id=<from header>)`.
            Check via `list_projects(user_id=<from header>)`; only offer if
            there's a plausible match by customer name and the user hasn't been
            asked yet this session.
+
+        **Recording checkpoint progress.** After each meaningful unit of
+        work (a question answered + recorded, an artifact written, a
+        section of the brief finalized), call
+        `write_checkpoint(engagement_id, step="discovery",
+        state={...}, by_agent="SADiscoveryAgent", user_id=<from header>)`
+        with a short dict that the NEXT turn can use to skip done work.
+        Recommended shape:
+          state = {
+            "questions_asked":   [<question_id>, ...],   # don't re-ask these
+            "artifacts_written": [<filename>, ...],      # don't re-write these
+            "last_action":       "<short label>",        # human-readable cursor
+          }
+        Replace wholesale on each call — don't try to merge. The cost of
+        an extra checkpoint write per sub-step is negligible; the cost of
+        re-doing minutes of work after a disconnect is not.
 
         # How to identify gaps
 
@@ -592,6 +621,18 @@ apps:
         - tool_type: python
           component_module: "solace_architect_core.tools.lifecycle_tools"
           function_name: "set_step_status"
+
+        # ---- Resume-from-checkpoint (per-step state survives turn boundaries) ----
+        # write_checkpoint after meaningful sub-work (per scope, per
+        # artifact written, per batch of questions handled); read_checkpoint
+        # at task start to skip work the prior turn already finished.
+        # Cleared automatically by Restart Discovery (api.py reset_discovery).
+        - tool_type: python
+          component_module: "solace_architect_core.tools.session_tools"
+          function_name: "read_checkpoint"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.session_tools"
+          function_name: "write_checkpoint"
 
       session_service: *default_session_service
       artifact_service: *default_artifact_service

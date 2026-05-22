@@ -345,6 +345,156 @@
     color: var(--muted);
     text-align: right;
   }
+
+  /* Missing-info banner — sits between <header> and the first section card.
+     Required gaps render in the warn/error palette; recommended gaps render
+     softer so the user can tell them apart at a glance. */
+  .missing-info {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--warn, #d97706);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin: 0 0 18px;
+    font-size: 13px;
+  }
+  .missing-info-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+    color: var(--text);
+  }
+  .missing-info-summary {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .missing-info-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-top: 6px;
+  }
+  .missing-info-label {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .missing-info-label--required {
+    background: rgba(217, 38, 38, 0.12);
+    color: #b00020;
+  }
+  .missing-info-label--recommended {
+    background: rgba(217, 119, 6, 0.14);
+    color: #92400e;
+  }
+  .missing-info-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .missing-info-chip {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .missing-info-chip:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  /* Brief flash applied to a section when the user clicks a chip linking to it,
+     so they can spot the area they need to fill in. */
+  @keyframes missing-info-flash {
+    0%   { box-shadow: 0 0 0 0 rgba(217, 119, 6, 0.55); }
+    100% { box-shadow: 0 0 0 8px rgba(217, 119, 6, 0); }
+  }
+  .missing-info-flash {
+    animation: missing-info-flash 1.4s ease-out 1;
+  }
+
+  /* Submit confirmation modal */
+  .modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(15, 42, 68, 0.45);
+    z-index: 400;
+    align-items: center; justify-content: center;
+  }
+  .modal-card--submit {
+    background: var(--surface);
+    border-radius: 8px;
+    width: min(620px, 92vw);
+    max-height: 88vh;
+    overflow: auto;
+    padding: 22px 24px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  }
+  .modal-card-title { margin: 0 0 14px; color: var(--primary); font-size: 18px; }
+  .modal-card-body { display: flex; flex-direction: column; gap: 14px; }
+  .modal-card-actions {
+    display: flex; justify-content: flex-end; gap: 8px;
+    margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border);
+  }
+  .modal-card-actions .primary.danger {
+    background: #b00020; color: white; border: 1px solid #b00020;
+  }
+  .modal-card-actions .primary.danger:hover:not(:disabled) { background: #8a0019; }
+  .modal-card-actions .primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .modal-summary {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+  }
+  .modal-summary-eyebrow {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 1.2px; color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .modal-summary-row {
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 3px 0; font-size: 13px;
+    border-bottom: 1px dashed var(--border);
+  }
+  .modal-summary-row:last-child { border-bottom: 0; }
+  .modal-summary-row span { color: var(--muted); }
+  .modal-summary-row strong { color: var(--text); font-weight: 600; }
+
+  .modal-gap {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+  }
+  .modal-gap--required { border-left: 4px solid #b00020; }
+  .modal-gap--recommended { border-left: 4px solid #d97706; }
+  .modal-gap-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .modal-gap-head strong { font-size: 13px; color: var(--text); }
+  .modal-gap-hint { margin: 4px 0 8px; font-size: 12px; color: var(--muted); }
+
+  .modal-cascade {
+    border: 1px solid #b00020;
+    background: rgba(176, 0, 32, 0.04);
+    border-radius: 6px;
+    padding: 10px 14px;
+  }
+  .modal-cascade-head {
+    font-weight: 600; color: #b00020; font-size: 13px; margin-bottom: 6px;
+  }
+  .modal-cascade ul {
+    margin: 4px 0 8px 18px; padding: 0; font-size: 12px; color: var(--text);
+  }
+  .modal-cascade ul li { margin: 2px 0; }
 </style>
 </head>
 <body>
@@ -372,8 +522,27 @@
 <div class="layout">
 <main>
 
+<!-- ── Missing-info banner ────────────────────────────────────────────────
+     Lists required + recommended fields that are still blank. Updated by
+     updateMissingInfoBanner() on every dirty cycle. Hidden when nothing is
+     missing. Each chip is a button that scrolls + flashes its section. -->
+<div id="missing-info-banner" class="missing-info" style="display:none">
+  <div class="missing-info-head">
+    <strong id="missing-info-title">Heads up</strong>
+    <span id="missing-info-summary" class="missing-info-summary"></span>
+  </div>
+  <div id="missing-info-required-row" class="missing-info-row" style="display:none">
+    <span class="missing-info-label missing-info-label--required">REQUIRED</span>
+    <div id="missing-info-required" class="missing-info-chips"></div>
+  </div>
+  <div id="missing-info-recommended-row" class="missing-info-row" style="display:none">
+    <span class="missing-info-label missing-info-label--recommended">RECOMMENDED</span>
+    <div id="missing-info-recommended" class="missing-info-chips"></div>
+  </div>
+</div>
+
 <!-- ── Section 1: Project ─────────────────────────────────────────────── -->
-<section class="card">
+<section class="card" id="section-project">
   <h2>1. Project</h2>
   <div class="section-hint">Identifies the engagement.</div>
 
@@ -395,7 +564,7 @@
 </section>
 
 <!-- ── Section 2: System Landscape ────────────────────────────────────── -->
-<section class="card">
+<section class="card" id="section-landscape">
   <h2>2. System landscape</h2>
   <div class="section-hint">Every system that needs to talk through the event mesh.</div>
 
@@ -615,7 +784,7 @@
 </section>
 
 <!-- ── Section 4: Requirements ───────────────────────────────────────── -->
-<section class="card">
+<section class="card" id="section-requirements">
   <h2>4. Requirements</h2>
   <div class="section-hint">How events should behave end-to-end.</div>
 
@@ -741,7 +910,7 @@
 </section>
 
 <!-- ── Section 5: Goals ──────────────────────────────────────────────── -->
-<section class="card">
+<section class="card" id="section-goals">
   <h2>5. Goals</h2>
   <div class="section-hint">Why this engagement exists.</div>
 
@@ -776,7 +945,7 @@
 </section>
 
 <!-- ── Section 6: Preferences ────────────────────────────────────────── -->
-<section class="card">
+<section class="card" id="section-preferences">
   <h2>6. Preferences</h2>
 
   <div class="field">
@@ -856,6 +1025,21 @@
 
     <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:18px;">
       <button class="secondary" type="button" onclick="closeLoadIntakeModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Submit confirmation modal — opened by submitToServer(). Shows a summary
+     of the intake + any missing fields + (edit mode) cascade-wipe warning.
+     Replaces the previous window.confirm() and the silent-no-confirm path
+     on new submits. -->
+<div id="submit-confirm-modal" class="modal-backdrop" style="display:none;">
+  <div class="modal-card modal-card--submit">
+    <h3 id="submit-confirm-title" class="modal-card-title">Submit intake</h3>
+    <div id="submit-confirm-body" class="modal-card-body"></div>
+    <div class="modal-card-actions">
+      <button class="secondary" type="button" onclick="closeSubmitConfirmModal()">Cancel</button>
+      <button id="submit-confirm-go" class="primary" type="button">Confirm submit</button>
     </div>
   </div>
 </div>
@@ -980,6 +1164,7 @@ function loadData(data) {
   events.forEach(e => addEventRow(e));
   onVerticalChange();
   updateProgress();
+  updateMissingInfoBanner();
   updatePreview();
   updateCatalogSummary();
 }
@@ -1190,6 +1375,118 @@ function onVerticalChange() {
 // ───────────────────────────────────────────────────────────────────────────
 //  Progress
 // ───────────────────────────────────────────────────────────────────────────
+// Field definitions consumed by both the banner and the submit modal — a
+// single source of truth for "what's required" + "what's recommended" so
+// the two surfaces never drift. label = human label, path = dotted path in
+// collectData() output, section = id to scroll to when the user clicks the
+// chip / fix link. Required entries match the [data-required="1"] markers
+// in the DOM; recommended entries cover sizing + governance + landscape
+// extras that the architect needs to ask about IF blank.
+const REQUIRED_FIELDS = [
+  { label: 'Project name',          path: 'project.name',                section: 'section-project' },
+  { label: 'Project type',          path: 'project.type',                section: 'section-project' },
+  { label: 'Industry vertical',     path: 'landscape.vertical',          section: 'section-landscape' },
+  { label: 'Delivery mode',         path: 'requirements.delivery_mode',  section: 'section-requirements' },
+  { label: 'Latency tier',          path: 'requirements.latency_tier',   section: 'section-requirements' },
+  { label: 'Topology',              path: 'requirements.topology',       section: 'section-requirements' },
+  { label: 'Goals — driver',        path: 'goals.driver',                section: 'section-goals' },
+  { label: 'Goals — timeline',      path: 'goals.timeline',              section: 'section-goals' },
+  // "At least one system" is checked separately because it's a table row count.
+];
+const RECOMMENDED_FIELDS = [
+  { label: 'Existing messaging platform',  path: 'landscape.existing_messaging',         section: 'section-landscape' },
+  { label: 'Protocols in use',             path: 'landscape.protocols_in_use',           section: 'section-landscape', isList: true },
+  { label: 'Schemas — definitions present',path: 'landscape.schemas.definitions_present',section: 'section-landscape' },
+  { label: 'Schemas — registry',           path: 'landscape.schemas.registry',           section: 'section-landscape' },
+  { label: 'Schemas — compatibility policy',path:'landscape.schemas.compatibility_policy',section: 'section-landscape' },
+  { label: 'Schemas — SERDES integration', path: 'landscape.schemas.serdes_integration', section: 'section-landscape' },
+  { label: 'Retention hours',              path: 'requirements.retention_hours',         section: 'section-requirements' },
+  { label: 'Event rate (per second)',      path: 'requirements.event_rate_per_sec',      section: 'section-requirements' },
+  { label: 'Avg message size (KB)',        path: 'requirements.avg_message_size_kb',     section: 'section-requirements' },
+  { label: 'Admin connections',            path: 'requirements.admin_connections',       section: 'section-requirements' },
+];
+
+function _isEmptyField(data, def) {
+  const v = readPath(data, def.path);
+  if (v === undefined || v === null) return true;
+  if (def.isList) return !Array.isArray(v) || v.length === 0;
+  if (typeof v === 'string') return v.trim() === '';
+  if (typeof v === 'number') return false;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === 'object') return Object.keys(v).length === 0;
+  return false;
+}
+
+function _computeMissingFields() {
+  const data = collectData();
+  const missingRequired = REQUIRED_FIELDS.filter(f => _isEmptyField(data, f));
+  // Systems table — special-case because it isn't a path on collectData() output
+  // (the rows are aggregated into landscape.systems[]).
+  const hasSystem = (data.landscape?.systems || []).some(s => s && (s.name || '').trim());
+  if (!hasSystem) {
+    missingRequired.push({ label: 'At least one system', path: 'landscape.systems', section: 'section-landscape' });
+  }
+  const missingRecommended = RECOMMENDED_FIELDS.filter(f => _isEmptyField(data, f));
+  // Events table is recommended (not required) — same special-case.
+  const hasEvent = (data.landscape?.events || []).some(e => e && (e.name || '').trim());
+  if (!hasEvent) {
+    missingRecommended.push({ label: 'At least one event', path: 'landscape.events', section: 'section-landscape' });
+  }
+  return { missingRequired, missingRecommended };
+}
+
+function _scrollToSection(sectionId) {
+  const el = document.getElementById(sectionId);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // Flash so the user can locate it quickly even on a long form.
+  el.classList.remove('missing-info-flash');
+  // Force reflow so the animation restarts when the same chip is clicked again.
+  void el.offsetWidth;
+  el.classList.add('missing-info-flash');
+}
+
+function _renderChips(containerId, fields) {
+  const c = document.getElementById(containerId);
+  c.innerHTML = '';
+  fields.forEach(f => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'missing-info-chip';
+    btn.textContent = f.label;
+    btn.title = `Jump to ${f.section.replace('section-', '')}`;
+    btn.addEventListener('click', () => _scrollToSection(f.section));
+    c.appendChild(btn);
+  });
+}
+
+function updateMissingInfoBanner() {
+  const banner = document.getElementById('missing-info-banner');
+  if (!banner) return;
+  const { missingRequired, missingRecommended } = _computeMissingFields();
+  const reqRow = document.getElementById('missing-info-required-row');
+  const recRow = document.getElementById('missing-info-recommended-row');
+  if (missingRequired.length === 0 && missingRecommended.length === 0) {
+    banner.style.display = 'none';
+    return;
+  }
+  banner.style.display = '';
+  // Match the border tint to whichever bucket has items — red when required
+  // fields are blank, amber otherwise.
+  banner.style.borderLeftColor = missingRequired.length ? '#b00020' : '#d97706';
+  const parts = [];
+  if (missingRequired.length) parts.push(`${missingRequired.length} required`);
+  if (missingRecommended.length) parts.push(`${missingRecommended.length} recommended`);
+  document.getElementById('missing-info-title').textContent =
+    missingRequired.length ? 'Fix before submitting' : 'Optional fields still blank';
+  document.getElementById('missing-info-summary').textContent =
+    `${parts.join(' · ')} field${(missingRequired.length + missingRecommended.length) > 1 ? 's' : ''} not filled in — click any chip to jump there.`;
+  reqRow.style.display = missingRequired.length ? '' : 'none';
+  recRow.style.display = missingRecommended.length ? '' : 'none';
+  _renderChips('missing-info-required', missingRequired);
+  _renderChips('missing-info-recommended', missingRecommended);
+}
+
 function updateProgress() {
   const required = document.querySelectorAll('[data-required="1"]');
   // For radio groups, count by group name
@@ -1234,6 +1531,7 @@ function markDirty() {
   dirtyTimer = setTimeout(() => {
     saveDraft();
     updateProgress();
+    updateMissingInfoBanner();
     updatePreview();
     updateCatalogSummary();
   }, 400);
@@ -1414,70 +1712,32 @@ function triggerDownload(filename, content, mime) {
 // ───────────────────────────────────────────────────────────────────────────
 const SERVER_MODE = (window.location.protocol === 'http:' || window.location.protocol === 'https:');
 
+// submitToServer() now ALWAYS opens the in-app confirmation modal. The
+// modal shows a summary of what's about to be sent, lists any blank
+// required/recommended fields, surfaces the cascade-wipe warning when in
+// edit mode, and only calls the actual submit endpoint when the user
+// clicks "Confirm submit". Previous behavior: required-field-fail used
+// the floating toast; edit-mode used window.confirm(). Both replaced.
 async function submitToServer() {
   const data = collectData();
-  // Quick required-field check
-  const required = [
-    ['project.name', 'Project name'],
-    ['project.type', 'Project type'],
-    ['landscape.vertical', 'Industry vertical'],
-    ['requirements.delivery_mode', 'Delivery mode'],
-    ['requirements.latency_tier', 'Latency tier'],
-    ['requirements.topology', 'Topology'],
-    ['goals.driver', 'Driver'],
-    ['goals.timeline', 'Timeline'],
-  ];
-  const missing = required.filter(([p, _]) => !readPath(data, p)).map(([_, label]) => label);
-  if (!data.landscape || !data.landscape.systems || data.landscape.systems.length === 0) {
-    missing.push('At least one system');
-  }
-  if (missing.length) {
-    showSubmitResult(false, 'Missing required fields: ' + missing.join(', '));
-    return;
-  }
+  const { missingRequired, missingRecommended } = _computeMissingFields();
+  const editMatch = window.location.pathname.match(/^\/intake\/edit\/([^/]+)/);
+  const editEid = editMatch ? decodeURIComponent(editMatch[1]) : null;
 
-  const yamlHeader = [
-    '# Solace Architect — Intake (HTML form submission)',
-    `# Generated: ${new Date().toISOString()}`,
-    `# Integration catalog snapshot: ${CATALOG.refreshed}`,
-    ''
-  ].join('\n');
-  const yaml = yamlHeader + toYAML(data) + '\n';
+  openSubmitConfirmModal({
+    data,
+    missingRequired,
+    missingRecommended,
+    editEid,
+    onConfirm: () => _doSubmit(data, editEid),
+  });
+}
 
-  // When the form was loaded via /intake/edit/{engagement_id}, include the
-  // engagement_id in the payload so intake_submit takes the UPDATE path
-  // (cascade-wipe Discovery onward + overwrite the three intake artifacts on
-  // the existing engagement) instead of creating a second project. Identity
-  // of the engagement comes from the URL, not a form field.
-  const _editMatch = window.location.pathname.match(/^\/intake\/edit\/([^/]+)/);
-  if (_editMatch) {
-    const eid = decodeURIComponent(_editMatch[1]);
-    // Re-submit cascades a Restart-Discovery wipe (design / review /
-    // validation / event-portal / blueprint cleared). Confirm before we
-    // throw work away on the user's behalf.
-    const ok = window.confirm(
-      `Re-submit intake for "${eid}"?\n\n` +
-      `This will WIPE everything downstream of Intake:\n` +
-      `  • Discovery (brief + summary)\n` +
-      `  • Design (all scopes)\n` +
-      `  • Reviews + findings\n` +
-      `  • Validation\n` +
-      `  • Event Portal (local artifacts only — Cloud objects not deprovisioned)\n` +
-      `  • Blueprint\n\n` +
-      `Phase-authored decisions in meta/decisions.yaml are also dropped.\n` +
-      `Orchestrator flow decisions are preserved.\n\n` +
-      `Continue?`
-    );
-    if (!ok) {
-      showSubmitResult(false, 'Cancelled — engagement left unchanged.');
-      return;
-    }
-    data.engagement_id = eid;
-  }
-
+async function _doSubmit(data, editEid) {
+  // Mirrors the previous straight-line submit path, minus the in-line
+  // confirms — those are owned by openSubmitConfirmModal now.
+  if (editEid) data.engagement_id = editEid;
   try {
-    // V2 endpoint: /api/intake/submit accepts the form payload as the body.
-    // The adapter spreads the keys as kwargs to intake_submit(**intake).
     const resp = await fetch('/api/intake/submit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1496,13 +1756,139 @@ async function submitToServer() {
     // Clear the draft now that the engagement exists server-side.
     try { localStorage.removeItem(STORAGE_KEY); } catch {}
     showSubmitResult(true, result);
-    // Redirect to the new project's Overview after a short delay so the user sees the success message.
     setTimeout(() => {
       window.location.href = '/projects/' + encodeURIComponent(result.engagement_id) + '/overview';
     }, 1200);
   } catch (e) {
     showSubmitResult(false, 'Submit failed: ' + e.message);
   }
+}
+
+// ─── Submit confirmation modal ────────────────────────────────────────────
+// Render-on-open: re-rendered fresh each click so the summary reflects the
+// latest form state. Returns nothing — onConfirm is invoked when the user
+// commits. Closing via Cancel / Escape / backdrop click discards.
+function openSubmitConfirmModal({ data, missingRequired, missingRecommended, editEid, onConfirm }) {
+  const modal = document.getElementById('submit-confirm-modal');
+  const body  = document.getElementById('submit-confirm-body');
+  const blockedReason = missingRequired.length > 0;
+
+  // Build the "summary" pane — what's about to be sent. Keep it tight: 6-7
+  // lines that the user can scan in a second. Numbers (system / event count,
+  // protocols) are derived live from `data` to match what hits the server.
+  const project = data.project || {};
+  const landscape = data.landscape || {};
+  const requirements = data.requirements || {};
+  const goals = data.goals || {};
+  const preferences = data.preferences || {};
+  const protocols = (landscape.protocols_in_use || []).join(', ') || '—';
+  const systems = (landscape.systems || []).filter(s => s && (s.name || '').trim()).length;
+  const events  = (landscape.events  || []).filter(e => e && (e.name || '').trim()).length;
+  const schemaPresent = (landscape.schemas && landscape.schemas.definitions_present) || '—';
+  const epOptIn = preferences.provision_event_portal ? 'Yes' : 'No';
+
+  const summaryRow = (label, value) =>
+    `<div class="modal-summary-row"><span>${esc(label)}</span><strong>${esc(value || '—')}</strong></div>`;
+
+  const summaryHtml = `
+    <section class="modal-summary">
+      <div class="modal-summary-eyebrow">Summary</div>
+      ${summaryRow('Project',      project.name)}
+      ${summaryRow('Type',         project.type)}
+      ${summaryRow('Vertical',     landscape.vertical)}
+      ${summaryRow('Delivery',     requirements.delivery_mode)}
+      ${summaryRow('Latency',      requirements.latency_tier)}
+      ${summaryRow('Topology',     requirements.topology)}
+      ${summaryRow('Systems / Events',  `${systems} / ${events}`)}
+      ${summaryRow('Protocols',    protocols)}
+      ${summaryRow('Schemas',      schemaPresent)}
+      ${summaryRow('EP provisioning', epOptIn)}
+      ${summaryRow('Goal driver',  goals.driver)}
+      ${summaryRow('Timeline',     goals.timeline)}
+    </section>
+  `;
+
+  // Missing fields — required block is hard-blocking; recommended is a soft
+  // nudge with "Submit anyway" allowed. Both render the same chip list as
+  // the top-of-form banner so the user gets a consistent vocabulary.
+  const renderChips = (fields) => fields.map(f =>
+    `<button type="button" class="missing-info-chip" data-section="${esc(f.section)}">${esc(f.label)}</button>`
+  ).join('');
+  const reqHtml = missingRequired.length
+    ? `<section class="modal-gap modal-gap--required">
+         <div class="modal-gap-head"><span class="missing-info-label missing-info-label--required">REQUIRED</span>
+           <strong>${missingRequired.length} field${missingRequired.length > 1 ? 's' : ''} missing</strong>
+         </div>
+         <p class="modal-gap-hint">You can't submit until these are filled. Click any to jump to its section.</p>
+         <div class="missing-info-chips">${renderChips(missingRequired)}</div>
+       </section>`
+    : '';
+  const recHtml = missingRecommended.length
+    ? `<section class="modal-gap modal-gap--recommended">
+         <div class="modal-gap-head"><span class="missing-info-label missing-info-label--recommended">RECOMMENDED</span>
+           <strong>${missingRecommended.length} optional field${missingRecommended.length > 1 ? 's' : ''} blank</strong>
+         </div>
+         <p class="modal-gap-hint">These help your architect skip follow-up questions. Submit anyway if you don't have the data.</p>
+         <div class="missing-info-chips">${renderChips(missingRecommended)}</div>
+       </section>`
+    : '';
+
+  // Edit-mode cascade-wipe warning — same content as the old window.confirm()
+  // but styled to match the modal's destructive-action treatment.
+  const cascadeHtml = editEid
+    ? `<section class="modal-cascade">
+         <div class="modal-cascade-head">⚠ Edit mode — this re-submission will WIPE downstream phases</div>
+         <ul>
+           <li>Discovery (brief + summary)</li>
+           <li>Design (all scopes)</li>
+           <li>Reviews + findings</li>
+           <li>Validation</li>
+           <li>Event Portal (local artifacts only — Cloud objects not deprovisioned)</li>
+           <li>Blueprint</li>
+         </ul>
+         <p class="modal-gap-hint">Phase-authored decisions are dropped; orchestrator flow decisions are preserved.<br>
+            Target engagement: <code>${esc(editEid)}</code></p>
+       </section>`
+    : '';
+
+  body.innerHTML = summaryHtml + reqHtml + recHtml + cascadeHtml;
+
+  // Heading + primary-button label change based on state.
+  document.getElementById('submit-confirm-title').textContent =
+    editEid ? 'Re-submit intake' : 'Submit intake';
+  const confirmBtn = document.getElementById('submit-confirm-go');
+  confirmBtn.disabled = blockedReason;
+  confirmBtn.textContent = blockedReason
+    ? 'Fix required fields first'
+    : (editEid ? 'Re-submit and wipe downstream' : 'Confirm submit');
+  confirmBtn.classList.toggle('danger', !!editEid && !blockedReason);
+
+  // Wire chip clicks to jump-to-section (then close the modal so the user
+  // can actually edit the field).
+  body.querySelectorAll('[data-section]').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const sid = chip.getAttribute('data-section');
+      closeSubmitConfirmModal();
+      if (sid) _scrollToSection(sid);
+    });
+  });
+
+  // Replace prior listeners by cloning the button — avoids the "old onConfirm
+  // fires when modal opened again" stale-closure bug.
+  const newBtn = confirmBtn.cloneNode(true);
+  confirmBtn.parentNode.replaceChild(newBtn, confirmBtn);
+  newBtn.addEventListener('click', () => {
+    if (newBtn.disabled) return;
+    closeSubmitConfirmModal();
+    onConfirm();
+  });
+
+  modal.style.display = 'flex';
+}
+
+function closeSubmitConfirmModal() {
+  const modal = document.getElementById('submit-confirm-modal');
+  if (modal) modal.style.display = 'none';
 }
 
 function showSubmitResult(ok, payload) {
@@ -1573,8 +1959,24 @@ function init() {
     loadDraft();
   }
   updateProgress();
+  updateMissingInfoBanner();
   updatePreview();
   updateCatalogSummary();
+
+  // Submit-confirm modal dismissal: Escape key + backdrop click.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const m = document.getElementById('submit-confirm-modal');
+      if (m && m.style.display !== 'none') closeSubmitConfirmModal();
+    }
+  });
+  const subModal = document.getElementById('submit-confirm-modal');
+  if (subModal) {
+    subModal.addEventListener('click', (e) => {
+      // Only close on backdrop click — clicks inside the card shouldn't dismiss.
+      if (e.target === subModal) closeSubmitConfirmModal();
+    });
+  }
 }
 
 async function loadFromServer(engagement_id) {

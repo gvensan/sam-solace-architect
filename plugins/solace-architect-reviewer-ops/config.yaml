@@ -149,6 +149,18 @@ apps:
              top-level keys with inputs cited back to the source
              artifact (`broker-recommendation.yaml` or the brief).
              "Pick the biggest broker" is not capacity planning.
+
+             **If `broker-recommendation.yaml` exists but has no
+             `sizing:` block** (or any required input is missing),
+             do NOT invent values to populate the baselines. Instead:
+             (a) record a `severity: critical` finding describing
+             exactly which inputs are missing and pointing to the
+             upstream artifact that should have produced them, and
+             (b) write `capacity-baselines.yaml` with the sections
+             you CAN derive plus an explicit `unresolved:` block
+             listing the missing inputs and the finding id. A partial
+             baseline + a clear "Domain owes us a sizing block"
+             finding is more useful than fabricated numbers.
           4. **Operational procedures** — Deploy, upgrade, rollback,
              DR failover — are these defined as runbooks or assumed?
           5. **Alerting** — Is alerting configured (who gets paged,

@@ -968,11 +968,18 @@
     },
 
     stats: async (root, eid) => {
-      const [stats, lc, arts, tok] = await Promise.all([
+      // Timeline carries the structured wall/execution/user-wait per step
+      // (the recently-shipped timing-instrumentation writes those into
+      // session.yaml.timing_data and compute_timeline reads them back).
+      // Lifecycle gives us status + note per step. Token usage grouped by
+      // agent surfaces "which agent burned the most" without leaving the
+      // page. Per-engagement endpoint already includes computed USD cost.
+      const [stats, lc, tl, arts, tokAgent] = await Promise.all([
         fetch(`/api/engagements/${encodeURIComponent(eid)}/stats`).then(r => r.json()).catch(() => ({})),
         fetch(`/api/engagements/${encodeURIComponent(eid)}/lifecycle`).then(r => r.json()).catch(() => ({ steps: {} })),
+        fetch(`/api/engagements/${encodeURIComponent(eid)}/timeline`).then(r => r.json()).catch(() => []),
         fetch(`/api/engagements/${encodeURIComponent(eid)}/artifacts`).then(r => r.json()).catch(() => []),
-        fetch(`/api/engagements/${encodeURIComponent(eid)}/token-usage`).then(r => r.json()).catch(() => null),
+        fetch(`/api/engagements/${encodeURIComponent(eid)}/token-usage?group_by=agent`).then(r => r.json()).catch(() => null),
       ]);
       const fmtSec = (s) => {
         s = Math.max(0, Math.floor(s || 0));
@@ -982,62 +989,148 @@
         const h = Math.floor(m / 60); const mm = m - h * 60;
         return mm ? `${h}h ${mm}m` : `${h}h`;
       };
-      const fmtNum = (n) => (n == null ? "—" : Number(n).toLocaleString());
+      const fmtNum = (n) => (n == null ? "0" : Number(n).toLocaleString());
+      // Token counts compress nicely with K/M suffixes; full counts are still
+      // in the per-agent table for anyone who needs the digits.
+      const fmtTokens = (n) => {
+        if (n == null) return "0";
+        if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 1 : 2) + "M";
+        if (n >= 1_000) return (n / 1_000).toFixed(n >= 10_000 ? 0 : 1) + "K";
+        return String(n);
+      };
+      // USD formatting — show cents for small amounts, dollars-only for >$10
+      // so the tile stays compact. < $0.01 surfaces as "<$0.01" rather than $0.00
+      // so the user knows cost ≠ literally zero.
+      const fmtCost = (n) => {
+        if (n == null || n === 0) return "$0";
+        if (n < 0.01) return "<$0.01";
+        if (n < 10) return `$${n.toFixed(2)}`;
+        if (n < 1000) return `$${n.toFixed(0)}`;
+        return `$${(n / 1000).toFixed(1)}K`;
+      };
 
-      // Step durations from lifecycle.steps (set_step_status writes started_at/updated_at).
+      // Build a step → timing map from the timeline (structured wall/exec/wait).
+      const timeByStep = {};
+      for (const e of (Array.isArray(tl) ? tl : [])) {
+        timeByStep[e.skill] = e;
+      }
+
+      // Per-step rows blend lifecycle (status + note) and timeline (the rich
+      // wall/exec/wait breakdown). When timing data is missing for a step
+      // (older runs, in-flight steps that haven't finalized yet), fall back
+      // to a started→updated delta as the wall time — that at least shows
+      // SOMETHING rather than four em-dashes.
       const stepRows = Object.entries(lc?.steps || {}).map(([name, info]) => {
-        const started = info?.started_at;
-        const updated = info?.updated_at;
-        let durStr = "—";
-        if (started && updated) {
+        const t = timeByStep[name] || {};
+        let wall = t.wall_seconds;
+        if (wall == null && info?.started_at && info?.updated_at) {
           try {
-            const ms = new Date(updated).getTime() - new Date(started).getTime();
-            durStr = fmtSec(Math.floor(ms / 1000));
+            wall = Math.max(0, Math.floor(
+              (new Date(info.updated_at).getTime() - new Date(info.started_at).getTime()) / 1000,
+            ));
           } catch {}
         }
+        const exec = t.execution_seconds;
+        const wait = t.user_wait_seconds;
         const badge = info?.status === "DONE" ? `<span class="status-badge done">Done</span>`
           : info?.status === "DONE_WITH_CONCERNS" ? `<span class="status-badge advisory">Done with concerns</span>`
           : `<span class="status-badge">${escapeHtml(info?.status || "—")}</span>`;
         return `<tr>
           <td><strong>${escapeHtml(name)}</strong></td>
           <td>${badge}</td>
-          <td>${durStr}</td>
+          <td>${wall != null ? fmtSec(wall) : "—"}</td>
+          <td>${exec != null ? fmtSec(exec) : "—"}</td>
+          <td>${wait != null ? fmtSec(wait) : "—"}</td>
           <td class="muted">${escapeHtml(info?.note || "")}</td>
         </tr>`;
-      }).join("") || `<tr><td colspan="4" class="muted">No steps recorded yet. Each agent writes its status via <code>set_step_status</code> at end-of-turn.</td></tr>`;
+      }).join("") || `<tr><td colspan="6" class="muted">No steps recorded yet. Step timing populates as each agent records DONE.</td></tr>`;
 
-      const tokenTotals = tok?.totals || tok || null;
-      const hasTokens = tokenTotals && (tokenTotals.input_tokens || tokenTotals.output_tokens);
+      const tokenTotals = tokAgent?.totals || null;
+      const hasTokens = tokenTotals && (tokenTotals.input_tokens || tokenTotals.output_tokens || tokenTotals.calls);
+      const totalCost = tokenTotals?.total_cost_usd;
+      const totalTokens = tokenTotals?.total_tokens;
+
+      // Per-agent table — top tokens consumer first; helps the user spot
+      // which agent is the cost driver without going to Settings → Usage.
+      const agentRows = (tokAgent?.rows || []).map(r => `<tr>
+        <td><strong>${escapeHtml(r.key)}</strong></td>
+        <td>${fmtNum(r.calls)}</td>
+        <td>${fmtTokens(r.total_tokens)}</td>
+        <td>${fmtTokens(r.input_tokens)}<span class="muted"> · cached ${fmtTokens(r.cached_input_tokens)}</span></td>
+        <td>${fmtTokens(r.output_tokens)}</td>
+        <td>${fmtCost(r.total_cost_usd)}</td>
+      </tr>`).join("");
 
       root.innerHTML = `<h1>Stats</h1>
-        <p class="muted">Time, throughput, and token usage for this engagement. Per-step durations come from <code>meta/engagement-status.yaml</code>; token capture writes to <code>meta/telemetry/llm-calls.jsonl</code>.</p>
+        <p class="muted">Time, tokens, and cost for this engagement.</p>
 
         <div class="stat-tile-row">
-          <div class="stat-tile"><div class="stat-tile-label">Wall time</div><div class="stat-tile-value">${fmtSec(stats.wall_time_seconds)}</div></div>
-          <div class="stat-tile"><div class="stat-tile-label">Execution</div><div class="stat-tile-value">${fmtSec(stats.execution_seconds)}</div></div>
-          <div class="stat-tile"><div class="stat-tile-label">User wait</div><div class="stat-tile-value">${fmtSec(stats.user_wait_seconds)}</div></div>
-          <div class="stat-tile"><div class="stat-tile-label">Steps completed</div><div class="stat-tile-value">${fmtNum(stats.steps_executed)}</div></div>
-          <div class="stat-tile"><div class="stat-tile-label">Artifacts</div><div class="stat-tile-value">${fmtNum((arts || []).length)}</div></div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">Wall time</div>
+            <div class="stat-tile-value">${fmtSec(stats.wall_time_seconds)}</div>
+            <div class="stat-tile-sub">Total elapsed across all steps</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">Agent execution</div>
+            <div class="stat-tile-value">${fmtSec(stats.execution_seconds)}</div>
+            <div class="stat-tile-sub">Wall time minus user wait</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">User wait</div>
+            <div class="stat-tile-value">${fmtSec(stats.user_wait_seconds)}</div>
+            <div class="stat-tile-sub">Time agents spent in NEEDS_CONTEXT</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">Steps done</div>
+            <div class="stat-tile-value">${fmtNum(stats.steps_executed)}</div>
+            <div class="stat-tile-sub">Phases marked DONE</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">Artifacts</div>
+            <div class="stat-tile-value">${fmtNum((arts || []).length)}</div>
+            <div class="stat-tile-sub">Files written to engagement</div>
+          </div>
         </div>
 
+        ${hasTokens ? `
+        <div class="stat-tile-row">
+          <div class="stat-tile">
+            <div class="stat-tile-label">LLM tokens</div>
+            <div class="stat-tile-value">${fmtTokens(totalTokens)}</div>
+            <div class="stat-tile-sub">${fmtNum(tokenTotals.calls)} calls across all agents</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">Cost (USD)</div>
+            <div class="stat-tile-value">${fmtCost(totalCost)}</div>
+            <div class="stat-tile-sub">Computed from model price registry</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">Input tokens</div>
+            <div class="stat-tile-value">${fmtTokens(tokenTotals.input_tokens)}</div>
+            <div class="stat-tile-sub">${tokenTotals.cached_input_tokens > 0 ? `cached ${fmtTokens(tokenTotals.cached_input_tokens)}` : "no cached hits"}</div>
+          </div>
+          <div class="stat-tile">
+            <div class="stat-tile-label">Output tokens</div>
+            <div class="stat-tile-value">${fmtTokens(tokenTotals.output_tokens)}</div>
+            <div class="stat-tile-sub">&nbsp;</div>
+          </div>
+        </div>` : ""}
+
         <h2>Per-step timing</h2>
+        <p class="muted" style="margin-top:-6px">Wall = total elapsed for the step; Execution = agent compute; User wait = time the step sat in NEEDS_CONTEXT.</p>
         <table class="stats-table">
-          <thead><tr><th>Step</th><th>Status</th><th>Duration</th><th>Note</th></tr></thead>
+          <thead><tr><th>Step</th><th>Status</th><th>Wall</th><th>Execution</th><th>User wait</th><th>Note</th></tr></thead>
           <tbody>${stepRows}</tbody>
         </table>
 
-        <h2>Token usage</h2>
+        <h2>Token usage by agent</h2>
         ${hasTokens
-          ? `<div class="stat-tile-row">
-               <div class="stat-tile"><div class="stat-tile-label">Input</div><div class="stat-tile-value">${fmtNum(tokenTotals.input_tokens)}</div></div>
-               <div class="stat-tile"><div class="stat-tile-label">Output</div><div class="stat-tile-value">${fmtNum(tokenTotals.output_tokens)}</div></div>
-               <div class="stat-tile"><div class="stat-tile-label">Cached input</div><div class="stat-tile-value">${fmtNum(tokenTotals.cached_input_tokens)}</div></div>
-             </div>
-             <p class="muted">Cross-engagement breakdown: <a href="/settings#usage">Settings → Usage</a></p>`
-          : `<div class="stats-pending">
-               <p><strong>Per-engagement token capture is not yet wired into the running agents.</strong></p>
-               <p class="muted">The capture infrastructure (<code>record_llm_call_telemetry</code>) and the <code>/api/engagements/{id}/token-usage</code> endpoint are built and ready. The remaining piece is each agent's <code>after_model_callback</code> registration — once that ships, this section will populate automatically. Cross-engagement totals (from when the WebUI itself calls the LLM) are visible at <a href="/settings#usage">Settings → Usage</a>.</p>
-             </div>`}
+          ? `<table class="stats-table">
+               <thead><tr><th>Agent</th><th>Calls</th><th>Tokens</th><th>Input</th><th>Output</th><th>Cost</th></tr></thead>
+               <tbody>${agentRows}</tbody>
+             </table>
+             <p class="muted" style="margin-top:8px">Cross-engagement breakdown: <a href="/settings#usage">Settings → Usage</a></p>`
+          : `<p class="muted">No LLM calls recorded yet for this engagement — start a phase and the table populates as each agent runs.</p>`}
         `;
     },
 
@@ -5104,7 +5197,16 @@
           // re-armings are no-ops (idempotent).
           const liveTaskId = ev.data?.task_id || null;
           if (liveTaskId && liveTaskId !== _currentInflightTaskId) {
-            _setChatInflight(liveTaskId);
+            // Post-cancel suppression — if the user just clicked STOP and
+            // an unrelated task_id shows up inside the grace window, it's
+            // almost certainly an orchestrator auto-continuation we don't
+            // want to silently re-arm. Cancel it and skip the inflight
+            // adoption so the UI stays in "Stopping…" / SEND, not STOP.
+            if (_inCancelGrace() && _suppressAutoSpawnedTask(liveTaskId)) {
+              // intentionally swallow — do not arm STOP for this task.
+            } else {
+              _setChatInflight(liveTaskId);
+            }
           }
           // Layer B: tool-call traces from SAM data parts.
           for (const d of extractDataParts(ev)) {
@@ -5124,7 +5226,12 @@
           // C1 fix: only restore SEND if THIS task is the one currently
           // tracked. A delayed FinalResponse for an older task must not
           // clobber a newer task's STOP state.
-          _clearChatInflightIfMatches(ev.data?.id || null);
+          const finId = ev.data?.id || null;
+          // If the matching CANCELED final arrives normally, drop the
+          // post-cancel safety net so it doesn't fire and print a hint
+          // for a stop that worked.
+          if (finId && finId === _lastCancelTaskId) _clearStopSafetyTimer();
+          _clearChatInflightIfMatches(finId);
         } else if (ev.type === "Error") {
           const msg = ev.data?.message || ev.data?.error || "(error)";
           const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
@@ -5307,7 +5414,12 @@
         // task surfaces here via long-poll when EventSource is dropped.
         const liveTaskId = ev.data?.task_id || null;
         if (liveTaskId && liveTaskId !== _currentInflightTaskId) {
-          _setChatInflight(liveTaskId);
+          // Mirror of live-SSE post-cancel suppression.
+          if (_inCancelGrace() && _suppressAutoSpawnedTask(liveTaskId)) {
+            // intentionally swallow.
+          } else {
+            _setChatInflight(liveTaskId);
+          }
         }
         for (const d of extractDataParts(ev)) {
           if (d.type === "tool_invocation_start") appendToolTrace(d);
@@ -5318,7 +5430,9 @@
       } else if (ev.type === "FinalResponse" || ev.type === "Task") {
         finalizeAgentBubble(extractAgentText(ev));
         // Mirror of live-SSE: only clear if this task matches the in-flight one.
-        _clearChatInflightIfMatches(ev.data?.id || null);
+        const finId = ev.data?.id || null;
+        if (finId && finId === _lastCancelTaskId) _clearStopSafetyTimer();
+        _clearChatInflightIfMatches(finId);
       } else if (ev.type === "Error") {
         const msg = ev.data?.message || ev.data?.error || "(error)";
         const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
@@ -5886,6 +6000,27 @@
     _setChatInflight("");
   }
 
+  // Post-cancel grace window — set when STOP succeeds. SSE updates that
+  // try to adopt a *new* task_id during this window are suppressed: the
+  // user said "stop", so an orchestrator auto-continuation that fires a
+  // fresh task ~50ms later (observed in sam.log 2026-05-22) should NOT
+  // visibly re-arm the chat. Cancel it instead. Window stays tight (5s)
+  // so legitimate user-resumed dispatches after STOP aren't blocked.
+  let _lastCancelTaskId = "";
+  let _lastCancelAt = 0;
+  const CANCEL_GRACE_MS = 5000;
+
+  // Tracks the safety-timeout for a stuck "Stopping…" — see STOP handler.
+  // Held at module scope so the SSE handler can clear it when the matching
+  // CANCELED FinalResponse arrives normally.
+  let _stopSafetyTimer = null;
+  function _clearStopSafetyTimer() {
+    if (_stopSafetyTimer) {
+      clearTimeout(_stopSafetyTimer);
+      _stopSafetyTimer = null;
+    }
+  }
+
   // STOP click handler — independent of form submit. Always reads
   // _currentInflightTaskId at click time so a stale closure can't fire
   // cancel on a wrong task.
@@ -5896,6 +6031,15 @@
     chatSend.disabled = true;
     const prevHTML = chatSend.innerHTML;
     chatSend.innerHTML = "■ Stopping…";
+    // Open the grace window IMMEDIATELY (before the network call). The
+    // cancel POST can take 50–500 ms; without this, an orchestrator
+    // auto-spawned task arriving inside that window slips through the
+    // suppression. Cleared on catch-failure below so a failed cancel
+    // doesn't leave a phantom grace open.
+    const _priorCancelTaskId = _lastCancelTaskId;
+    const _priorCancelAt = _lastCancelAt;
+    _lastCancelTaskId = taskId;
+    _lastCancelAt = Date.now();
     // I1 fix: 10s abort timeout. If /api/chat/cancel hangs (network drop,
     // idle proxy, SAM loop stuck) we'd otherwise leave the button disabled
     // forever and the user would have to reload. With the timeout, the
@@ -5915,12 +6059,37 @@
         // 404 = task already finalized; treat as a successful stop.
         if (res.status !== 404) throw new Error(`HTTP ${res.status}`);
       }
+      // Safety timeout: backend may have canceled cleanly (sam.log shows
+      // `Published final CANCELED response`) but the SSE event can drop
+      // before reaching the browser (process restarts, broker hiccups,
+      // intermediary proxies). Without this net, the button stays on
+      // "Stopping…" forever and only a reload recovers. After ~6s, if
+      // _currentInflightTaskId is still the cancelled one, force-clear.
+      _clearStopSafetyTimer();
+      _stopSafetyTimer = setTimeout(() => {
+        _stopSafetyTimer = null;
+        if (_currentInflightTaskId === taskId) {
+          _setChatInflight("");
+          try {
+            appendChatMessage(
+              "agent",
+              "[stop] cancel acknowledged but no finalize event arrived — UI restored.",
+            );
+          } catch { /* never let the safety net itself throw */ }
+        }
+      }, 6000);
       // We don't reset the button here — wait for the agent's FinalResponse
       // (which will carry state=canceled) or Error SSE to flip the UI back
       // to SEND via _setChatInflight(""). That way the UI matches the
       // actual SAM state instead of guessing.
     } catch (err) {
       clearTimeout(timeoutId);
+      // Cancel failed — roll back the grace window so suppression doesn't
+      // silently swallow tasks for a stop that never took. Restoring the
+      // PRIOR markers (rather than zeroing) preserves any still-active
+      // grace from an earlier successful cancel.
+      _lastCancelTaskId = _priorCancelTaskId;
+      _lastCancelAt = _priorCancelAt;
       chatSend.disabled = false;
       chatSend.innerHTML = prevHTML;
       const reason = err?.name === "AbortError"
@@ -5932,6 +6101,33 @@
       try { appendChatMessage("agent", "[stop] " + reason); } catch {}
     }
   });
+
+  // Helpers used by the SSE handler.
+  function _inCancelGrace() {
+    return _lastCancelAt && (Date.now() - _lastCancelAt) < CANCEL_GRACE_MS;
+  }
+  // Decide what to do with a NEW task_id (one not currently tracked as
+  // inflight) that arrives via SSE while the cancel-grace window is open.
+  // Returns true → caller must NOT call _setChatInflight(taskId). Two
+  // cases trigger suppression:
+  //   1. The id matches the just-cancelled task — late TaskStatusUpdate
+  //      arriving after the safety timer cleared inflight. We must not
+  //      re-arm STOP for a phantom; no need to re-issue cancel.
+  //   2. Any other id during the grace window — almost certainly an
+  //      orchestrator auto-continuation. Fire-and-forget cancel and
+  //      swallow the inflight adoption.
+  function _suppressAutoSpawnedTask(taskId) {
+    if (!taskId) return false;
+    if (taskId === _lastCancelTaskId) return true;     // late update for the cancelled task
+    try {
+      fetch("/api/chat/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task_id: taskId }),
+      }).catch(() => {});
+    } catch { /* ignore */ }
+    return true;
+  }
 
   chatForm.addEventListener("submit", async (e) => {
     e.preventDefault();

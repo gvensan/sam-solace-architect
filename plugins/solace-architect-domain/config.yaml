@@ -525,7 +525,7 @@ apps:
                 sizing:
                   inputs:
                     connections: 270
-                    peak_event_rate_per_sec: 5000
+                    event_rate_per_sec: 5000
                     avg_message_size_kb: 4
                     retention_hours: 24
                   computed:

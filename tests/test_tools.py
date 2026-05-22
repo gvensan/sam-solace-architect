@@ -141,7 +141,7 @@ async def test_clone_copies_intake_json():
     src_id = src.data["id"]
     await artifact_tools.write_artifact(src_id, "discovery/intake.json", '{"project": {"name": "CloneSrc"}}')
     await artifact_tools.write_artifact(src_id, "discovery/discovery-brief.yaml", "project_name: CloneSrc\n")
-    await artifact_tools.write_artifact(src_id, "discovery/intake.md", "# CloneSrc")
+    await artifact_tools.write_artifact(src_id, "discovery/intake.md", "**Project name:** CloneSrc")
 
     r = await project_tools.clone_project(src_id, new_name="CloneTarget")
     assert r.ok, r.error
@@ -149,10 +149,39 @@ async def test_clone_copies_intake_json():
     assert r.data["brief_seeded"] is True
 
     new_id = r.data["clone"]["id"]
+    # The clone's discovery inputs MUST carry the clone's name, not the source's —
+    # otherwise the intake editor re-hydrates the source name and the user's
+    # explicit " (copy)" suffix is silently lost on the next save.
+    import json
     intake = await artifact_tools.read_artifact(new_id, "discovery/intake.json")
-    assert intake.ok and "CloneSrc" in intake.data
+    assert intake.ok
+    intake_obj = json.loads(intake.data)
+    assert intake_obj["project"]["name"] == "CloneTarget"
+
     brief = await artifact_tools.read_artifact(new_id, "discovery/discovery-brief.yaml")
-    assert brief.ok and "CloneSrc" in brief.data
+    assert brief.ok and "project_name: CloneTarget" in brief.data
+
+    md = await artifact_tools.read_artifact(new_id, "discovery/intake.md")
+    assert md.ok and "**Project name:** CloneTarget" in md.data
+
+
+@pytest.mark.asyncio
+async def test_clone_default_new_name_gets_copy_suffix():
+    """When the user accepts the default Clone name (input pre-populated with
+    "(copy)"), the suffix must reach the project entry, intake.json, brief.yaml,
+    and intake.md so everything is consistent."""
+    src = await project_tools.create_project(name="Foo")
+    src_id = src.data["id"]
+    await artifact_tools.write_artifact(src_id, "discovery/intake.json", '{"project": {"name": "Foo"}}')
+
+    # Frontend pre-populates name as `${source.name} (copy)`; pass that exact value.
+    r = await project_tools.clone_project(src_id, new_name="Foo (copy)")
+    assert r.ok
+    assert r.data["clone"]["name"] == "Foo (copy)"
+    new_id = r.data["clone"]["id"]
+    import json
+    intake = json.loads((await artifact_tools.read_artifact(new_id, "discovery/intake.json")).data)
+    assert intake["project"]["name"] == "Foo (copy)"
 
 
 @pytest.mark.asyncio
@@ -851,3 +880,135 @@ async def test_set_step_status_blocked_does_not_count_as_user_wait(monkeypatch):
     assert timing["user_wait_sec"] == 0, timing
     assert timing["execution_sec"] == 50, timing
     assert timing["wall_sec"] == 50, timing
+
+
+# ---------- session_tools.write_checkpoint / read_checkpoint / clear_checkpoint ----------
+
+@pytest.mark.asyncio
+async def test_checkpoint_round_trip_per_step():
+    """write_checkpoint then read_checkpoint round-trips the agent's
+    state dict verbatim, and checkpoints are isolated per step.
+    """
+    from solace_architect_core.tools import session_tools
+
+    eid = "ckpt-eng-1"
+
+    # Empty initial read returns the shape-stable default.
+    r = await session_tools.read_checkpoint(eid, step="discovery")
+    assert r.ok
+    assert r.data == {"state": {}, "updated_at": None, "by_agent": ""}
+
+    state = {"sections_done": ["systems", "requirements"], "last_question_id": "Q5"}
+    r = await session_tools.write_checkpoint(
+        eid, step="discovery", state=state, by_agent="SADiscoveryAgent",
+    )
+    assert r.ok
+    assert r.data["state"] == state
+    assert r.data["by_agent"] == "SADiscoveryAgent"
+    assert r.data["updated_at"]
+
+    r = await session_tools.read_checkpoint(eid, step="discovery")
+    assert r.ok
+    assert r.data["state"] == state
+    assert r.data["by_agent"] == "SADiscoveryAgent"
+
+    # A different step is isolated — empty until written.
+    r = await session_tools.read_checkpoint(eid, step="design")
+    assert r.ok and r.data["state"] == {}
+
+    # Writing Design's checkpoint doesn't disturb Discovery's.
+    await session_tools.write_checkpoint(
+        eid, step="design", state={"scopes_complete": ["topic-design"]},
+        by_agent="SADomainAgent",
+    )
+    r = await session_tools.read_checkpoint(eid, step="discovery")
+    assert r.data["state"] == state, "Design write must not have touched Discovery"
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_replace_is_wholesale():
+    """write_checkpoint replaces the checkpoint for that step
+    wholesale — agents pass the full current state, not a delta. A
+    merge semantic would silently leak stale keys from prior turns.
+    """
+    from solace_architect_core.tools import session_tools
+
+    eid = "ckpt-eng-2"
+    await session_tools.write_checkpoint(eid, step="discovery", state={"a": 1, "b": 2})
+    await session_tools.write_checkpoint(eid, step="discovery", state={"c": 3})
+    r = await session_tools.read_checkpoint(eid, step="discovery")
+    assert r.data["state"] == {"c": 3}, "second write must wholesale-replace, not merge"
+
+
+@pytest.mark.asyncio
+async def test_clear_checkpoint_drops_just_that_step():
+    """clear_checkpoint removes the named step's entry; other steps
+    survive. Returns removed=False when there was nothing to drop.
+    """
+    from solace_architect_core.tools import session_tools
+
+    eid = "ckpt-eng-3"
+    await session_tools.write_checkpoint(eid, step="discovery", state={"x": 1})
+    await session_tools.write_checkpoint(eid, step="design",    state={"y": 2})
+
+    r = await session_tools.clear_checkpoint(eid, step="discovery")
+    assert r.ok and r.data == {"step": "discovery", "removed": True}
+
+    r = await session_tools.read_checkpoint(eid, step="discovery")
+    assert r.data["state"] == {}
+    r = await session_tools.read_checkpoint(eid, step="design")
+    assert r.data["state"] == {"y": 2}
+
+    # Clearing a step with no checkpoint is a no-op (removed=False).
+    r = await session_tools.clear_checkpoint(eid, step="review")
+    assert r.ok and r.data == {"step": "review", "removed": False}
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_input_validation():
+    """Empty step rejected with a clear ToolResult error. Non-dict
+    state is caught upstream by @coerce_args (TypeError) — that's also
+    a rejection, just at a different layer.
+    """
+    from solace_architect_core.tools import session_tools
+
+    r = await session_tools.write_checkpoint("eid", step="", state={})
+    assert not r.ok and "step" in r.error
+
+    # @coerce_args raises TypeError before our isinstance check fires —
+    # also a "rejected" signal, just at a different layer.
+    with pytest.raises(TypeError):
+        await session_tools.write_checkpoint("eid", step="discovery", state="not a dict")
+
+    r = await session_tools.read_checkpoint("eid", step="")
+    assert not r.ok and "step" in r.error
+
+    r = await session_tools.clear_checkpoint("eid", step="")
+    assert not r.ok and "step" in r.error
+
+
+@pytest.mark.asyncio
+async def test_reset_discovery_clears_checkpoint():
+    """Restart Discovery must drop the resume checkpoint, else a fresh
+    run skips work based on the prior run's stale hints.
+    """
+    from solace_architect_core.tools import session_tools
+
+    # Reinstall guarded — import-time symbol resolution against possibly-stale
+    # editable install. Re-import on each test if needed.
+    from solace_architect_webui_entrypoint.routes.api import reset_discovery
+
+    eid = "ckpt-reset-eng"
+    await session_tools.write_checkpoint(
+        eid, step="discovery", state={"sections_done": ["systems"]},
+        by_agent="SADiscoveryAgent",
+    )
+    # Sanity: checkpoint exists.
+    r = await session_tools.read_checkpoint(eid, step="discovery")
+    assert r.data["state"] == {"sections_done": ["systems"]}
+
+    await reset_discovery(eid)
+
+    # Restart wiped the checkpoint.
+    r = await session_tools.read_checkpoint(eid, step="discovery")
+    assert r.data["state"] == {}, "Restart Discovery must clear the checkpoint"

@@ -168,6 +168,18 @@ async def clone_project(
     # Seed discovery inputs on the new project (under the current user's namespace).
     # All three are best-effort; the intake editor only strictly needs intake.json
     # to re-hydrate, but copying all three keeps downstream tools' assumptions intact.
+    #
+    # Bug fix (2026-05-22): the source's discovery inputs carry the SOURCE name in
+    # project.name. If we copy them verbatim, the intake editor re-hydrates the
+    # source's name into the form; submitting then renames the clone back via
+    # update_project_metadata in intake_submit, stripping the " (copy)" suffix
+    # the user typed in the Clone dialog. Rewrite the embedded project.name in
+    # both intake.json and intake.md (and the discovery brief) so the clone's
+    # name is consistent everywhere.
+    intake_json = _rewrite_project_name_in_intake_json(intake_json, base)
+    intake_md = _rewrite_project_name_in_intake_md(intake_md, base)
+    brief_text = _rewrite_project_name_in_brief(brief_text, base)
+
     from .artifact_tools import write_artifact
     if brief_text:
         await write_artifact(new_id, "discovery/discovery-brief.yaml", brief_text)
@@ -181,6 +193,63 @@ async def clone_project(
         "brief_seeded": bool(brief_text),
         "intake_seeded": bool(intake_json),
     })
+
+
+def _rewrite_project_name_in_intake_json(text: Optional[str], new_name: str) -> Optional[str]:
+    """Best-effort overwrite of project.name (V1 nested) or project_name (V2 flat)
+    in the cloned intake.json. Returns the original text on parse failure.
+    """
+    if not text:
+        return text
+    import json
+    try:
+        obj = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return text
+    if isinstance(obj, dict):
+        if isinstance(obj.get("project"), dict):
+            obj["project"]["name"] = new_name
+        # Flat (V2) shape uses top-level project_name; both shapes are accepted by
+        # the form's loadData() so cover both rather than guessing which is present.
+        if "project_name" in obj:
+            obj["project_name"] = new_name
+    try:
+        return json.dumps(obj, indent=2, sort_keys=False)
+    except (TypeError, ValueError):
+        return text
+
+
+def _rewrite_project_name_in_brief(text: Optional[str], new_name: str) -> Optional[str]:
+    """Overwrite project_name in the discovery brief YAML (V2 flat shape)."""
+    if not text:
+        return text
+    import yaml
+    try:
+        obj = yaml.safe_load(text) or {}
+    except yaml.YAMLError:
+        return text
+    if isinstance(obj, dict) and "project_name" in obj:
+        obj["project_name"] = new_name
+        try:
+            return yaml.safe_dump(obj, default_flow_style=False, sort_keys=False)
+        except yaml.YAMLError:
+            return text
+    return text
+
+
+def _rewrite_project_name_in_intake_md(text: Optional[str], new_name: str) -> Optional[str]:
+    """Patch the "**Project name:** <old>" line in the cloned intake.md.
+
+    The Markdown is authored by ``_intake_to_markdown`` with a stable format, so
+    a targeted line-rewrite is safe. If the marker isn't found (older format /
+    user-edited file), return the original text.
+    """
+    if not text:
+        return text
+    import re as _re
+    pattern = _re.compile(r"^(\*\*Project name:\*\*)\s*.*$", _re.MULTILINE)
+    new_text, count = pattern.subn(rf"\1 {new_name}", text, count=1)
+    return new_text if count else text
 
 
 def _read_artifact(project_id: str, name: str) -> Optional[str]:
