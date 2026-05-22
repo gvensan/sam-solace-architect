@@ -1939,6 +1939,13 @@
         setAutoMode(eid, false);
         closeModal();
         render();
+        // Auto-dispatch the Design kickoff so Restart Design produces an
+        // immediately-active conversation (consistent with Restart
+        // Discovery's auto-dispatch). One click ↻ Restart Design →
+        // wipes + dispatches; user doesn't need a second click.
+        requestAnimationFrame(() => {
+          document.getElementById("start-design-btn")?.click();
+        });
       } catch (err) {
         btn.disabled = false;
         btn.textContent = "Restart Design";
@@ -2054,6 +2061,14 @@
         setAutoMode(eid, false);
         closeModal();
         render();
+        // Auto-dispatch the kickoff for THIS phase, mirroring Restart
+        // Discovery / Restart Design. The Start-button DOM id is
+        // predictable: phase id → "start-<phase-id>-btn" (events with a
+        // hyphen, like event-portal, also match). Defer one frame so
+        // render() has painted the CTA into the page.
+        requestAnimationFrame(() => {
+          document.getElementById(`start-${phaseId}-btn`)?.click();
+        });
       } catch (err) {
         btn.disabled = false;
         btn.textContent = `Restart ${label}`;

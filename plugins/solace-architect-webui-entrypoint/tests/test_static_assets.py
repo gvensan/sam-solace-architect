@@ -202,6 +202,38 @@ def test_progress_cta_has_exec_hint_renderer():
     assert ".cta-exec-hint" in css
 
 
+def test_every_restart_phase_modal_auto_dispatches_kickoff():
+    """Every Restart-phase modal (Discovery, Design, Review, Validation,
+    Event Portal, Blueprint) must auto-dispatch the kickoff after the
+    wipe — Restart should be a SINGLE click, not "wipe then click Start".
+
+    Discovery + Design have dedicated openers; the other four go through
+    the generic openRestartPhaseModal which constructs the start-button
+    id from the phase. Lock both paths so a refactor can't silently
+    regress to two-click behavior.
+    """
+    import re
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    # Discovery + Design — each opener references its start-button id AND
+    # invokes .click() somewhere in its body. Use a loose regex (any of
+    # the common forms — direct chained, variable+assign+click, optional
+    # chaining) rather than pinning a specific shape.
+    for phase in ("discovery", "design"):
+        pattern = re.compile(
+            rf'start-{phase}-btn.*?\.click\(\)',
+            re.DOTALL,
+        )
+        assert pattern.search(js), (
+            f"Restart {phase.capitalize()} doesn't auto-dispatch Start {phase.capitalize()}"
+        )
+    # Generic phase modal — uses a template literal so the id is computed
+    # from phaseId. Catches the wiring for Review / Validation / EP / Blueprint.
+    assert "start-${phaseId}-btn" in js, (
+        "Generic Restart-phase modal doesn't compute start-button id from "
+        "phaseId — Review/Validation/EP/Blueprint won't auto-dispatch"
+    )
+
+
 def test_progress_cta_buttons_disabled_during_inflight():
     """While a chat task is in flight, the Start/Continue/View buttons in
     the green progress-CTA box must be disabled to prevent duplicate
