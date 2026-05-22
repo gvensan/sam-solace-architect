@@ -14,6 +14,12 @@ the v2spec):
                                blocking open-items
   - ``NEEDS_CONTEXT``        — waiting on user input (the agent's last
                                turn was a question)
+  - ``IN_PROGRESS``          — agent is actively working on the step
+                               and isn't waiting on user input. Call at
+                               task start for long-running phases
+                               (validation, blueprint) so the dashboard
+                               shows mid-flight progress rather than
+                               NOT_STARTED.
   - ``SKIPPED``              — step is not applicable to this engagement
                                (opt-out at intake, or brief-driven scope
                                exclusion). Treated as terminal-advance for
@@ -52,7 +58,13 @@ def _iso_to_dt(iso: str) -> datetime | None:
         return None
 
 
-_STATUS_VALUES = ("DONE", "DONE_WITH_CONCERNS", "BLOCKED", "NEEDS_CONTEXT", "SKIPPED", "NOT_STARTED")
+_STATUS_VALUES = (
+    "DONE", "DONE_WITH_CONCERNS", "BLOCKED",
+    "NEEDS_CONTEXT",    # waiting on user input
+    "IN_PROGRESS",      # agent actively working, not waiting on user
+    "SKIPPED",
+    "NOT_STARTED",
+)
 _STATUS_FILE = "meta/engagement-status.yaml"
 
 

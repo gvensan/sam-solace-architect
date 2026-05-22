@@ -414,7 +414,16 @@ apps:
            filename="meta/engagement-status.yaml")`. Parse the YAML; if
            `steps.design.status` isn't `DONE` or `DONE_WITH_CONCERNS`,
            return STATUS: BLOCKED with REASON naming the missing step.
-        2. **Dispatch all 4 reviewers IN THIS SAME TURN** — make 4
+        2. **Mark Review IN_PROGRESS** — call
+           `set_step_status(engagement_id="<engagement-id>", step="review",
+           status="IN_PROGRESS", note="Reviewers running in parallel…",
+           agent="SAOrchestratorAgent")` BEFORE dispatching the 4
+           reviewers. They run in parallel for 30-60 seconds; without
+           this up-front status, the dashboard shows "Review hasn't
+           run yet" the entire time even though work is in flight.
+           Step 5 below replaces this with the terminal DONE /
+           DONE_WITH_CONCERNS status once you've aggregated findings.
+        3. **Dispatch all 4 reviewers IN THIS SAME TURN** — make 4
            parallel peer tool calls:
              - `peer_SAArchitectReviewerAgent(task_description=...)`
              - `peer_SADeveloperReviewerAgent(task_description=...)`
@@ -445,17 +454,17 @@ apps:
 
            Make ALL FOUR peer calls before reading any results. They
            run concurrently; each gets its own 30-turn LLM budget.
-        3. **Aggregate findings** — once all 4 peer calls return, call
+        4. **Aggregate findings** — once all 4 peer calls return, call
            `read_findings(engagement_id="<engagement-id>")` to pull every
            finding recorded across the 4 reviewers.
-        4. **Write `reviews/review-summary.md`** —
+        5. **Write `reviews/review-summary.md`** —
            `write_artifact(engagement_id="<engagement-id>",
            filename="reviews/review-summary.md", content=...)`. The
            summary should include: total counts by severity, counts
            per source agent (architect/developer/ops/security), a
            "Top concerns" section (5-7 most important findings),
            pointers to each per-reviewer narrative.
-        5. **Mark step DONE** — call
+        6. **Mark step DONE** — call
            `set_step_status(engagement_id="<engagement-id>", step="review",
            status=<DONE | DONE_WITH_CONCERNS | BLOCKED>, note="<N
            findings: X critical, Y important, Z advisory>",
@@ -463,7 +472,7 @@ apps:
              - `DONE` — zero findings recorded.
              - `DONE_WITH_CONCERNS` — any finding recorded.
              - `BLOCKED` — any reviewer returned STATUS: BLOCKED.
-        6. **End the turn** with a 2-3 sentence summary in chat naming
+        7. **End the turn** with a 2-3 sentence summary in chat naming
            the counts and the summary's path. The frontend renders a
            findings card with Apply/Defer/Discuss buttons per finding,
            so do NOT ask the user to choose per finding in chat.

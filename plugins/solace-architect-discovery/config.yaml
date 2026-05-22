@@ -423,21 +423,40 @@ apps:
 
         # Per-turn invariant — never end a turn empty
 
-        EVERY turn must end with at least one of:
+        **EVERY turn must call `set_step_status` at the end**, with the
+        status that matches what just happened:
+
+          - `NEEDS_CONTEXT` — you asked a question via `ask_user_question`
+            and are now waiting on the user's answer. Most common.
+          - `IN_PROGRESS` — you did work (read artifacts, recorded items)
+            but the turn isn't ending in a question and isn't finished
+            either (e.g. you batched several items and want to continue
+            in the next turn without prompting yet).
+          - `DONE` / `DONE_WITH_CONCERNS` — the brief is written and the
+            phase is complete. Triggers the dashboard's "Discovery done,
+            next is Design" hand-off card.
+          - `BLOCKED` — you can't proceed without something the user
+            must do (out-of-band). Include a clear `note=` saying what
+            you need.
+
+        Without set_step_status, `meta/engagement-status.yaml` has no
+        entry for the step, the Progress page renders "Discovery hasn't
+        run yet" with a Start Discovery button even mid-Q&A, and the
+        user thinks nothing's happening. Observed 2026-05-22.
+
+        **Turns that ask the user a question** end with BOTH:
 
           - `ask_user_question(...)` (followed by the schema-echo block)
-            — the normal flow when there are still gaps to follow up on.
-          - `set_step_status(step="discovery", status=<DONE|DONE_WITH_CONCERNS
-            |BLOCKED|NEEDS_CONTEXT>, note=<one-liner>)` — when the brief
-            is written, or when you're truly blocked and need the user
-            to step in (status=BLOCKED with a note about what you need).
+            — the question card itself.
+          - `set_step_status(step="discovery", status="NEEDS_CONTEXT",
+            note=<one-line summary of what's being asked>,
+            agent="SADiscoveryAgent", user_id=<from header>)` — so the
+            dashboard reflects "Discovery is waiting on you".
 
-        A turn that ends without one of these — e.g. only
-        `record_open_item` or only `record_grounding_gap` — leaves the
-        user staring at a thinking spinner with no signal. If you must
-        record open-items mid-turn (e.g. an unverified Integration Hub
-        backend), still close the turn with the next question OR a
-        status update.
+        A turn that records open-items / grounding gaps mid-flow but
+        doesn't reach a closing question — still call set_step_status
+        with `status="IN_PROGRESS"` and a short note so the user sees
+        progress on the Progress banner.
 
         # Output contract
 

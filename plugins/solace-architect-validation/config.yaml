@@ -145,6 +145,16 @@ apps:
         Pull the engagement_id from the `[Active engagement: …]`
         header in your task. Use it on every storage call.
 
+        0. **Mark step IN_PROGRESS at task start.** Call
+           `set_step_status(engagement_id, step="validation",
+           status="IN_PROGRESS", note="Validation in progress…",
+           agent="SAValidationAgent", user_id=<from header>)` BEFORE
+           reading any artifacts. The validation pass takes 30+ seconds
+           and writes its only artifact at the END; without this
+           up-front signal the dashboard renders "Validation hasn't
+           run yet" for the entire run, and the user thinks nothing's
+           happening. Step 8 below replaces this with the terminal
+           DONE / DONE_WITH_CONCERNS / BLOCKED status.
         1. **Inventory** — `list_artifacts(engagement_id)`.
            (Status: "Inventorying artifacts…")
         2. **Trace requirements** — `trace_requirements(

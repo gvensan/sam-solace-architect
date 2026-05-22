@@ -120,6 +120,17 @@ apps:
         Pull the engagement_id from the `[Active engagement: …]`
         header in your task. Use it on every storage call.
 
+        0. **Mark step IN_PROGRESS at task start.** Call
+           `set_step_status(engagement_id, step="blueprint",
+           status="IN_PROGRESS",
+           note="Blueprint assembly in progress…",
+           agent="SABlueprintAgent", user_id=<from header>)` BEFORE
+           reading any artifacts. Blueprint's outputs (blueprint/*,
+           exports/engagement-package.zip) all land at the END of the
+           assembly pass; without this up-front signal the dashboard
+           shows "Blueprint hasn't run yet" while the agent spends
+           60+ seconds assembling. Step 9 below replaces this with
+           the terminal DONE / DONE_WITH_CONCERNS / BLOCKED status.
         1. **Inventory** — `list_artifacts(engagement_id)`.
            (Status: "Inventorying engagement artifacts…")
         2. **Read decisions + applied findings** —

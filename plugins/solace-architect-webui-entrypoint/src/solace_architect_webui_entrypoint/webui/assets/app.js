@@ -569,7 +569,12 @@
           fetch(`/api/intake/load/${encodeURIComponent(eid)}`).then(r => r.json()),
           fetch(`/api/engagements/${encodeURIComponent(eid)}/artifacts`).then(r => r.json()).catch(() => []),
           fetch(`/api/engagements/${encodeURIComponent(eid)}/lifecycle`).then(r => r.json()).catch(() => ({ steps: {} })),
-          fetch(`/api/engagements/${encodeURIComponent(eid)}/open-items?status=open&severity=blocking`).then(r => r.json()).catch(() => []),
+          // Fetch ALL open items (not just blocking) — we use the wider
+          // set to detect per-source agent activity as a fallback for
+          // missing set_step_status calls. Downstream consumers in this
+          // render that need blocking-only filter their own subset
+          // (e.g. blueprintBlockers below).
+          fetch(`/api/engagements/${encodeURIComponent(eid)}/open-items?status=open`).then(r => r.json()).catch(() => []),
         ]);
         const intake = (intakeRes && intakeRes.intake) || {};
         const activeProject = projects.find(p => p.id === eid);
@@ -586,18 +591,28 @@
         const discoveryStatus = lifecycle?.steps?.discovery?.status || "NOT_STARTED";
         const discoveryNote = lifecycle?.steps?.discovery?.note || "";
         const discoveryDone = discoveryStatus === "DONE" || discoveryStatus === "DONE_WITH_CONCERNS";
-        // In-progress when the agent has TOUCHED the step at all — any
-        // non-NOT_STARTED status OR discovery-summary.md present (the
-        // summary is Discovery's first narrative output). NB: do NOT key
-        // off discovery-brief.yaml here — the brief is an INTAKE output
-        // (intake_submit writes it), so its presence after a clone or a
-        // fresh intake submission would falsely advance the dashboard
-        // into "Discovery in progress" before the agent has done anything.
-        // Same reason we don't include openItemsCount: intake-sourced
-        // blocking items can land before Discovery touches the engagement.
+        // In-progress when the agent has TOUCHED the step at all. Three
+        // independent signals so a missed set_step_status on the agent
+        // side doesn't strand the CTA on "Discovery hasn't run yet"
+        // while the agent is mid-Q&A:
+        //   1. lifecycle status set (the authoritative source when
+        //      set_step_status was called).
+        //   2. discovery-summary.md present (Discovery's narrative output).
+        //   3. any open-item with source="discovery" — agent definitely
+        //      ran at least one turn if it recorded a follow-up question.
+        // NB: do NOT key off discovery-brief.yaml here — the brief is
+        // an INTAKE output (intake_submit writes it), so its presence
+        // after a clone or a fresh intake submission would falsely
+        // advance the dashboard. Same reason we don't include the
+        // top-level openItemsCount: intake-sourced items can land
+        // before Discovery touches the engagement. Per-source filter
+        // narrows to the agent's own follow-ups.
+        const hasDiscoverySourcedItems = Array.isArray(openItems)
+          && openItems.some(i => i?.source === "discovery");
         const discoveryInProgress = !discoveryDone && (
           (discoveryStatus !== "NOT_STARTED")
           || hasDiscoverySummary
+          || hasDiscoverySourcedItems
         );
 
         // Same for Design — driven by SADomainAgent's set_step_status calls.
@@ -607,33 +622,49 @@
         // Any artifact under a Domain scope folder means design is mid-flow.
         const designScopes = ["topic-design","broker-select","protocol-select","integration","mesh-design","ha-dr","sam-design","event-portal","migration"];
         const hasDesignArtifact = artifacts.some(a => designScopes.some(s => a.startsWith(s + "/")));
+        const hasDomainSourcedItems = Array.isArray(openItems)
+          && openItems.some(i => i?.source === "domain");
         const designInProgress = !designDone && (
           (designStatus !== "NOT_STARTED")
           || hasDesignArtifact
+          || hasDomainSourcedItems
         );
 
         // Same for Review — driven by SAOrchestratorAgent's set_step_status
         // for step="review" after the 4 reviewers return. A review artifact
         // (reviews/*-review.md) means at least one reviewer finished even if
-        // the orchestrator hasn't aggregated yet.
+        // the orchestrator hasn't aggregated yet. source="review-deferred"
+        // open-items mean at least one reviewer deferred a finding for the
+        // user — that also implies Review ran.
         const reviewStatus = lifecycle?.steps?.review?.status || "NOT_STARTED";
         const reviewNote = lifecycle?.steps?.review?.note || "";
         const reviewDone = reviewStatus === "DONE" || reviewStatus === "DONE_WITH_CONCERNS";
         const hasReviewArtifact = artifacts.some(a => a.startsWith("reviews/"));
+        const hasReviewDeferredItems = Array.isArray(openItems)
+          && openItems.some(i => i?.source === "review-deferred");
         const reviewInProgress = !reviewDone && (
           (reviewStatus !== "NOT_STARTED")
           || hasReviewArtifact
+          || hasReviewDeferredItems
         );
 
         // Validation — SAValidationAgent writes validation/validation-report.{md,yaml}
         // and calls set_step_status(step="validation"). Direct-dispatched.
+        // Validation's only artifact lands at the END, so without the
+        // IN_PROGRESS at-task-start signal the dashboard wrongly shows
+        // "Validation hasn't run yet" for the entire 30+ second run.
+        // source="validation" open-items catch the case where the agent
+        // recorded a blocking issue mid-run before the final report.
         const validationStatus = lifecycle?.steps?.validation?.status || "NOT_STARTED";
         const validationNote = lifecycle?.steps?.validation?.note || "";
         const validationDone = validationStatus === "DONE" || validationStatus === "DONE_WITH_CONCERNS";
         const hasValidationArtifact = artifacts.some(a => a.startsWith("validation/"));
+        const hasValidationSourcedItems = Array.isArray(openItems)
+          && openItems.some(i => i?.source === "validation");
         const validationInProgress = !validationDone && (
           (validationStatus !== "NOT_STARTED")
           || hasValidationArtifact
+          || hasValidationSourcedItems
         );
 
         // Event Portal — SAEventPortalAgent (MCP-backed) writes
@@ -652,12 +683,20 @@
           || eventPortalStatus === "DONE_WITH_CONCERNS"
           || eventPortalSkipped;
         const hasEventPortalArtifact = artifacts.some(a => a.startsWith("event-portal/"));
+        const hasEventPortalSourcedItems = Array.isArray(openItems)
+          && openItems.some(i => i?.source === "event-portal");
         const eventPortalInProgress = !eventPortalDone && (
           (eventPortalStatus !== "NOT_STARTED" && eventPortalStatus !== "SKIPPED")
           || hasEventPortalArtifact
+          || hasEventPortalSourcedItems
         );
 
         // Blueprint — SABlueprintAgent writes blueprint/* + exports/engagement-package.zip.
+        // Same vulnerability as Validation: blueprint's artifacts all land at the
+        // end of the assembly run. Without the at-task-start IN_PROGRESS signal,
+        // the dashboard wrongly shows "Blueprint hasn't run yet" for the full
+        // assembly window. Blueprint doesn't typically record open-items, so
+        // there's no per-source fallback for it — pure lifecycle + artifact.
         const blueprintStatus = lifecycle?.steps?.blueprint?.status || "NOT_STARTED";
         const blueprintNote = lifecycle?.steps?.blueprint?.note || "";
         const blueprintDone = blueprintStatus === "DONE" || blueprintStatus === "DONE_WITH_CONCERNS";
