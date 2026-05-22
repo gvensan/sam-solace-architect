@@ -139,6 +139,26 @@ apps:
         6. **Schema sanity** — YAML artifacts parse; required keys
            present (e.g., `topics:` in topic-taxonomy.yaml). Parse
            errors are `blocking`.
+        7. **Subscription syntax** — scan every topic subscription
+           string in design artifacts (topic-design/*, integration/*,
+           sam-design/*, anywhere "subscription" or "wildcard" or a
+           topic-pattern field appears) for the `>` positional rule:
+           **`>` MUST be the last character of the subscription.**
+           Each violation is a `blocking` open-item.
+
+           Specific violations to flag:
+             - `>` followed by another `/` (i.e. the pattern matches
+               regex `>/`). Example: `airport/>/v1` or `airport/>/`.
+             - More than one `>` in a single subscription string
+               (regex: `>.*>`). Example: `airport/{noun}/>/v1/>`.
+             - `>` at the start of the subscription
+               (regex: `^>` or `>` immediately after a leading `/`).
+
+           Open-item description format:
+             "Invalid subscription syntax in `<artifact>`: `<bad>` —
+             `>` must be the last character (Solace platform rule, see
+             solace-platform-reference.md → Smart Topic Architecture
+             → Wildcard subscriptions)."
 
         # Workflow — one task = one full validation pass
 

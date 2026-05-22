@@ -1,6 +1,6 @@
 # Solace canonical sources
 
-**Index last reviewed: 2026-04-29.** The next scheduled review is 90 days from this date for stable platform URLs and 30 days for SAM project URLs at `solacelabs.github.io`. Individual URLs may have been re-fetched more recently than the index review; the platform reference's verification log records per-URL verification dates for the entries that anchor it.
+**Index last reviewed: 2026-04-29.** A targeted re-fetch sweep on **2026-05-22** verified the URLs anchoring the topic-wildcard, HA, DR replication, ACL, message VPN, DMR, queue, partitioned-queue, message-priority, direct-messaging, replay/cache, Kafka-bridging, and Schema Registry sections of the platform reference; see that document's verification log for per-URL dates and for the list of URLs that 404 as of 2026-05-22. The next scheduled full index review is 90 days from the last full review for stable platform URLs and 30 days for SAM project URLs at `solacelabs.github.io`.
 
 ## Purpose
 
@@ -52,23 +52,27 @@ URLs were collected during the construction of `solace-platform-reference.md`. T
 
 ### Message VPNs
 
-- Message VPN overview: `https://docs.solace.com/Features/VPN/message-vpns.htm`
-- Configuring message VPNs: `https://docs.solace.com/Admin/Configuring-Message-VPNs.htm`
+- Message VPN overview (Managing Message VPNs): `https://docs.solace.com/Features/VPN/Managing-Message-VPNs.htm` *(was `Features/VPN/message-vpns.htm` — that URL 404s as of 2026-05-22)*
+- Configuring message VPNs (CLI): `https://docs.solace.com/Features/VPN/Configuring-VPNs.htm`
+- Configuring message VPNs (admin guide): `https://docs.solace.com/Admin/Configuring-Message-VPNs.htm`
+- VPN-level Guaranteed-messaging configuration: `https://docs.solace.com/Messaging/Guaranteed-Msg/VPN-Level-Msg-Spool-Config.htm`
 
 ### Endpoints
 
 - Topic endpoints and queues: `https://docs.solace.com/Get-Started/topic-endpoints-queues.htm`
 - Configuring queues: `https://docs.solace.com/Messaging/Guaranteed-Msg/Configuring-Queues.htm`
-- Partitioned queues: `https://docs.solace.com/Messaging/Guaranteed-Msg/Partitioned-Queues.htm`
+- Partitioned queues (overview, in Queues page): `https://docs.solace.com/Messaging/Guaranteed-Msg/Queues.htm` *(the previous `Partitioned-Queues.htm` URL 404s as of 2026-05-22)*
+- Partitioned queue message distribution: `https://docs.solace.com/Messaging/Guaranteed-Msg/Partitioned-Queue-Messaging.htm`
+- Configuring partitioned queues: `https://docs.solace.com/Admin/Broker-Manager/configuring-partitioned-queues.htm`
 - Dead message queues: `https://docs.solace.com/Messaging/Guaranteed-Msg/Configuring-DTEs.htm`
-- Message replay: `https://docs.solace.com/Features/Message-Replay/Message-Replay.htm`
+- Message replay overview: `https://docs.solace.com/Features/Replay/Message-Replay-Overview.htm`
+- Replay vs. Solace Cache comparison: `https://docs.solace.com/Features/Replay/Replay-Cache-Compare.htm`
 - REST delivery points: `https://docs.solace.com/API/REST/REST-Delivery-Points.htm`
 - Solace Cache: `https://docs.solace.com/Features/Cache/cache-lp.htm`
-- Message eliding: `https://docs.solace.com/Messaging/Direct-Msg/Direct-Msg-Eliding.htm`
-- Shared subscriptions: `https://docs.solace.com/Messaging/Direct-Msg/Direct-Msg-Shared-Subscriptions.htm`
+- Message eliding (and shared subscriptions) — covered in Direct Messages page: `https://docs.solace.com/Messaging/Direct-Msg/Direct-Messages.htm` *(legacy `Direct-Msg-Eliding.htm` and `Direct-Msg-Shared-Subscriptions.htm` URLs 404 as of 2026-05-22)*
 - Message priority: `https://docs.solace.com/Messaging/Guaranteed-Msg/Message-Priority.htm`
-- Transactions: `https://docs.solace.com/Features/Transactions/Transactions-Overview.htm`
-- Message VPN bridges: `https://docs.solace.com/Features/VPN/VPN-Bridges.htm`
+- Transactions (JMS-API canonical surviving pages): `https://docs.solace.com/API/Solace-JMS-API/Using-Transacted-Sessions.htm` and `https://docs.solace.com/API/Solace-JMS-API/Using-XA-Transactions.htm` *(the prior `Features/Transactions/Transactions-Overview.htm` URL 404s as of 2026-05-22)*
+- Message VPN bridges overview: `https://docs.solace.com/Features/VPN/Message-VPN-Bridges-Overview.htm` *(was `Features/VPN/VPN-Bridges.htm`)*
 
 ### Delivery modes
 
@@ -85,9 +89,21 @@ URLs were collected during the construction of `solace-platform-reference.md`. T
 
 ### High availability and disaster recovery
 
+- HA fundamentals: `https://docs.solace.com/Features/HA-Redundancy/Redundancy-and-Fault-Tolerance-Overview.htm`
+- HA for software event brokers: `https://docs.solace.com/Features/HA-Redundancy/SW-Broker-Redundancy-and-Fault-Tolerance.htm`
+- HA for appliance event brokers: `https://docs.solace.com/Features/HA-Redundancy/Appliance-Redundancy-and-Fault-Tolerance.htm`
+- HA in Solace Cloud: `https://docs.solace.com/Cloud/ha_concept.htm`
+- Configuring HA redundancy groups: `https://docs.solace.com/Configuring-and-Managing/Configuring-HA-Groups.htm`
+- Maintaining broker redundancy: `https://docs.solace.com/Features/HA-Redundancy/Maintaining-Event-Broker-Redundancy-All-Broker.htm`
+- Validating failover before production: `https://docs.solace.com/Features/HA-Redundancy/Validating-Failover.htm`
+- Redundancy best practices (API): `https://docs.solace.com/API/API-Developer-Guide/Redundancy-BP.htm`
 - DR replication landing: `https://docs.solace.com/Features/DR-Replication/`
 - Replication with DMR overview: `https://docs.solace.com/Features/DR-Replication/Replication-DMR-Overview.htm`
 - Configuring replication with DMR: `https://docs.solace.com/Features/DR-Replication/Replication-with-DMR.htm`
+- Synchronous and asynchronous message replication: `https://docs.solace.com/Features/DR-Replication/Sync-Asynch-Replication.htm`
+- How replication works: `https://docs.solace.com/Features/DR-Replication/How-Replication-Works.htm`
+- VPN-level replication settings: `https://docs.solace.com/Features/DR-Replication/Replication-VPN-Level-Settings.htm`
+- Replication best practices: `https://docs.solace.com/Features/DR-Replication/Replication-Best-Practices.htm`
 
 ### Distributed tracing
 
@@ -111,6 +127,15 @@ URLs were collected during the construction of `solace-platform-reference.md`. T
 - Integration Hub (catalog): `https://solace.com/integration-hub/`
 - Integration Hub catalog snapshot: `solace-grounding/integration-hub-catalog.md` (local, refreshed monthly)
 - Integration guides: `https://docs.solace.com/API/Integration-Guides.htm`
+
+#### Kafka bridging (broker-integrated)
+
+- Kafka bridging overview: `https://docs.solace.com/Features/Kafka-Bridging/Kafka-Bridging-Overview.htm`
+- Configuring Kafka bridging (CLI): `https://docs.solace.com/Features/Kafka-Bridging/Kafka-Bridging-Setup-Overview.htm`
+- Configuring Kafka bridging (Broker Manager): `https://docs.solace.com/Cloud/Broker-Manager/config-kafka-bridge.htm`
+- Connecting to Apache Kafka with Click-to-Connect: `https://docs.solace.com/Features/Kafka-Bridging/Apache-Kafka-Connector.htm`
+- Monitoring Kafka bridges: `https://docs.solace.com/Features/Kafka-Bridging/Kafka-Bridging-Monitor.htm`
+- Kafka bridging example: `https://docs.solace.com/Features/Kafka-Bridging/Kafka-Bridging-Example.htm`
 - Connectors documentation page: `https://docs.solace.com/API/Connectors/Connectors.htm`
 - Solace Integration Guides (community): `https://solacelabs.github.io/solace-integration-guides/`
 

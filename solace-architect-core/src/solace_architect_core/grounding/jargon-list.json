@@ -69,6 +69,27 @@
     "consumer group",
     "exactly-once delivery",
     "at-least-once delivery",
-    "at-most-once delivery"
+    "at-most-once delivery",
+    "failover",
+    "split-brain",
+    "mate link",
+    "replay log",
+    "spool",
+    "subscriber",
+    "endpoint",
+    "selector",
+    "config-sync",
+    "monitoring node",
+    "redundancy group",
+    "DMR bridge",
+    "partitioned queue",
+    "message eliding",
+    "CacheInstance",
+    "Entrypoint",
+    "OrchestratorAgent",
+    "Agent Card",
+    "PeerAgentTool",
+    "AuthorizationService",
+    "substitution expression"
   ]
 }
