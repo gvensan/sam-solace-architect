@@ -1724,11 +1724,37 @@ async function submitToServer() {
   const editMatch = window.location.pathname.match(/^\/intake\/edit\/([^/]+)/);
   const editEid = editMatch ? decodeURIComponent(editMatch[1]) : null;
 
+  // When editing an existing engagement, find out whether ANY downstream
+  // phase has actually run. A freshly-cloned project lands on
+  // /intake/edit/<new-id> just like a real re-submit, but its
+  // engagement-status.yaml is empty (clone copies intake artifacts only)
+  // — there's nothing to wipe. Showing the cascade warning in that case
+  // is alarming and inaccurate. We count any step whose status is
+  // anything other than SKIPPED / NOT_STARTED — the EP opt-out at intake
+  // produces a SKIPPED entry for event-portal even on a fresh project,
+  // which is not real downstream.
+  let hasDownstream = false;
+  if (editEid) {
+    try {
+      const lc = await fetch(`/api/engagements/${encodeURIComponent(editEid)}/lifecycle`)
+        .then(r => r.ok ? r.json() : { steps: {} });
+      hasDownstream = Object.values(lc.steps || {}).some(s => {
+        const st = s && s.status;
+        return st && st !== "SKIPPED" && st !== "NOT_STARTED";
+      });
+    } catch {
+      // Network glitch — fall back to showing the warning. Wrong direction
+      // for the warning beats hiding it on a real re-submit that DOES wipe.
+      hasDownstream = true;
+    }
+  }
+
   openSubmitConfirmModal({
     data,
     missingRequired,
     missingRecommended,
     editEid,
+    hasDownstream,
     onConfirm: () => _doSubmit(data, editEid),
   });
 }
@@ -1768,7 +1794,7 @@ async function _doSubmit(data, editEid) {
 // Render-on-open: re-rendered fresh each click so the summary reflects the
 // latest form state. Returns nothing — onConfirm is invoked when the user
 // commits. Closing via Cancel / Escape / backdrop click discards.
-function openSubmitConfirmModal({ data, missingRequired, missingRecommended, editEid, onConfirm }) {
+function openSubmitConfirmModal({ data, missingRequired, missingRecommended, editEid, hasDownstream, onConfirm }) {
   const modal = document.getElementById('submit-confirm-modal');
   const body  = document.getElementById('submit-confirm-body');
   const blockedReason = missingRequired.length > 0;
@@ -1834,8 +1860,11 @@ function openSubmitConfirmModal({ data, missingRequired, missingRecommended, edi
     : '';
 
   // Edit-mode cascade-wipe warning — same content as the old window.confirm()
-  // but styled to match the modal's destructive-action treatment.
-  const cascadeHtml = editEid
+  // but styled to match the modal's destructive-action treatment. Only
+  // surfaced when there's actual downstream state to wipe. A freshly-
+  // cloned project lands on this same /intake/edit/<id> route but has no
+  // downstream — showing the warning then is alarming and untrue.
+  const cascadeHtml = (editEid && hasDownstream)
     ? `<section class="modal-cascade">
          <div class="modal-cascade-head">⚠ Edit mode — this re-submission will WIPE downstream phases</div>
          <ul>
@@ -1853,15 +1882,19 @@ function openSubmitConfirmModal({ data, missingRequired, missingRecommended, edi
 
   body.innerHTML = summaryHtml + reqHtml + recHtml + cascadeHtml;
 
-  // Heading + primary-button label change based on state.
+  // Heading + primary-button label track the actual state. Edit-mode WITH
+  // downstream → destructive "Re-submit and wipe downstream"; edit-mode
+  // with nothing to wipe (clone / intake-only project) → friendlier
+  // "Submit intake" so the user isn't told they're wiping nothing.
+  const destructive = !!editEid && hasDownstream;
   document.getElementById('submit-confirm-title').textContent =
-    editEid ? 'Re-submit intake' : 'Submit intake';
+    destructive ? 'Re-submit intake' : 'Submit intake';
   const confirmBtn = document.getElementById('submit-confirm-go');
   confirmBtn.disabled = blockedReason;
   confirmBtn.textContent = blockedReason
     ? 'Fix required fields first'
-    : (editEid ? 'Re-submit and wipe downstream' : 'Confirm submit');
-  confirmBtn.classList.toggle('danger', !!editEid && !blockedReason);
+    : (destructive ? 'Re-submit and wipe downstream' : 'Confirm submit');
+  confirmBtn.classList.toggle('danger', destructive && !blockedReason);
 
   // Wire chip clicks to jump-to-section (then close the modal so the user
   // can actually edit the field).
