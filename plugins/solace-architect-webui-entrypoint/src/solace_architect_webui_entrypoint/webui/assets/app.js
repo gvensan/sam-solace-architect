@@ -16,6 +16,66 @@
   "use strict";
 
   // ============================================================================
+  // Build-time configuration constants
+  // ============================================================================
+  // REVIEW_FAN_OUT_MODE — controls whether the four reviewer agents
+  // (Architect, Developer, Ops, Security) run in PARALLEL or SERIAL.
+  //
+  // - "parallel" — original design. Orchestrator fires all four
+  //   peer_<Reviewer>Agent calls in the same turn; reviewers run
+  //   concurrently. Fast (~3-5 min for the whole Review phase) but
+  //   creates a 4-call burst that some LLM proxies reject with 403
+  //   Forbidden under their per-key concurrency cap (see the
+  //   2026-05-22 user-report — 4 parallel calls × 3 LiteLLM retries
+  //   = 12 concurrent requests).
+  //
+  // - "serial" — orchestrator awaits each reviewer in sequence:
+  //   Architect → Developer → Ops → Security. Slower (~10-15 min)
+  //   but works against any proxy. Default.
+  //
+  // Flip to "parallel" in code when running against a proxy that can
+  // sustain the burst. No UI exposure — this is an operator-side
+  // choice baked into the build.
+  const REVIEW_FAN_OUT_MODE = "serial";
+
+  // Pre-built kickoff strings for both modes. Same SHAPE — both lead
+  // with "Phase: review", both end with the read_findings + write
+  // reviews/review-summary.md + set_step_status protocol — only the
+  // dispatch verb (Fan out / Run sequentially) differs.
+  const _REVIEW_KICKOFF_PARALLEL = (
+    "Phase: review\n\n" +
+    "Run the Review phase. Fan out to peer_SAArchitectReviewerAgent, " +
+    "peer_SADeveloperReviewerAgent, peer_SAOpsReviewerAgent, " +
+    "peer_SASecurityReviewerAgent IN THIS TURN (parallel — all four " +
+    "called concurrently). After all four return, read_findings, " +
+    "write reviews/review-summary.md with severity counts + top " +
+    "concerns, then set_step_status(step=\"review\", status=...) per " +
+    "the rule (DONE if zero critical, DONE_WITH_CONCERNS if any " +
+    "critical/important, BLOCKED if any reviewer returned BLOCKED)."
+  );
+  const _REVIEW_KICKOFF_SERIAL = (
+    "Phase: review\n\n" +
+    "Run the Review phase. Call the four reviewer agents SEQUENTIALLY " +
+    "(one at a time, waiting for each to complete before dispatching " +
+    "the next) in this order: peer_SAArchitectReviewerAgent → " +
+    "peer_SADeveloperReviewerAgent → peer_SAOpsReviewerAgent → " +
+    "peer_SASecurityReviewerAgent. Do NOT dispatch them in parallel — " +
+    "the deployment's LLM proxy has a per-key concurrency cap that " +
+    "rejects bursts of 4 with 403. After all four have completed, " +
+    "read_findings, write reviews/review-summary.md with severity " +
+    "counts + top concerns, then set_step_status(step=\"review\", " +
+    "status=...) per the rule (DONE if zero critical, " +
+    "DONE_WITH_CONCERNS if any critical/important, BLOCKED if any " +
+    "reviewer returned BLOCKED)."
+  );
+  // Single source of truth for the active kickoff. Both call sites
+  // (the manual Start Review button + the in-chat phase-handoff card)
+  // reference this constant.
+  const REVIEW_KICKOFF_BODY = REVIEW_FAN_OUT_MODE === "parallel"
+    ? _REVIEW_KICKOFF_PARALLEL
+    : _REVIEW_KICKOFF_SERIAL;
+
+  // ============================================================================
   // Persisted state — read once on boot, write on every change
   // ============================================================================
   const STORE = {
@@ -1773,13 +1833,14 @@
       openChatWith(primeKickoff("design", "auto", DESIGN_KICKOFF), "SADomainAgent");
     });
     // Start Review — same kickoff body as the chat-pane phase-handoff card
-    // (PHASE_NEXT.design.kickoff). Routes to SAOrchestratorAgent which fans
-    // out to the 4 reviewer agents via peer_<AgentName>. primeKickoff is a
-    // no-op for non-Mode-branching targets so this stays a single source
-    // of truth across both entry points.
-    const REVIEW_KICKOFF = "Phase: review\n\nRun the Review phase. Fan out to peer_SAArchitectReviewerAgent, peer_SADeveloperReviewerAgent, peer_SAOpsReviewerAgent, peer_SASecurityReviewerAgent in this turn. After all four return, read_findings, write reviews/review-summary.md with severity counts + top concerns, then set_step_status(step=\"review\", status=...) per the rule (DONE if zero findings, DONE_WITH_CONCERNS if any finding recorded, BLOCKED if any reviewer returned BLOCKED).";
+    // (PHASE_NEXT.design.kickoff). Routes to SAOrchestratorAgent which
+    // dispatches the 4 reviewer agents via peer_<AgentName>. The verb
+    // (parallel fan-out vs serial sequence) is controlled by the
+    // module-level REVIEW_FAN_OUT_MODE constant defined at the top of
+    // this file — both call sites read the same prebuilt body via
+    // REVIEW_KICKOFF_BODY so flipping the flag updates both at once.
     startReviewBtn?.addEventListener("click", () =>
-      openChatWith(primeKickoff("review", "interactive", REVIEW_KICKOFF), "SAOrchestratorAgent"));
+      openChatWith(primeKickoff("review", "interactive", REVIEW_KICKOFF_BODY), "SAOrchestratorAgent"));
 
     // Single-agent phases (validation/event-portal/blueprint) — direct
     // dispatch to the phase agent. Routed through primeKickoff so both
@@ -3528,7 +3589,10 @@
       nextLabel: "Review",
       ctaLabel: "Start Review →",
       agent: "SAOrchestratorAgent",
-      kickoff: "Phase: review\n\nRun the Review phase. Fan out to peer_SAArchitectReviewerAgent, peer_SADeveloperReviewerAgent, peer_SAOpsReviewerAgent, peer_SASecurityReviewerAgent in this turn. After all four return, read_findings, write reviews/review-summary.md with severity counts + top concerns, then set_step_status(step=\"review\", status=...) per the rule (DONE if zero critical, DONE_WITH_CONCERNS if any critical/important, BLOCKED if any reviewer returned BLOCKED).",
+      // Use the same prebuilt body the manual Start Review button does
+      // (REVIEW_KICKOFF_BODY — selected by the REVIEW_FAN_OUT_MODE flag
+      // at the top of the file). Single source of truth.
+      kickoff: REVIEW_KICKOFF_BODY,
       // Reviewers are non-interactive (no per-finding chat questions),
       // so the Auto/Interactive distinction has no semantic effect for
       // this phase — render a single CTA.

@@ -202,6 +202,33 @@ def test_progress_cta_has_exec_hint_renderer():
     assert ".cta-exec-hint" in css
 
 
+def test_review_fan_out_mode_flag_defaults_to_serial():
+    """The REVIEW_FAN_OUT_MODE flag must default to "serial" so the
+    deployment's LLM proxy (which rejects 4 parallel reviewer requests
+    with 403) works out of the box. Flipping to "parallel" is an
+    operator-side code change for proxies that handle the burst.
+    """
+    import re
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    # Flag declaration with default — pattern allows surrounding whitespace
+    # and either quote style.
+    match = re.search(r'const\s+REVIEW_FAN_OUT_MODE\s*=\s*["\']([^"\']+)["\']', js)
+    assert match is not None, "REVIEW_FAN_OUT_MODE flag missing"
+    assert match.group(1) == "serial", (
+        f"REVIEW_FAN_OUT_MODE default should be 'serial', got {match.group(1)!r}"
+    )
+    # Both kickoff variants must exist (parallel kept intact per spec).
+    assert "_REVIEW_KICKOFF_PARALLEL" in js
+    assert "_REVIEW_KICKOFF_SERIAL" in js
+    # Single source of truth — both call sites read REVIEW_KICKOFF_BODY.
+    # The manual Start Review button + the in-chat phase-handoff card.
+    assert js.count("REVIEW_KICKOFF_BODY") >= 3, (
+        "Expected REVIEW_KICKOFF_BODY referenced from BOTH call sites + "
+        "the const declaration (≥3 occurrences); some site is using a "
+        "hardcoded fan-out string that won't follow the flag"
+    )
+
+
 def test_every_restart_phase_modal_auto_dispatches_kickoff():
     """Every Restart-phase modal (Discovery, Design, Review, Validation,
     Event Portal, Blueprint) must auto-dispatch the kickoff after the
