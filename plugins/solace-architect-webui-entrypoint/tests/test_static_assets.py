@@ -202,6 +202,27 @@ def test_progress_cta_has_exec_hint_renderer():
     assert ".cta-exec-hint" in css
 
 
+def test_progress_cta_buttons_disabled_during_inflight():
+    """While a chat task is in flight, the Start/Continue/View buttons in
+    the green progress-CTA box must be disabled to prevent duplicate
+    kickoffs or mid-action navigation. The mechanism: _setChatInflight
+    toggles body[data-inflight="1"] and a CSS rule gates the buttons.
+    Restart links (cta-link-danger) intentionally stay clickable — escape
+    hatch always available.
+    """
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    css = (PKG_ROOT / "webui" / "assets" / "styles.css").read_text()
+    assert "document.body.dataset.inflight" in js, (
+        "_setChatInflight must toggle the body data-attribute"
+    )
+    assert 'body[data-inflight="1"] .progress-cta-actions-row' in css, (
+        "CSS rule gating progress-CTA buttons during in-flight is missing"
+    )
+    assert "pointer-events: none" in css, (
+        "Disabled state must prevent click events, not just dim visually"
+    )
+
+
 def test_sse_arms_stop_button_for_any_task_status_update():
     """STOP-button visibility must be derived from the SSE stream, not
     only from dispatch sites. Otherwise orchestrator-initiated tasks

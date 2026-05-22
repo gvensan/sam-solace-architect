@@ -881,6 +881,19 @@ pre {
 .progress-cta-actions-row { display: flex; gap: 8px; }
 .progress-cta-actions .cta-btn { font-size: 14px; padding: 8px 14px; cursor: pointer; }
 .progress-cta-actions .cta-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+/* While a chat task is in flight, gate the progress-CTA action buttons
+ * (Start Review, View design, Continue in chat, etc.) so the user can't
+ * dispatch a duplicate kickoff or navigate away mid-action. The body-
+ * level `data-inflight="1"` is set by _setChatInflight in app.js. The
+ * Restart links in progress-cta-secondary-actions are intentionally
+ * NOT gated — the user still needs an escape hatch (Restart cascade-
+ * wipes regardless of in-flight state; SAM cancels the running task). */
+body[data-inflight="1"] .progress-cta-actions-row .cta-btn,
+body[data-inflight="1"] .progress-cta-actions-row a.cta-btn {
+  opacity: 0.5;
+  pointer-events: none;
+  cursor: not-allowed;
+}
 .progress-cta.in-progress { background: linear-gradient(to right, rgba(0,0,0,0.02), transparent); }
 .progress-cta.done {
   background: linear-gradient(135deg, rgba(0,150,80,0.08), rgba(0,0,0,0.02));

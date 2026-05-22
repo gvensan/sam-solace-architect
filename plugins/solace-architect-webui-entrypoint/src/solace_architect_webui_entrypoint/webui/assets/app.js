@@ -5644,6 +5644,15 @@
 
   function _setChatInflight(taskId) {
     _currentInflightTaskId = taskId || "";
+    // Body-level data attribute lets CSS gate progress-CTA action buttons
+    // (Start Review, View design, etc.) and any other "primary action"
+    // surfaces while a task is in flight — without each component knowing
+    // about the inflight state individually. See styles.css for the
+    // `body[data-inflight="1"] .progress-cta-actions-row …` rule.
+    try {
+      if (_currentInflightTaskId) document.body.dataset.inflight = "1";
+      else delete document.body.dataset.inflight;
+    } catch { /* document.body unreachable in some test envs — ignore */ }
     if (!chatSend) return;
     // Always re-enable the button when we change mode — the submit handler
     // disables it during dispatch (C2 fix), and we want it clickable in

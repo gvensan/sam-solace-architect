@@ -1254,7 +1254,34 @@ def _intake_to_markdown(intake: dict) -> str:
     lines.append("")
     lines.append(f"**Aggregate volumes:** {landscape.get('volumes') or landscape.get('aggregate_volumes') or ''}")
     lines.append("")
-    lines.append(f"**Schemas:** {landscape.get('schemas') or ''}")
+    # Schemas — supports both legacy string form ("Avro in Confluent")
+    # and the new structured form (5 sub-fields feeding the Dev Reviewer
+    # rubric: definitions_present / registry / compatibility_policy /
+    # serdes_integration / notes). Render whichever shape the brief
+    # carries so existing YAML uploads keep working.
+    _schemas = landscape.get("schemas")
+    if isinstance(_schemas, dict):
+        lines.append("**Schemas:**")
+        _registry_labels = {
+            "solace_schema_registry": "Solace Schema Registry",
+            "confluent": "Confluent Schema Registry",
+            "apicurio": "Apicurio Registry",
+            "aws_glue": "AWS Glue Schema Registry",
+            "other": "Other", "none": "None — schemas live in code only",
+            "unknown": "Unknown",
+        }
+        if _schemas.get("definitions_present"):
+            lines.append(f"- Definitions present: {_schemas['definitions_present']}")
+        if _schemas.get("registry"):
+            lines.append(f"- Registry: {_registry_labels.get(_schemas['registry'], _schemas['registry'])}")
+        if _schemas.get("compatibility_policy"):
+            lines.append(f"- Compatibility policy: {_schemas['compatibility_policy']}")
+        if _schemas.get("serdes_integration"):
+            lines.append(f"- SERDES integration: {_schemas['serdes_integration']}")
+        if _schemas.get("notes"):
+            lines.append(f"- Notes: {_schemas['notes']}")
+    else:
+        lines.append(f"**Schemas:** {_schemas or ''}")
     lines.append("")
     lines.append(f"**Vertical:** {landscape.get('vertical') or ''}")
     lines.append("")

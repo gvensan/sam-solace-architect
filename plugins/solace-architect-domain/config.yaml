@@ -473,8 +473,11 @@ apps:
              assumption when not given: each system in
              `landscape.systems` contributes 1 producer connection
              AND 1 consumer connection per role it claims, plus 1
-             admin connection per VPN. If the brief is silent on
-             role/count, ask via `ask_user_question(kind="free_text",
+             admin connection per VPN — but check
+             `requirements.admin_connections` first, which lets the
+             intake form override the per-VPN default. If the brief
+             is still silent on role/count, ask via
+             `ask_user_question(kind="free_text",
              example="200 producers, 50 consumers, 5 MIs")`. Do NOT
              invent a number.
           2. **Peak message rate.** Take from

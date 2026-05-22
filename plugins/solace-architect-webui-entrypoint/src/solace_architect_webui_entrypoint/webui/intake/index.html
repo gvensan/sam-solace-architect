@@ -465,10 +465,61 @@
     <input type="text" data-path="landscape.volumes">
   </div>
 
+  <!-- Schema governance — five structured signals feeding the Dev Reviewer's
+       rubric item 3 (schema governance, 5 sub-checks). Replaces the prior
+       single-text field that forced the reviewer to grade prose. -->
   <div class="field">
-    <label>Schemas</label>
-    <div class="help">Existing schemas or an AsyncAPI spec? Example: <em>Avro schemas in Confluent Schema Registry</em>, <em>AsyncAPI 3.0 spec</em>, <em>None</em>.</div>
-    <input type="text" data-path="landscape.schemas">
+    <label>Schema definitions</label>
+    <div class="help">Are concrete schemas (Avro / JSON Schema / Protobuf) attached to your events, or are payloads "JSON, figure it out"?</div>
+    <div class="radio-group">
+      <label><input type="radio" name="schemas_defs" value="yes" data-path="landscape.schemas.definitions_present"> <span><strong>Yes</strong> — concrete schemas for all events</span></label>
+      <label><input type="radio" name="schemas_defs" value="partial" data-path="landscape.schemas.definitions_present"> <span><strong>Partial</strong> — some events typed, others ad-hoc</span></label>
+      <label><input type="radio" name="schemas_defs" value="none" data-path="landscape.schemas.definitions_present"> <span><strong>None</strong> — payloads are unstructured JSON</span></label>
+      <label><input type="radio" name="schemas_defs" value="unknown" data-path="landscape.schemas.definitions_present"> <span><strong>Unknown</strong></span></label>
+    </div>
+  </div>
+
+  <div class="field">
+    <label>Schema registry</label>
+    <div class="help">Where are schemas managed? Drives the Dev Reviewer's "registry usage" sub-check.</div>
+    <select data-path="landscape.schemas.registry">
+      <option value="">— Select —</option>
+      <option value="solace_schema_registry">Solace Schema Registry</option>
+      <option value="confluent">Confluent Schema Registry</option>
+      <option value="apicurio">Apicurio Registry</option>
+      <option value="aws_glue">AWS Glue Schema Registry</option>
+      <option value="other">Other</option>
+      <option value="none">None — schemas live in code only</option>
+      <option value="unknown">Unknown</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label>Compatibility policy</label>
+    <div class="help">Named version-compatibility rule between schema versions. Without one, a producer can break consumers silently.</div>
+    <div class="radio-group">
+      <label><input type="radio" name="schemas_compat" value="BACKWARD" data-path="landscape.schemas.compatibility_policy"> <span><strong>BACKWARD</strong> — new consumers read old data</span></label>
+      <label><input type="radio" name="schemas_compat" value="FORWARD" data-path="landscape.schemas.compatibility_policy"> <span><strong>FORWARD</strong> — old consumers read new data</span></label>
+      <label><input type="radio" name="schemas_compat" value="FULL" data-path="landscape.schemas.compatibility_policy"> <span><strong>FULL</strong> — both directions</span></label>
+      <label><input type="radio" name="schemas_compat" value="NONE" data-path="landscape.schemas.compatibility_policy"> <span><strong>NONE</strong> — no compatibility rule</span></label>
+      <label><input type="radio" name="schemas_compat" value="not_set" data-path="landscape.schemas.compatibility_policy"> <span><strong>Not set</strong> — policy hasn't been decided</span></label>
+    </div>
+  </div>
+
+  <div class="field">
+    <label>SERDES integration</label>
+    <div class="help">Do client apps integrate with the registry for serialization/deserialization (schema-id encoded in the message), or do they hand-roll JSON parsing?</div>
+    <div class="radio-group">
+      <label><input type="radio" name="schemas_serdes" value="yes" data-path="landscape.schemas.serdes_integration"> <span><strong>Yes</strong> — clients use registry-aware SERDES</span></label>
+      <label><input type="radio" name="schemas_serdes" value="no" data-path="landscape.schemas.serdes_integration"> <span><strong>No</strong> — hand-rolled serialization</span></label>
+      <label><input type="radio" name="schemas_serdes" value="not_yet" data-path="landscape.schemas.serdes_integration"> <span><strong>Not yet</strong> — planned but not implemented</span></label>
+    </div>
+  </div>
+
+  <div class="field">
+    <label>Schema notes</label>
+    <div class="help">Anything else worth knowing — formats in use (Avro / JSON Schema / Protobuf), AsyncAPI spec version, deployment quirks, etc.</div>
+    <textarea data-path="landscape.schemas.notes"></textarea>
   </div>
 
   <div class="field">
@@ -630,6 +681,34 @@
     <label>Growth expectations</label>
     <div class="help">Expected growth over the next 1-3 years?</div>
     <textarea data-path="requirements.growth_expectations"></textarea>
+  </div>
+
+  <!-- Sizing inputs — feed SADomainAgent's broker-select methodology.
+       Without these the Domain agent has to ask via ask_user_question
+       mid-design; the user sees the agent ask for data the form should
+       have collected. -->
+  <div class="field">
+    <label>Guaranteed-message retention (hours)</label>
+    <div class="help">How long must Guaranteed messages be retained on the broker spool? Used to compute spool size (rate × payload × retention). Example: <em>24</em> for one-day retention.</div>
+    <input type="number" min="0" step="1" data-path="requirements.retention_hours">
+  </div>
+
+  <div class="field">
+    <label>Peak event rate (events / sec)</label>
+    <div class="help">Engagement-wide peak throughput. Optional — if blank, the agent sums the per-system rates from the Systems table. Example: <em>5000</em> for 5k events/sec during peak boarding windows.</div>
+    <input type="number" min="0" step="1" data-path="requirements.event_rate_per_sec">
+  </div>
+
+  <div class="field">
+    <label>Average message size (KB)</label>
+    <div class="help">Aggregate average across all events. Optional — if blank, the agent infers from per-system payload sizes. Example: <em>4</em> for ~4 KB JSON payloads.</div>
+    <input type="number" min="0" step="0.1" data-path="requirements.avg_message_size_kb">
+  </div>
+
+  <div class="field">
+    <label>Management connections</label>
+    <div class="help">Admin / VPN / Micro-Integration management connections, in addition to the per-system producer/consumer counts. Optional — defaults to 1 admin connection per VPN. Example: <em>5</em>.</div>
+    <input type="number" min="0" step="1" data-path="requirements.admin_connections">
   </div>
 
   <div class="field">
