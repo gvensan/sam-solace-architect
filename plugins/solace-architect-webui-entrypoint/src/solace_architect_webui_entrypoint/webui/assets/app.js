@@ -5957,6 +5957,37 @@
   };
   const _DEFAULT_HINT = "Generic SAM agent. For Solace Architect workflow questions try SAOrchestratorAgent or SADiscoveryAgent.";
 
+  // Phase-derived chat-agent default. The dropdown auto-advances to the
+  // agent that owns the engagement's currently-active step, so a free-text
+  // reply to a Discovery question routes to SADiscoveryAgent (not the
+  // dropdown's stale default). Mirrors dashboard_tools.py `_phase_of`.
+  //
+  // The 4 reviewers + the 9 design scopes collapse to one agent each:
+  //   - All design scopes → SADomainAgent (the user converses with Domain
+  //     across the whole Design phase regardless of which scope is active).
+  //   - All review scopes → SAOrchestratorAgent (the user converses with
+  //     the orchestrator during Review fan-out; reviewers are non-
+  //     interactive peers dispatched by the orchestrator).
+  const _STEP_TO_AGENT = {
+    "discovery": "SADiscoveryAgent",
+    "topic": "SADomainAgent",
+    "broker": "SADomainAgent",
+    "protocol": "SADomainAgent",
+    "integration": "SADomainAgent",
+    "mesh": "SADomainAgent",
+    "ha-dr": "SADomainAgent",
+    "sam": "SADomainAgent",
+    "event-portal-model": "SADomainAgent",
+    "migration": "SADomainAgent",
+    "architect-review": "SAOrchestratorAgent",
+    "developer-review": "SAOrchestratorAgent",
+    "ops-review": "SAOrchestratorAgent",
+    "security-review": "SAOrchestratorAgent",
+    "validation": "SAValidationAgent",
+    "event-portal": "SAEventPortalAgent",
+    "blueprint": "SABlueprintAgent",
+  };
+
   // Preferred default agent — SAOrchestratorAgent. Per user requirement, the
   // dropdown lands on this agent on every fresh page load (and after auth /
   // engagement switches) unless the user has explicitly picked something else
@@ -6024,20 +6055,47 @@
         userPick = "";
       }
 
+      // Phase-derived default — derive the agent that owns the engagement's
+      // currently-active step from `recommended_next_step` in overview stats.
+      // Without this, the dropdown defaulted to SAOrchestratorAgent on every
+      // fresh load, so a free-text reply to (e.g.) a Discovery question
+      // routed to the orchestrator instead of SADiscoveryAgent — the
+      // orchestrator's "Stay in your lane" rule then bounced it. The fetch
+      // is best-effort: on unauth / network / no-engagement / API failure,
+      // phaseAgent stays empty and the chain falls through to
+      // PREFERRED_DEFAULT_AGENT (the original behavior).
+      const eid = currentProjectId();
+      let phaseAgent = "";
+      if (eid) {
+        try {
+          const sr = await fetch(`/api/engagements/${encodeURIComponent(eid)}/overview`);
+          if (sr.ok) {
+            const stats = await sr.json();
+            const step = stats?.recommended_next_step || "";
+            phaseAgent = _STEP_TO_AGENT[step] || "";
+          }
+        } catch { /* fall through to PREFERRED_DEFAULT_AGENT */ }
+      }
+
       // Resolve which agent should end up selected, in this preference order:
-      //   1. User's current session pick (the dropdown value right now) — keeps
-      //      the 15s re-poll from snapping the selection back to the default.
-      //   2. User's persistent manual pick (localStorage), if still discovered.
-      //   3. SAOrchestratorAgent — preferred default per user requirement; a
-      //      fresh page always lands here unless explicitly overridden.
-      //   4. Gateway-configured default_agent_name — last-resort fallback if
-      //      SAOrchestratorAgent isn't discoverable on this mesh yet.
+      //   1. User's persistent manual pick (localStorage), if still discovered.
+      //      Wins over phaseAgent so an explicit override survives phase changes.
+      //   2. Phase-derived default — auto-advances with the engagement's
+      //      current phase so free-text replies land on the right agent.
+      //   3. Previous dropdown value — fallback when phaseAgent can't be
+      //      computed (compute_overview_stats not yet available, e.g. brand-
+      //      new engagement). Keeps the 15s re-poll from snapping mid-session.
+      //   4. SAOrchestratorAgent — final default for engagements with no
+      //      phase computed yet.
+      //   5. Gateway-configured default_agent_name — last-resort fallback.
       // Sticky-from-FinalResponse (the agent that last replied) is deliberately
       // NOT in this chain — it would override the user's choice every time an
-      // orchestrator delegated to a sub-agent, which is the opposite of the
-      // requested behavior.
-      const desired = (previousChoice && names.has(previousChoice)) ? previousChoice
-                    : (userPick && names.has(userPick))             ? userPick
+      // orchestrator delegated to a sub-agent. Phase-derived is the correct
+      // substitute because Review phase IS the orchestrator (so delegation
+      // doesn't change the conversational target).
+      const desired = (userPick && names.has(userPick))             ? userPick
+                    : (phaseAgent && names.has(phaseAgent))         ? phaseAgent
+                    : (previousChoice && names.has(previousChoice)) ? previousChoice
                     : (names.has(PREFERRED_DEFAULT_AGENT))           ? PREFERRED_DEFAULT_AGENT
                     : (names.has(defaultName) ? defaultName : "");
 
@@ -6047,6 +6105,13 @@
       };
       chatAgentSelect.innerHTML = saAgents.map(renderOption).join("");
       if (desired) chatAgentSelect.value = desired;
+      // Stash the natural default (phaseAgent || PREFERRED_DEFAULT_AGENT) on
+      // the select element so the change handler can decide whether the
+      // user's pick should pin via userPick. Picking the natural default
+      // CLEARS userPick so the dropdown resumes auto-advancing with phase;
+      // picking anything else SETS userPick to that explicit choice.
+      chatAgentSelect.dataset.naturalDefault =
+        (phaseAgent && names.has(phaseAgent)) ? phaseAgent : PREFERRED_DEFAULT_AGENT;
       // Mirror the selected option's hint onto the <select> itself so the
       // tooltip is visible even on the closed dropdown (not just per-option
       // when the menu is open).
@@ -6065,12 +6130,16 @@
     // Persist the user's explicit pick. The native `change` event only fires
     // for user-initiated changes (programmatic `.value = X` assignments don't
     // dispatch it), so this captures exactly the intent we want: "the user
-    // chose this on purpose; remember it for next time, even across reloads
-    // and engagement switches". If they pick the preferred default back, we
-    // CLEAR the override so future fresh visits resume the SAOrchestratorAgent
-    // default cleanly instead of pinning to it forever.
+    // chose this on purpose; remember it for next time".
+    //
+    // Picking the engagement's NATURAL DEFAULT (phaseAgent for the current
+    // phase, or SAOrchestratorAgent when no phase is computed) CLEARS the
+    // override — so the dropdown resumes auto-advancing as the phase
+    // changes. Picking anything else (e.g. SAOrchestratorAgent during
+    // Design, where phaseAgent=SADomainAgent) SETS the override.
     const picked = chatAgentSelect.value || "";
-    if (picked && picked !== PREFERRED_DEFAULT_AGENT) {
+    const naturalDefault = chatAgentSelect.dataset.naturalDefault || PREFERRED_DEFAULT_AGENT;
+    if (picked && picked !== naturalDefault) {
       _setUserPickedAgent(picked);
     } else {
       _setUserPickedAgent("");
