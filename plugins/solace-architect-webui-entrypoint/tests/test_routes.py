@@ -106,6 +106,67 @@ async def test_intake_submit_creates_project_and_writes_brief():
 
 
 @pytest.mark.asyncio
+async def test_intake_submit_propagates_execution_mode_auto_to_session():
+    """User picks Auto at intake → session.yaml.execution_mode = 'auto'.
+    Before this fix, the session always initialised as 'interactive' and
+    the intake-time choice was silently discarded.
+    """
+    from solace_architect_core.tools import session_tools
+    from solace_architect_webui_entrypoint.routes.api import intake_submit
+
+    r = await intake_submit(
+        project_name="Auto Mode Pilot",
+        project_type="new-build",
+        systems=[{"name": "API"}],
+        requirements={"topology": "single-site"},
+        preferences={"provision_event_portal": False, "execution_mode": "auto"},
+    )
+    assert r["engagement_id"]
+
+    session = (await session_tools.read_session_state(r["engagement_id"])).data
+    assert session["execution_mode"] == "auto", session
+
+
+@pytest.mark.asyncio
+async def test_intake_submit_defaults_to_interactive_when_preference_absent():
+    """Form doesn't include preferences.execution_mode → session keeps
+    the legacy 'interactive' default. Guards against accidental flips.
+    """
+    from solace_architect_core.tools import session_tools
+    from solace_architect_webui_entrypoint.routes.api import intake_submit
+
+    r = await intake_submit(
+        project_name="Default Mode Pilot",
+        project_type="new-build",
+        systems=[{"name": "API"}],
+        requirements={"topology": "single-site"},
+        preferences={"provision_event_portal": False},
+    )
+    session = (await session_tools.read_session_state(r["engagement_id"])).data
+    assert session["execution_mode"] == "interactive", session
+
+
+@pytest.mark.asyncio
+async def test_intake_submit_rejects_garbage_execution_mode():
+    """Unknown execution_mode value → falls back to 'interactive' (the
+    safer default — the user always gets to confirm decisions). Avoids
+    persisting a bogus mode that no downstream code knows how to handle.
+    """
+    from solace_architect_core.tools import session_tools
+    from solace_architect_webui_entrypoint.routes.api import intake_submit
+
+    r = await intake_submit(
+        project_name="Garbage Mode Pilot",
+        project_type="new-build",
+        systems=[{"name": "API"}],
+        requirements={"topology": "single-site"},
+        preferences={"provision_event_portal": False, "execution_mode": "yolo"},
+    )
+    session = (await session_tools.read_session_state(r["engagement_id"])).data
+    assert session["execution_mode"] == "interactive", session
+
+
+@pytest.mark.asyncio
 async def test_reset_design_cascades_to_review_state():
     """Restart Design must wipe Review state — findings, reviews/*.md, review
     step status, and review-deferred open-items. Without this cascade, a

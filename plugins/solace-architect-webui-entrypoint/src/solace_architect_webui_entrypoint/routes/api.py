@@ -1100,6 +1100,22 @@ async def _persist_intake_artifacts(eid: str, intake: dict, flat: dict) -> list:
             note="Opt-out at intake (preferences.provision_event_portal=false).",
         )
 
+    # Propagate the user's intake-time execution_mode choice into the live
+    # session. Without this, session.yaml defaults to "interactive" no
+    # matter what the user picked in the form, and every phase kickoff
+    # has to manually flip to Auto. Re-submit honours the form's current
+    # value (the user can revise their mode preference by editing intake).
+    mode = (prefs.get("execution_mode") or "interactive").strip().lower()
+    if mode not in ("auto", "interactive"):
+        mode = "interactive"
+    try:
+        await session_tools.update_session_state(eid, {"execution_mode": mode})
+    except Exception:
+        # Session update is best-effort; intake submission itself
+        # already succeeded and shouldn't fail on a follow-up bookkeeping
+        # write. Errors surface via sam.log.
+        pass
+
     return open_items
 
 
