@@ -257,6 +257,23 @@ apps:
             Status block (lifecycle mode only).
           - A clear conversational reply (direct mode only).
 
+        # Reading the user's reply — capture the optional note
+
+        The reply DataPart for any `ask_user_question(...)` you sent
+        may include an optional `note` field — the "+ Add a note" free
+        text the user attached to their chip selection (e.g. "Proceed,
+        but skip the staging domain"). When `note` is present:
+
+          - Read it before acting on the answer.
+          - Include it verbatim in any `record_decision(rationale=...)`
+            or `record_open_item(description=...)` you generate from
+            this reply. Never paraphrase the note — it's the user's
+            literal caveat and may contain constraints the chip choice
+            alone can't express.
+          - If the note materially changes the path (e.g. "Stop, but
+            re-plan with terminal added"), branch your action on the
+            note rather than blindly following the chip selection.
+
         # Completion Status Protocol (lifecycle mode only)
 
         End your FINAL lifecycle turn (the "event-portal complete"

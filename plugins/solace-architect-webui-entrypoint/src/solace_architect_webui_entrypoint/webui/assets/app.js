@@ -587,14 +587,17 @@
         const discoveryNote = lifecycle?.steps?.discovery?.note || "";
         const discoveryDone = discoveryStatus === "DONE" || discoveryStatus === "DONE_WITH_CONCERNS";
         // In-progress when the agent has TOUCHED the step at all — any
-        // non-NOT_STARTED status, OR artifacts exist, OR open-items
-        // accrued. The status-based check catches the early-turn window
-        // before any artifact is written (the agent's first set_step_status
-        // flips status to NEEDS_CONTEXT). Without this the Start button
-        // stays enabled for 30-90s after click, inviting double-submit.
+        // non-NOT_STARTED status OR discovery-summary.md present (the
+        // summary is Discovery's first narrative output). NB: do NOT key
+        // off discovery-brief.yaml here — the brief is an INTAKE output
+        // (intake_submit writes it), so its presence after a clone or a
+        // fresh intake submission would falsely advance the dashboard
+        // into "Discovery in progress" before the agent has done anything.
+        // Same reason we don't include openItemsCount: intake-sourced
+        // blocking items can land before Discovery touches the engagement.
         const discoveryInProgress = !discoveryDone && (
           (discoveryStatus !== "NOT_STARTED")
-          || hasDiscoveryBrief || openItemsCount > 0 || hasDiscoverySummary
+          || hasDiscoverySummary
         );
 
         // Same for Design — driven by SADomainAgent's set_step_status calls.
@@ -752,6 +755,7 @@
         root.innerHTML = `
           <h1>Progress</h1>
           ${renderProgressBanner({
+            eid,
             active: activeStepId,
             completed: completedSteps,
             needsContext: needsContextSteps,
@@ -1287,7 +1291,7 @@
     return new Set(DESIGN_SCOPE_ORDER.filter(s => !designSkipped.has(s)));
   }
 
-  function renderProgressBanner({ active, completed, needsContext, skipped, blocked,
+  function renderProgressBanner({ eid, active, completed, needsContext, skipped, blocked,
                                   designScopeProgress, designApplicableScopes }) {
     needsContext = needsContext || new Set();
     skipped = skipped || new Set();
@@ -5874,10 +5878,29 @@
                     : (userPick && names.has(userPick))             ? userPick
                     : (names.has(PREFERRED_DEFAULT_AGENT))           ? PREFERRED_DEFAULT_AGENT
                     : defaultName;
-      chatAgentSelect.innerHTML = agents.map(a => {
+      // Split agents into two groups so the SA family is visually
+      // separated from stock SAM agents that happen to be on the same
+      // mesh (main_orchestrator, find-my-ip, sam-mermaid, etc.). Avoids
+      // the trap where the user picks plain "OrchestratorAgent" thinking
+      // it's ours — that one has no SA knowledge and silently produces
+      // wrong answers. Both groups stay accessible; ordering nudges the
+      // right choice.
+      const renderOption = (a) => {
         const hint = AGENT_DOMAIN_HINTS[a.name] || _DEFAULT_HINT;
         return `<option value="${escapeHtml(a.name)}" title="${escapeHtml(hint)}"${a.name === desired ? " selected" : ""}>${escapeHtml(a.name)}</option>`;
-      }).join("");
+      };
+      const saAgents    = agents.filter(a => a.name in AGENT_DOMAIN_HINTS);
+      const otherAgents = agents.filter(a => !(a.name in AGENT_DOMAIN_HINTS));
+      let html = "";
+      if (saAgents.length) {
+        html += `<optgroup label="Solace Architect agents">${saAgents.map(renderOption).join("")}</optgroup>`;
+      }
+      if (otherAgents.length) {
+        html += `<optgroup label="Other SAM agents on this mesh">${otherAgents.map(renderOption).join("")}</optgroup>`;
+      }
+      // Fallback if for some reason both groups are empty (shouldn't happen
+      // once agents are discovered, but keep the dropdown well-formed).
+      chatAgentSelect.innerHTML = html || agents.map(renderOption).join("");
       if (desired) chatAgentSelect.value = desired;
       // Mirror the selected option's hint onto the <select> itself so the
       // tooltip is visible even on the closed dropdown (not just per-option
