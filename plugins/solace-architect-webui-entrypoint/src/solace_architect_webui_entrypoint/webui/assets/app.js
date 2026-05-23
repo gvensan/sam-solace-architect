@@ -818,7 +818,7 @@
                Activities lives on Decisions. -->
           ${renderHeroTiles(stats, { statusValue, includeActivities: false })}
         `;
-        wireProgressCtaActions(root, eid);
+        wireProgressCtaActions(root, eid, activeStepId);
         // Self-refresh every PROGRESS_REFRESH_MS so the banner / CTA /
         // tiles update without a manual reload while the user watches
         // discovery / design / etc complete in chat.
@@ -1929,7 +1929,22 @@
   }
 
   // Wire click handlers on whichever progress-CTA buttons exist this render.
-  function wireProgressCtaActions(root, eid) {
+  // ``activeStepId`` is the current lifecycle phase (computed by render); used
+  // to point the Continue-in-chat button at the right agent so the user's
+  // next typed message reaches the agent that OWNS this phase, not whatever
+  // agent the sticky-dropdown happens to be on (observed bug 2026-05-23:
+  // dropdown stuck on SADiscoveryAgent after Discovery completed, user
+  // clicked Continue in chat during Design, their messages kept hitting
+  // Discovery which correctly redirected them — but they were stranded).
+  const _ACTIVE_STEP_TO_AGENT = {
+    discovery: "SADiscoveryAgent",
+    design: "SADomainAgent",
+    review: "SAOrchestratorAgent",
+    validation: "SAValidationAgent",
+    "event-portal": "SAEventPortalAgent",
+    blueprint: "SABlueprintAgent",
+  };
+  function wireProgressCtaActions(root, eid, activeStepId) {
     const openChatWith = (text, agent) => {
       applyChat("open");
       // Per-turn dispatch override: instead of mutating the dropdown
@@ -2005,8 +2020,24 @@
       openChatWith(
         "Let's start discovery — please review the intake and ask your first follow-up.",
         "SADiscoveryAgent"));
-    continueBtn?.addEventListener("click", () =>
-      openChatWith("", null));
+    continueBtn?.addEventListener("click", () => {
+      // Point the dropdown at the agent that OWNS the active phase so the
+      // user's next typed message reaches it — not whatever sticky agent
+      // the dropdown landed on after the previous phase finished.
+      const targetAgent = _ACTIVE_STEP_TO_AGENT[activeStepId] || null;
+      if (targetAgent) {
+        const sel = document.getElementById("chat-agent-select");
+        if (sel) {
+          const opt = Array.from(sel.options).find(o => o.value === targetAgent);
+          if (opt) sel.value = targetAgent;
+          // Persist as sticky so a subsequent reload doesn't snap back to
+          // whatever was sticky before. The existing setStickyAgent does
+          // exactly this lookup on page load via loadAgents().
+          if (typeof setStickyAgent === "function") setStickyAgent(eid, targetAgent);
+        }
+      }
+      openChatWith("", null);
+    });
     startDesignBtn?.addEventListener("click", () => {
       lockBothDesignButtons();
       openChatWith(primeKickoff("design", "interactive", DESIGN_KICKOFF), "SADomainAgent");
