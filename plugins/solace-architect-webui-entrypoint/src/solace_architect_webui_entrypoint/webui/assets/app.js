@@ -6447,16 +6447,29 @@
       if (_currentInflightTaskId) document.body.dataset.inflight = "1";
       else delete document.body.dataset.inflight;
     } catch { /* document.body unreachable in some test envs — ignore */ }
-    // Lock the chat input + agent dropdown while a task is in flight so the
-    // user can't type-and-Enter a second submission AND can't change the
-    // target agent mid-flight (which would route the next message to a
-    // different agent without their explicit intent). `disabled` attribute
-    // is the only thing that actually blocks keyboard input on a focused
-    // textarea — `pointer-events: none` does NOT. STOP button stays
-    // enabled (it has its own toggle below) so the user can always cancel.
+    // Lock the chat input + agent dropdown + Send-to-SAM checkbox while a
+    // task is in flight so the user can't type-and-Enter a second
+    // submission, can't change the target agent mid-flight (which would
+    // route the next message to a different agent without their explicit
+    // intent), and can't flip the SAM-routing escape hatch on an in-
+    // flight turn. `disabled` attribute is the only thing that actually
+    // blocks keyboard input on a focused textarea — `pointer-events: none`
+    // does NOT. STOP button stays enabled (it has its own toggle below)
+    // so the user can always cancel.
     try {
-      if (chatInput) chatInput.disabled = !!_currentInflightTaskId;
-      if (chatAgentSelect) chatAgentSelect.disabled = !!_currentInflightTaskId;
+      const inflight = !!_currentInflightTaskId;
+      if (chatInput) chatInput.disabled = inflight;
+      const _samCb = document.getElementById("chat-send-to-sam");
+      if (_samCb) _samCb.disabled = inflight;
+      // Dropdown: in-flight always disables. Post-flight (inflight=false),
+      // defer to the checkbox state — when "Send to SAM" is ticked, the
+      // dropdown stays disabled because routing goes to SAM, not the
+      // named agent. Without this, completing a turn while the checkbox
+      // is ticked would re-enable the dropdown and break the
+      // _syncDropdownToCheckbox contract.
+      if (chatAgentSelect) {
+        chatAgentSelect.disabled = inflight || !!(_samCb && _samCb.checked);
+      }
     } catch { /* defensive — never let a missing element break the toggle */ }
     if (!chatSend) return;
     // Always re-enable the button when we change mode — the submit handler
