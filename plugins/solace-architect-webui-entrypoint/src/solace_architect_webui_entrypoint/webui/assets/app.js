@@ -2024,16 +2024,30 @@
       // Point the dropdown at the agent that OWNS the active phase so the
       // user's next typed message reaches it — not whatever sticky agent
       // the dropdown landed on after the previous phase finished.
+      //
+      // We pin via `_setUserPickedAgent` (the `sa.chat_agent_pick` key)
+      // because that's the TOP of the loadAgents() precedence chain
+      // (userPick > phaseAgent > previousChoice > default). The earlier
+      // attempt used setStickyAgent (`sa.last_agent.*`) which is NOT in
+      // that chain — it's only the FinalResponse-sticky for echo, so the
+      // dropdown ignored it on the next render. Without overwriting
+      // userPick, a stale pick from an earlier phase (e.g. Discovery)
+      // permanently blocks phase-derived advancement.
       const targetAgent = _ACTIVE_STEP_TO_AGENT[activeStepId] || null;
       if (targetAgent) {
         const sel = document.getElementById("chat-agent-select");
         if (sel) {
           const opt = Array.from(sel.options).find(o => o.value === targetAgent);
           if (opt) sel.value = targetAgent;
-          // Persist as sticky so a subsequent reload doesn't snap back to
-          // whatever was sticky before. The existing setStickyAgent does
-          // exactly this lookup on page load via loadAgents().
-          if (typeof setStickyAgent === "function") setStickyAgent(eid, targetAgent);
+        }
+        if (typeof _setUserPickedAgent === "function") {
+          _setUserPickedAgent(targetAgent);
+        }
+        // Force-re-render the dropdown options NOW (the next 15s poll
+        // would otherwise be the only thing that reconciles the picker
+        // against the freshly-stored userPick).
+        if (typeof loadAgents === "function") {
+          loadAgents();
         }
       }
       openChatWith("", null);
@@ -6316,21 +6330,27 @@
   //   - All review scopes → SAOrchestratorAgent (the user converses with
   //     the orchestrator during Review fan-out; reviewers are non-
   //     interactive peers dispatched by the orchestrator).
+  // Step ids here MUST match the canonical step names from
+  // ``configs/skill-routing.yaml`` (which is what
+  // ``compute_overview_stats.recommended_next_step`` returns). Earlier
+  // versions of this map used short prefixes (``"topic"``, ``"broker"``)
+  // that never resolved because the real step ids include the suffix
+  // (``"topic-design"``, ``"broker-select"``) — silently failing the
+  // lookup, leaving ``phaseAgent=""``, and letting the dropdown fall
+  // through to the prior phase's selection (observed 2026-05-23 with
+  // dropdown stuck on SADiscoveryAgent while Design was in progress).
   const _STEP_TO_AGENT = {
     "discovery": "SADiscoveryAgent",
-    "topic": "SADomainAgent",
-    "broker": "SADomainAgent",
-    "protocol": "SADomainAgent",
-    "integration": "SADomainAgent",
-    "mesh": "SADomainAgent",
+    "topic-design": "SADomainAgent",
+    "broker-select": "SADomainAgent",
+    "sam-design": "SADomainAgent",
+    "protocol-select": "SADomainAgent",
+    "mesh-design": "SADomainAgent",
     "ha-dr": "SADomainAgent",
-    "sam": "SADomainAgent",
-    "event-portal-model": "SADomainAgent",
     "migration": "SADomainAgent",
-    "architect-review": "SAOrchestratorAgent",
-    "developer-review": "SAOrchestratorAgent",
-    "ops-review": "SAOrchestratorAgent",
-    "security-review": "SAOrchestratorAgent",
+    "integration": "SADomainAgent",
+    "event-portal-design": "SADomainAgent",
+    "review": "SAOrchestratorAgent",
     "validation": "SAValidationAgent",
     "event-portal": "SAEventPortalAgent",
     "blueprint": "SABlueprintAgent",
