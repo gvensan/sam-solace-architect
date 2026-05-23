@@ -6356,6 +6356,21 @@
     "blueprint": "SABlueprintAgent",
   };
 
+  // Ordinal rank of each phase-owning agent in the lifecycle. Used by
+  // loadAgents() to detect a STALE userPick — one that points at a
+  // phase agent for a phase already BEHIND the current active phase —
+  // and drop it so the dropdown re-anchors to the active phase.
+  // A pick pointing at a phase AHEAD of the active one (e.g. user pinned
+  // SAValidationAgent during Design to look ahead) is preserved.
+  const _AGENT_PHASE_ORDER = {
+    SADiscoveryAgent: 1,
+    SADomainAgent: 2,
+    SAOrchestratorAgent: 3,           // Review phase (also the cross-phase default)
+    SAValidationAgent: 4,
+    SAEventPortalAgent: 5,
+    SABlueprintAgent: 6,
+  };
+
   // Preferred default agent — SAOrchestratorAgent. Per user requirement, the
   // dropdown lands on this agent on every fresh page load (and after auth /
   // engagement switches) unless the user has explicitly picked something else
@@ -6443,6 +6458,21 @@
             phaseAgent = _STEP_TO_AGENT[step] || "";
           }
         } catch { /* fall through to PREFERRED_DEFAULT_AGENT */ }
+      }
+
+      // Self-heal STALE userPick: if it points at a phase agent for a
+      // phase BEHIND the current active one (e.g. dropdown pinned to
+      // SADiscoveryAgent while Design is in progress), drop it so the
+      // dropdown re-anchors to phaseAgent. Picks AHEAD of the active
+      // phase are preserved (the user explicitly looked ahead);
+      // non-phase agents aren't ranked, so this never clears them.
+      if (userPick && phaseAgent) {
+        const userPickRank = _AGENT_PHASE_ORDER[userPick] || 0;
+        const phaseRank = _AGENT_PHASE_ORDER[phaseAgent] || 0;
+        if (userPickRank > 0 && phaseRank > 0 && userPickRank < phaseRank) {
+          _setUserPickedAgent("");
+          userPick = "";
+        }
       }
 
       // Resolve which agent should end up selected, in this preference order:
