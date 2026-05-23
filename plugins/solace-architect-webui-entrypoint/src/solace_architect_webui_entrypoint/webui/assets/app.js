@@ -3635,8 +3635,12 @@
     if (typeof _cancelPendingAutoResume === "function") _cancelPendingAutoResume();
     if (typeof _cancelPendingAutoAdvance === "function") _cancelPendingAutoAdvance();
     // Reset stream-drop retry counter — fresh session = fresh budget.
+    // Also clear the auto-jump-to-fresh-session flag: a MANUAL fresh-session
+    // click is a user-driven recovery, so the next error burst should get
+    // the full two-step budget again rather than going straight to give-up.
     const _eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
     if (_eid && typeof _setAutoResumeRetries === "function") _setAutoResumeRetries(_eid, 0);
+    if (_eid && typeof _setFreshEscalated === "function") _setFreshEscalated(_eid, false);
     chatLog.innerHTML = "";
     appendChatMessage(
       "agent",
@@ -5483,7 +5487,14 @@
           // scope auto run would lock the auto-resume out for the rest of
           // the engagement.
           const _eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
-          if (_eid) _setAutoResumeRetries(_eid, 0);
+          if (_eid) {
+            _setAutoResumeRetries(_eid, 0);
+            // Successful turn clears any pending auto-jump-to-fresh-session
+            // state too — the engagement is healthy again, so future error
+            // bursts get the full two-step budget (same-session, then fresh)
+            // rather than skipping straight to give-up.
+            _setFreshEscalated(_eid, false);
+          }
         } else if (ev.type === "Error") {
           const msg = ev.data?.message || ev.data?.error || "(error)";
           const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
@@ -5697,7 +5708,10 @@
         _clearChatInflightIfMatches(finId);
         // Mirror of live-SSE: refill the stream-drop retry budget on success.
         const _eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
-        if (_eid) _setAutoResumeRetries(_eid, 0);
+        if (_eid) {
+          _setAutoResumeRetries(_eid, 0);
+          _setFreshEscalated(_eid, false);
+        }
       } else if (ev.type === "Error") {
         const msg = ev.data?.message || ev.data?.error || "(error)";
         const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
@@ -6032,6 +6046,24 @@
   // the don't-auto-retry case.)
 
   function _autoResumeKey(eid) { return `sa.resume_retries.${eid}`; }
+  // Per-engagement "we already auto-jumped to a fresh session for this
+  // run of consecutive failures" flag. Set the first time we escalate;
+  // cleared on the next successful FinalResponse (and when the user
+  // manually clicks "Start fresh session"). Used to cap the auto-jump
+  // at ONE — beyond that we show a give-up card instead of looping.
+  function _freshEscalatedKey(eid) { return `sa.fresh_escalated.${eid}`; }
+  function _getFreshEscalated(eid) {
+    if (!eid) return false;
+    try { return localStorage.getItem(_freshEscalatedKey(eid)) === "1"; }
+    catch { return false; }
+  }
+  function _setFreshEscalated(eid, val) {
+    if (!eid) return;
+    try {
+      if (val) localStorage.setItem(_freshEscalatedKey(eid), "1");
+      else localStorage.removeItem(_freshEscalatedKey(eid));
+    } catch {}
+  }
   function _getAutoResumeRetries(eid) {
     if (!eid) return 0;
     try { return parseInt(localStorage.getItem(_autoResumeKey(eid)) || "0", 10) || 0; }
@@ -6104,10 +6136,73 @@
     return card;
   }
 
+  // Auto-mode escalation card: shown after MAX_AUTO_RESUMES same-session
+  // retries are spent AND we haven't yet auto-jumped to a fresh session
+  // for this engagement. Counts down then fires startFreshChatSession()
+  // + resubmits the RESUME_KICKOFF_TEXT. Cancellable via the Cancel
+  // button, which falls through to the normal same-session-cap UI.
+  function _renderFreshEscalationCard(agentName) {
+    const card = document.createElement("div");
+    card.className = "chat-msg agent stream-drop-card";
+    card.innerHTML = `
+      <div class="stream-drop-header">
+        <span class="stream-drop-icon">⚡</span>
+        <span class="stream-drop-title">Same-session retries exhausted</span>
+      </div>
+      <div class="stream-drop-body">
+        <p>${escapeHtml(agentName)} hit ${MAX_AUTO_RESUMES} consecutive transient failures in this chat session. Auto mode is jumping to a fresh session — the in-memory agent state may be saturated; on-disk artifacts and decisions are preserved.</p>
+        <p class="stream-drop-countdown">Starting fresh session in <span class="stream-drop-secs">5</span>s…</p>
+      </div>
+      <div class="stream-drop-actions">
+        <button type="button" class="cta-btn cta-btn-secondary stream-drop-pause">Cancel</button>
+        <button type="button" class="cta-btn stream-drop-now">Switch now</button>
+      </div>`;
+    return card;
+  }
+
+  // Give-up card: shown when the fresh-session jump ALSO ran out of
+  // retries. Indicates a real upstream outage, not a recoverable
+  // local issue. Manual Retry button only — no further auto-jumps so
+  // we don't loop forever against a dead provider.
+  function _renderGiveUpCard(agentName) {
+    const card = document.createElement("div");
+    card.className = "chat-msg agent stream-drop-card";
+    card.innerHTML = `
+      <div class="stream-drop-header">
+        <span class="stream-drop-icon">⛔</span>
+        <span class="stream-drop-title">LLM service appears unavailable</span>
+      </div>
+      <div class="stream-drop-body">
+        <p>Auto-recovery tried a same-session retry budget AND a fresh-session jump for ${escapeHtml(agentName)} — both ran out of retries with the same transient error.</p>
+        <p class="muted">This usually means the upstream LLM provider is having issues right now, not a SAM or session problem. Wait a few minutes and click <strong>Retry</strong> below, or open the admin's service-status dashboard.</p>
+      </div>
+      <div class="stream-drop-actions">
+        <button type="button" class="cta-btn stream-drop-now">Retry</button>
+      </div>`;
+    return card;
+  }
+
   function _handleStreamDropError(agentName) {
     const eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
     const retries = _getAutoResumeRetries(eid);
     const autoMode = (typeof isAutoModeActive === "function") ? isAutoModeActive(eid) : false;
+    const escalated = _getFreshEscalated(eid);
+
+    // AUTO-MODE ESCALATION LADDER:
+    //   - Same-session retries 1..MAX_AUTO_RESUMES → existing card (auto
+    //     countdown for resume in this session).
+    //   - Same-session retries exhausted AND we haven't yet escalated →
+    //     auto-jump to fresh session ONCE, with a countdown.
+    //   - Same-session retries exhausted AND we already escalated →
+    //     give up (upstream is genuinely down; manual retry only).
+    // Interactive mode skips this ladder entirely — falls through to
+    // the existing manual-button card.
+    if (autoMode && retries >= MAX_AUTO_RESUMES) {
+      if (!escalated) {
+        return _doFreshEscalation(agentName, eid);
+      }
+      return _showGiveUpCard(agentName);
+    }
     const willAutoResume = autoMode && retries < MAX_AUTO_RESUMES;
     const card = _renderStreamDropResumeCard(agentName, retries, autoMode);
 
@@ -6167,6 +6262,98 @@
       };
       _pendingAutoResumeTimer = setTimeout(tick, 1000);
     }
+  }
+
+  // Auto-jump to a fresh session after MAX_AUTO_RESUMES same-session retries.
+  // Renders the escalation card, marks the engagement as escalated (so we
+  // don't loop), counts down 5s, then runs the jump. Cancellable.
+  function _doFreshEscalation(agentName, eid) {
+    const card = _renderFreshEscalationCard(agentName);
+    if (pendingAgentMsg) {
+      pendingAgentMsg.el.classList.remove("agent-thinking");
+      pendingAgentMsg.el.innerHTML = "";
+      pendingAgentMsg.el.appendChild(card);
+      pendingAgentMsg = null;
+    } else {
+      chatLog.appendChild(card);
+    }
+    chatLog.scrollTop = chatLog.scrollHeight;
+    setActivityBar(null);
+    _setChatInflight("");
+
+    const fire = () => {
+      _cancelPendingAutoResume();
+      // Mark BEFORE the jump so a fast re-error after the jump correctly
+      // sees the flag and falls into give-up rather than escalating again.
+      _setFreshEscalated(eid, true);
+      // Pin the dispatch to the agent that errored so the resubmit lands
+      // on the same agent (the fresh session has no sticky pick yet).
+      if (agentName && _PINNABLE_AGENTS.has(agentName) && window.__setPendingDispatchAgent) {
+        window.__setPendingDispatchAgent(agentName);
+      }
+      startFreshChatSession();    // clears chatLog and resets _autoResumeRetries to 0
+      const ci = document.getElementById("chat-input");
+      if (ci) {
+        ci.value = RESUME_KICKOFF_TEXT;
+        chatForm?.requestSubmit?.();
+      }
+    };
+
+    card.querySelector(".stream-drop-now")?.addEventListener("click", fire);
+    card.querySelector(".stream-drop-pause")?.addEventListener("click", () => {
+      _cancelPendingAutoResume();
+      const body = card.querySelector(".stream-drop-body");
+      if (body) {
+        body.innerHTML = `<p class="muted">Auto-jump cancelled. Click <strong>Switch now</strong> to fresh-session manually, or wait and click <strong>Retry</strong> against the same session.</p>`;
+      }
+      // Keep "Switch now" as a manual trigger; drop the Cancel button.
+      card.querySelector(".stream-drop-pause")?.remove();
+    });
+
+    let secs = 5;
+    const secsEl = card.querySelector(".stream-drop-secs");
+    _cancelPendingAutoResume();
+    const tick = () => {
+      secs--;
+      if (secsEl) secsEl.textContent = String(secs);
+      if (secs <= 0) fire();
+      else _pendingAutoResumeTimer = setTimeout(tick, 1000);
+    };
+    _pendingAutoResumeTimer = setTimeout(tick, 1000);
+  }
+
+  // Final state when both same-session AND fresh-session budgets are spent.
+  // Manual Retry only — no auto-anything, so we don't burn cycles on a
+  // genuinely down upstream provider.
+  function _showGiveUpCard(agentName) {
+    const card = _renderGiveUpCard(agentName);
+    if (pendingAgentMsg) {
+      pendingAgentMsg.el.classList.remove("agent-thinking");
+      pendingAgentMsg.el.innerHTML = "";
+      pendingAgentMsg.el.appendChild(card);
+      pendingAgentMsg = null;
+    } else {
+      chatLog.appendChild(card);
+    }
+    chatLog.scrollTop = chatLog.scrollHeight;
+    setActivityBar(null);
+    _setChatInflight("");
+
+    card.querySelector(".stream-drop-now")?.addEventListener("click", () => {
+      // Treat manual retry as a clean reset of the escalation state —
+      // user is explicitly choosing to start over.
+      const eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
+      if (eid) {
+        _setAutoResumeRetries(eid, 0);
+        _setFreshEscalated(eid, false);
+      }
+      const ci = document.getElementById("chat-input");
+      if (ci) {
+        ci.value = RESUME_KICKOFF_TEXT;
+        chatForm?.requestSubmit?.();
+      }
+      card.remove();
+    });
   }
 
   // Render the "Auto: advancing to <next> in N…" card. Returns the card el
