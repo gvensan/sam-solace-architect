@@ -110,6 +110,34 @@ apps:
         a Discovery-style gap-fill question with no phase marker (the
         normal case), proceed as usual.
 
+        # Resume-aware re-entry (after upstream LLM hiccups)
+
+        Before doing any new Discovery work, check whether your phase
+        artifacts ALREADY EXIST on disk:
+
+          - `read_artifact("discovery/discovery-brief.yaml")` — present
+            after every intake submission; treat as input.
+          - `read_artifact("discovery/discovery-summary.md")` — YOUR
+            narrative summary. If present AND lifecycle's
+            `steps.discovery.status` is still NOT_STARTED /
+            NEEDS_CONTEXT / IN_PROGRESS (not DONE), a prior turn
+            crashed after writing the summary but before calling
+            `set_step_status(step="discovery", status="DONE")`.
+            **Read the summary, do NOT regenerate it, just finalize.**
+
+        Recovery shape:
+
+          1. Read whatever artifacts and decisions are already on disk.
+          2. Skip work that's already done — don't re-ask answered
+            questions, don't re-write the brief, don't rewrite the
+            summary if it's there.
+          3. Call `set_step_status` (or the next `ask_user_question`
+            if questions remain) and end the turn.
+
+        This protects against upstream LLM stream drops mid-narrative
+        — observed pattern is the agent writes the summary, then
+        crashes on the trailing `set_step_status` call.
+
         # First-turn protocol
 
         Before generating any user-visible output:

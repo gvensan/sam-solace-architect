@@ -1012,6 +1012,31 @@ body[data-inflight="1"] .progress-cta-actions-row a.cta-btn {
 }
 .auto-advance-actions .cta-btn { padding: 4px 10px; font-size: 12px; }
 
+/* Stream-drop resume card — rendered when an upstream LLM stream drops
+   mid-turn (MidStreamFallbackError / incomplete chunked read / "service
+   temporarily unavailable"). Visually warm-coloured (amber) to distinguish
+   from the green auto-advance card and the red generic error card. */
+.stream-drop-card {
+  background: rgba(217, 119, 6, 0.06);
+  border: 1px solid #d97706;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 6px 0;
+  font-size: 13px;
+}
+.stream-drop-header {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 600; margin-bottom: 6px;
+}
+.stream-drop-icon { font-size: 16px; }
+.stream-drop-title { color: #92400e; letter-spacing: 0.02em; }
+.stream-drop-body p { margin: 2px 0; line-height: 1.4; }
+.stream-drop-body .muted { color: var(--muted, #888); font-size: 12px; }
+.stream-drop-countdown { font-family: 'Space Mono', monospace; font-size: 12px; }
+.stream-drop-secs { color: #d97706; font-weight: 600; }
+.stream-drop-actions { display: flex; gap: 8px; margin-top: 8px; }
+.stream-drop-actions .cta-btn { padding: 4px 10px; font-size: 12px; }
+
 /* Findings card — rendered after Review completes. */
 .findings-card {
   background: var(--surface, #fff);

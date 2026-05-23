@@ -15,6 +15,7 @@ from typing import Optional
 
 import solace_architect_core
 
+from ._arg_coercion import coerce_args
 from .artifact_tools import ToolResult
 
 
@@ -172,8 +173,15 @@ async def query_integration_hub(backend_system: str) -> ToolResult:
 _ALLOWED_HOSTS = {"docs.solace.com", "solace.com", "www.solace.com"}
 
 
+@coerce_args
 async def fetch_canonical_source(url_or_topic: str, timeout: int = 30) -> ToolResult:
-    """Fetch a docs.solace.com / solace.com URL at runtime (allowlisted)."""
+    """Fetch a docs.solace.com / solace.com URL at runtime (allowlisted).
+
+    @coerce_args coerces ``timeout`` from string ("30") to int — ADK passes all
+    tool args as strings, and ``urllib.request.urlopen(timeout=…)`` rejects
+    strings with ``TypeError: 'str' object cannot be interpreted as an integer``.
+    Observed crash 2026-05-23 08:34:40 mid broker-select scope.
+    """
     url = url_or_topic
     # If it doesn't look like a URL, look up in canonical-sources.md by header text.
     if not url.startswith(("http://", "https://")):

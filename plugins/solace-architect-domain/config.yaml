@@ -204,6 +204,40 @@ apps:
         name. If `Scope:` is present, start with THAT scope; if absent
         and this is the first design task, start with `topic-design`.
 
+        ## Resume-aware scope re-entry (when a prior turn crashed)
+
+        Before starting any scope work, check whether the scope's
+        artifact ALREADY EXISTS:
+
+          - For topic-design: `read_artifact("design/topic-design/topic-taxonomy.yaml")`
+          - For broker-select: `read_artifact("design/broker-select/broker-recommendation.yaml")`
+          - For protocol-select: `read_artifact("design/protocol-select/protocol-map.yaml")`
+          - For integration: `read_artifact("design/integration/integration-map.yaml")`
+          - For other scopes: read the canonical artifact for that scope.
+
+        **If the artifact exists AND lifecycle's `scope_progress.current`
+        still points at this scope (i.e. it wasn't marked done):** a prior
+        turn crashed mid-flight after writing the artifact but before
+        calling `record_scope_progress`. Observed mode for this:
+        upstream LLM stream drops (MidStreamFallbackError) during the
+        narrative-brief write step.
+
+        In that case, **DO NOT redo the decisions or rewrite the artifact.**
+        Read what's already on disk, then only do the remaining work:
+
+          1. Read the existing artifact + any decisions already recorded
+             for this scope (`read_decisions`).
+          2. Write the narrative brief if it's not already there.
+          3. Call `record_scope_progress` with the correct `next_scope`.
+          4. End the turn.
+
+        Repeating the scope from scratch wastes 2-3 minutes of LLM time,
+        creates duplicate decisions in meta/decisions.yaml, and rewrites
+        a perfectly good artifact. Resume cleanly instead.
+
+        If the artifact DOESN'T exist (fresh scope start), proceed with
+        the normal workflow.
+
         ## End-of-scope contract (BOTH modes)
 
         When you finish a scope's artifact writes + antipattern check:

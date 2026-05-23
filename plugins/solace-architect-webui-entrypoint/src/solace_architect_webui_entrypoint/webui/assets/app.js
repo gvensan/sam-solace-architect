@@ -5338,29 +5338,43 @@
           // for a stop that worked.
           if (finId && finId === _lastCancelTaskId) _clearStopSafetyTimer();
           _clearChatInflightIfMatches(finId);
+          // A successful turn means the stream-drop retry budget refills.
+          // Without this reset, three consecutive errors during a multi-
+          // scope auto run would lock the auto-resume out for the rest of
+          // the engagement.
+          const _eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
+          if (_eid) _setAutoResumeRetries(_eid, 0);
         } else if (ev.type === "Error") {
           const msg = ev.data?.message || ev.data?.error || "(error)";
           const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
-          // Build a rich error card instead of a one-line "[error] …"
-          // The user needs (a) what failed, (b) a concrete next step,
-          // (c) an option to see technical details.
-          const errorCard = _buildErrorCard(msg, agentName, ev.data || {});
-          if (pendingAgentMsg) {
-            pendingAgentMsg.el.classList.remove("agent-thinking");
-            pendingAgentMsg.el.classList.add("agent-error");
-            pendingAgentMsg.el.innerHTML = "";
-            pendingAgentMsg.el.appendChild(errorCard);
-            pendingAgentMsg = null;
+          // Stream-drop fast-path: render the resume card + (in Auto mode)
+          // auto-dispatch with a countdown. Bypasses the generic error
+          // categoriser so the user sees an actionable card instead of
+          // "An unexpected error occurred" + a wall of guidance.
+          if (_isStreamDropError(msg)) {
+            _handleStreamDropError(agentName);
           } else {
-            const wrap = document.createElement("div");
-            wrap.className = "chat-msg agent agent-error";
-            wrap.appendChild(errorCard);
-            chatLog.appendChild(wrap);
-            chatLog.scrollTop = chatLog.scrollHeight;
+            // Build a rich error card instead of a one-line "[error] …"
+            // The user needs (a) what failed, (b) a concrete next step,
+            // (c) an option to see technical details.
+            const errorCard = _buildErrorCard(msg, agentName, ev.data || {});
+            if (pendingAgentMsg) {
+              pendingAgentMsg.el.classList.remove("agent-thinking");
+              pendingAgentMsg.el.classList.add("agent-error");
+              pendingAgentMsg.el.innerHTML = "";
+              pendingAgentMsg.el.appendChild(errorCard);
+              pendingAgentMsg = null;
+            } else {
+              const wrap = document.createElement("div");
+              wrap.className = "chat-msg agent agent-error";
+              wrap.appendChild(errorCard);
+              chatLog.appendChild(wrap);
+              chatLog.scrollTop = chatLog.scrollHeight;
+            }
+            // Clear the sticky activity bar — without this it stays pinned
+            // on "Thinking…" while the bubble shows the error message.
+            setActivityBar(null);
           }
-          // Clear the sticky activity bar — without this it stays pinned
-          // on "Thinking…" while the bubble shows the error message.
-          setActivityBar(null);
           // Error events don't carry task_id, so we can't precision-match.
           // Conservative: clear inflight unconditionally. The cost of a
           // mismatched clear here is small (user sees SEND when STOP would
@@ -5539,18 +5553,26 @@
         const finId = ev.data?.id || null;
         if (finId && finId === _lastCancelTaskId) _clearStopSafetyTimer();
         _clearChatInflightIfMatches(finId);
+        // Mirror of live-SSE: refill the stream-drop retry budget on success.
+        const _eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
+        if (_eid) _setAutoResumeRetries(_eid, 0);
       } else if (ev.type === "Error") {
         const msg = ev.data?.message || ev.data?.error || "(error)";
         const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
-        const errorCard = _buildErrorCard(msg, agentName, ev.data || {});
-        const wrap = document.createElement("div");
-        wrap.className = "chat-msg agent agent-error";
-        wrap.appendChild(errorCard);
-        chatLog.appendChild(wrap);
-        chatLog.scrollTop = chatLog.scrollHeight;
-        setActivityBar(null);
-        // Same conservative-clear rationale as the live-SSE Error path.
-        _setChatInflight("");
+        // Mirror of the live-SSE stream-drop fast-path.
+        if (_isStreamDropError(msg)) {
+          _handleStreamDropError(agentName);
+        } else {
+          const errorCard = _buildErrorCard(msg, agentName, ev.data || {});
+          const wrap = document.createElement("div");
+          wrap.className = "chat-msg agent agent-error";
+          wrap.appendChild(errorCard);
+          chatLog.appendChild(wrap);
+          chatLog.scrollTop = chatLog.scrollHeight;
+          setActivityBar(null);
+          // Same conservative-clear rationale as the live-SSE Error path.
+          _setChatInflight("");
+        }
       }
     } catch { /* malformed payload; skip */ }
   }
@@ -5804,6 +5826,178 @@
     if (_pendingAutoAdvanceTimer) {
       clearTimeout(_pendingAutoAdvanceTimer);
       _pendingAutoAdvanceTimer = null;
+    }
+  }
+
+  // ── Stream-drop auto-resume ──────────────────────────────────────────────
+  //
+  // Observed pattern (2026-05-23): upstream OpenAI streaming connection drops
+  // mid-response (MidStreamFallbackError / incomplete chunked read). SAM
+  // converts this into a user-facing Error event with messages like
+  // "The LLM service is temporarily unavailable" or "An unexpected error
+  // occurred". Previously the user saw a scary error card and had to click
+  // Continue manually. This block intercepts the error, renders a focused
+  // resume card, and (in Auto mode) auto-dispatches a resume kickoff after a
+  // brief countdown. Retries are capped to prevent flapping loops.
+
+  const MAX_AUTO_RESUMES = 3;
+  const RESUME_KICKOFF_TEXT = (
+    "Continue — the prior turn ended with an upstream LLM stream drop or " +
+    "transient unavailability.\n\n" +
+    "Pick up where you left off. If this scope's artifact already exists on " +
+    "disk, read it first and only do the remaining work (narrative + " +
+    "record_scope_progress). Don't redo decisions or rewrite artifacts that " +
+    "are already there."
+  );
+
+  // Detect any transient LLM-side failure mode where the agent's task
+  // crashed mid-work but partial progress (decisions, artifacts) is on
+  // disk. Same recovery flow works for all of these — re-dispatch and
+  // let the agent resume from on-disk state.
+  function _isTransientLLMError(msg) {
+    const m = (msg || "").toLowerCase();
+    return (
+      // Upstream provider dropped the streaming response mid-flight
+      m.includes("midstreamfallbackerror")
+      || m.includes("incomplete chunked read")
+      || m.includes("peer closed connection")
+      // SAM's friendly rewrites of the above
+      || m.includes("service is temporarily unavailable")
+      || m.includes("unexpected error occurred")
+      // Model hit its max-output-tokens cap mid-tool-call. ADK reports this
+      // as "Last event shouldn't be partial. LLM max output limit may be
+      // reached." Observed 2026-05-22 23:40:50, Domain agent.
+      || m.includes("last event shouldn't be partial")
+      || m.includes("llm max output limit")
+    );
+  }
+  // Back-compat alias — earlier code (and future PRs being rebased) may
+  // still reference the narrower name. Keep as a thin alias rather than
+  // a separate function so they can't drift.
+  const _isStreamDropError = _isTransientLLMError;
+
+  function _autoResumeKey(eid) { return `sa.resume_retries.${eid}`; }
+  function _getAutoResumeRetries(eid) {
+    if (!eid) return 0;
+    try { return parseInt(localStorage.getItem(_autoResumeKey(eid)) || "0", 10) || 0; }
+    catch { return 0; }
+  }
+  function _setAutoResumeRetries(eid, n) {
+    if (!eid) return;
+    try {
+      if (n <= 0) localStorage.removeItem(_autoResumeKey(eid));
+      else localStorage.setItem(_autoResumeKey(eid), String(n));
+    } catch {}
+  }
+
+  // Held at module scope so Pause / Resume now can cancel an in-flight countdown.
+  let _pendingAutoResumeTimer = null;
+  function _cancelPendingAutoResume() {
+    if (_pendingAutoResumeTimer) {
+      clearTimeout(_pendingAutoResumeTimer);
+      _pendingAutoResumeTimer = null;
+    }
+  }
+
+  // Real agent names available for pinning. Used to refuse pinning against
+  // the placeholder fallback ("the agent") that _extractRespondingAgent can
+  // return when the Error event lacks an agent attribution.
+  const _PINNABLE_AGENTS = new Set([
+    "SAOrchestratorAgent", "SADiscoveryAgent", "SADomainAgent",
+    "SAArchitectReviewerAgent", "SADeveloperReviewerAgent",
+    "SAOpsReviewerAgent", "SASecurityReviewerAgent",
+    "SAValidationAgent", "SAEventPortalAgent", "SABlueprintAgent",
+  ]);
+
+  function _renderStreamDropResumeCard(agentName, retries, autoMode) {
+    const card = document.createElement("div");
+    card.className = "chat-msg agent stream-drop-card";
+    const remaining = MAX_AUTO_RESUMES - retries;
+    const willAutoResume = autoMode && remaining > 0;
+    const statusLine = willAutoResume
+      ? `<p class="stream-drop-countdown">Auto-resuming in <span class="stream-drop-secs">8</span>s… (attempt ${retries + 1} of ${MAX_AUTO_RESUMES})</p>`
+      : (autoMode
+          ? `<p class="muted">Auto-resume cap reached (${MAX_AUTO_RESUMES} attempts). Click <strong>Resume now</strong> to try once more, or check <code>sam/sam.log</code> if this keeps happening.</p>`
+          : `<p class="muted">Click <strong>Resume now</strong> to continue.</p>`);
+    const pauseBtn = willAutoResume
+      ? `<button type="button" class="cta-btn cta-btn-secondary stream-drop-pause">Pause Auto</button>`
+      : ``;
+    card.innerHTML = `
+      <div class="stream-drop-header">
+        <span class="stream-drop-icon">⚠</span>
+        <span class="stream-drop-title">Upstream LLM stream dropped</span>
+      </div>
+      <div class="stream-drop-body">
+        <p>${escapeHtml(agentName)} got an incomplete response from the LLM provider mid-turn. This is a provider-side hiccup, not a SAM error.</p>
+        <p class="muted">Any artifact ${escapeHtml(agentName)} already wrote in this turn is on disk and will be reused — the resume picks up from there, not from scratch.</p>
+        ${statusLine}
+      </div>
+      <div class="stream-drop-actions">
+        ${pauseBtn}
+        <button type="button" class="cta-btn stream-drop-now">Resume now</button>
+      </div>
+    `;
+    return card;
+  }
+
+  function _handleStreamDropError(agentName) {
+    const eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
+    const retries = _getAutoResumeRetries(eid);
+    const autoMode = (typeof isAutoModeActive === "function") ? isAutoModeActive(eid) : false;
+    const willAutoResume = autoMode && retries < MAX_AUTO_RESUMES;
+    const card = _renderStreamDropResumeCard(agentName, retries, autoMode);
+
+    // Replace any pending agent bubble or append fresh
+    if (pendingAgentMsg) {
+      pendingAgentMsg.el.classList.remove("agent-thinking");
+      pendingAgentMsg.el.innerHTML = "";
+      pendingAgentMsg.el.appendChild(card);
+      pendingAgentMsg = null;
+    } else {
+      chatLog.appendChild(card);
+    }
+    chatLog.scrollTop = chatLog.scrollHeight;
+    setActivityBar(null);
+    _setChatInflight("");
+
+    const dispatch = () => {
+      _cancelPendingAutoResume();
+      _setAutoResumeRetries(eid, retries + 1);
+      // Pin the dispatch to the agent that errored — only if it's a real
+      // SA agent name (not the "the agent" placeholder fallback).
+      if (agentName && _PINNABLE_AGENTS.has(agentName) && window.__setPendingDispatchAgent) {
+        window.__setPendingDispatchAgent(agentName);
+      }
+      const ci = document.getElementById("chat-input");
+      if (ci) {
+        ci.value = RESUME_KICKOFF_TEXT;
+        chatForm?.requestSubmit?.();
+      }
+      card.remove();
+    };
+
+    card.querySelector(".stream-drop-now")?.addEventListener("click", dispatch);
+    card.querySelector(".stream-drop-pause")?.addEventListener("click", () => {
+      _cancelPendingAutoResume();
+      if (eid && typeof setAutoMode === "function") setAutoMode(eid, false);
+      const body = card.querySelector(".stream-drop-body");
+      if (body) {
+        body.innerHTML = `<p class="muted">Auto mode paused. Click <strong>Resume now</strong> to continue manually.</p>`;
+      }
+      card.querySelector(".stream-drop-pause")?.remove();
+    });
+
+    if (willAutoResume) {
+      let secs = 8;
+      const secsEl = card.querySelector(".stream-drop-secs");
+      _cancelPendingAutoResume();
+      const tick = () => {
+        secs--;
+        if (secsEl) secsEl.textContent = String(secs);
+        if (secs <= 0) dispatch();
+        else _pendingAutoResumeTimer = setTimeout(tick, 1000);
+      };
+      _pendingAutoResumeTimer = setTimeout(tick, 1000);
     }
   }
 

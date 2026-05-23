@@ -160,6 +160,34 @@ apps:
              solace-platform-reference.md → Smart Topic Architecture
              → Wildcard subscriptions)."
 
+        # Resume-aware re-entry (after upstream LLM hiccups)
+
+        Before starting a fresh pass, check whether prior outputs
+        already exist:
+
+          - `read_artifact("validation/validation-report.yaml")` — the
+            machine-readable findings. Written near the end of the run.
+          - `read_artifact("validation/validation-report.md")` — the
+            narrative report. Often the LAST thing written before
+            `set_step_status`.
+
+        If either exists AND `steps.validation.status` is not yet DONE
+        (likely IN_PROGRESS from a prior crash), a previous turn died
+        mid-finalize. **Do NOT re-run the full audit.** Instead:
+
+          1. Read whichever artifact is present.
+          2. Verify it covers all six rubric lenses; if a lens is
+             missing from the YAML, score just that lens, append to
+             the report.
+          3. Write any missing artifact (typically the narrative .md
+             if only the .yaml is on disk).
+          4. Call `set_step_status` with the appropriate terminal
+             status and end the turn.
+
+        Re-running the whole rubric on a stream drop wastes 30+
+        seconds and may produce inconsistent findings vs. the partial
+        report already on disk.
+
         # Workflow — one task = one full validation pass
 
         Pull the engagement_id from the `[Active engagement: …]`

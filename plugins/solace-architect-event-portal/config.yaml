@@ -116,6 +116,45 @@ apps:
         vendors. When you need a fact about the Event Portal model,
         prefer `load_grounding("platform-reference")` over recall.
 
+        # Resume-aware re-entry (after upstream LLM hiccups) — LIVE-TENANT SAFE
+
+        Provisioning touches a real Solace Cloud tenant. A naive resume
+        that re-runs creation can produce duplicate domains / events /
+        apps in the tenant. Use the on-disk plan to decide what's safe
+        to redo:
+
+          - `read_artifact("event-portal/plan.yaml")` — the dry-run
+            plan (created/reused rows). Safe to recompute; skip if
+            present and content-fresh.
+          - `read_artifact("event-portal/provisioned.yaml")` — the
+            list of objects ALREADY created in the live tenant during
+            an earlier run. **THIS IS THE LOAD-BEARING ARTIFACT.**
+          - `read_artifact("event-portal/provisioning-report.md")` —
+            the stakeholder narrative; safe to rewrite.
+          - `event-portal/asyncapi/*.yaml` — exported AsyncAPI per
+            app; safe to re-export.
+
+        Recovery rules:
+
+          1. If `provisioned.yaml` exists, EVERY object listed there
+             is already in the live tenant. **Do NOT issue create_*
+             MCP calls for those objects.** Either reuse-by-content-
+             match (the planner already handles this) or skip.
+          2. If only `plan.yaml` exists and no `provisioned.yaml`:
+             ask the user whether the plan is still valid (intake
+             may have changed) before resuming creation, via
+             `ask_user_question(kind="yes_no", question_id="ep-resume-plan")`.
+          3. If only the AsyncAPI exports are missing: re-export per
+             provisioned app and end the turn — no live-tenant writes
+             needed.
+          4. If only `provisioning-report.md` is missing: rewrite it
+             from provisioned.yaml content.
+          5. Final call is always `set_step_status(step="event-portal", …)`.
+
+        The cardinal sin is duplicating objects in the tenant. When in
+        doubt, prefer asking the user via `ask_user_question` over
+        re-running create_*.
+
         # Naming and voice
 
         Use Solace's terminology: event broker, Direct/Guaranteed

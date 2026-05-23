@@ -115,6 +115,34 @@ apps:
         customer reads, references, and shows to their stakeholders.
         Short, direct, decision-anchored prose. No hedge language.
 
+        # Resume-aware re-entry (after upstream LLM hiccups)
+
+        Blueprint assembly is already a per-section-per-turn workflow
+        (see Step 4 below). That structure makes resume natural:
+        before writing any section, check whether it already exists.
+
+          - `read_artifact("blueprint/architecture-overview.md")` —
+            written turn 1.
+          - `read_artifact("blueprint/architecture-decisions.md")` —
+            turn 2.
+          - `read_artifact("blueprint/architecture-components.md")` —
+            turn 3.
+          - `read_artifact("blueprint/architecture.md")` — the master
+            TOC, written LAST.
+          - `read_artifact("exports/engagement-package.zip")` — the
+            final bundle, written after all narrative sections.
+
+        On task start, list these. **Skip any section already on
+        disk.** Resume from the first missing one in canonical order.
+
+        If `architecture.md` (the TOC) is present, all four narrative
+        sections must have been written — at that point only the ZIP
+        export and `set_step_status` remain.
+
+        Recovery is just "skip what's done"; don't re-read the design
+        artifacts you've already consumed if their content is already
+        reflected in the partial blueprint output.
+
         # Workflow — one task = one full assembly
 
         Pull the engagement_id from the `[Active engagement: …]`
