@@ -3567,6 +3567,39 @@
   }
   document.getElementById("chat-load-history")?.addEventListener("click", loadHistoryForCurrentContext);
 
+  // Helper: drop the in-memory ADK session for this engagement and start a
+  // brand-new one. On-disk artifacts/decisions/scope_progress are
+  // untouched. Used by the chat-header button AND the stream-drop /
+  // error-card recovery flows. The new session id encodes the timestamp
+  // so the next /api/chat/message POST hits a clean ADK session — SAM's
+  // PERSISTENT session_service keys off this id.
+  function startFreshChatSession() {
+    chatSessionId = `chat-${currentProjectId() || "x"}-${Date.now()}`;
+    // Tear down the live SSE stream so the next dispatch opens a fresh one
+    // bound to the new session id. Without this, an EventSource left open
+    // on the old session continues receiving (now-orphaned) events.
+    if (chatEventSource) {
+      try { chatEventSource.close(); } catch { /* defensive */ }
+      chatEventSource = null;
+    }
+    // Cancel any in-flight task tracking — the running task (if any)
+    // continues server-side, but its FinalResponse can no longer reach
+    // this page (SSE stream just closed). Without this, the SEND/STOP
+    // button stays armed on a task we'll never hear back from.
+    if (typeof _setChatInflight === "function") _setChatInflight("");
+    if (typeof _cancelPendingAutoResume === "function") _cancelPendingAutoResume();
+    if (typeof _cancelPendingAutoAdvance === "function") _cancelPendingAutoAdvance();
+    // Reset stream-drop retry counter — fresh session = fresh budget.
+    const _eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
+    if (_eid && typeof _setAutoResumeRetries === "function") _setAutoResumeRetries(_eid, 0);
+    chatLog.innerHTML = "";
+    appendChatMessage(
+      "agent",
+      "Started a fresh chat session. On-disk artifacts, decisions, and scope progress are preserved — pick up wherever you left off.",
+    );
+  }
+  document.getElementById("chat-new-session")?.addEventListener("click", startFreshChatSession);
+
   // Pull user-visible text out of an A2A event. Walks status.message.parts
   // and any Task-level artifacts; ignores non-text parts (DataPart/FilePart
   // are tool-call internals, surfaced separately via extractDataParts).
@@ -5351,7 +5384,9 @@
           // auto-dispatch with a countdown. Bypasses the generic error
           // categoriser so the user sees an actionable card instead of
           // "An unexpected error occurred" + a wall of guidance.
-          if (_isStreamDropError(msg)) {
+          // Pass the full data object so the helper can consume the
+          // backend-emitted category / auto_retryable fields when present.
+          if (_isStreamDropError(ev.data || msg)) {
             _handleStreamDropError(agentName);
           } else {
             // Build a rich error card instead of a one-line "[error] …"
@@ -5559,8 +5594,9 @@
       } else if (ev.type === "Error") {
         const msg = ev.data?.message || ev.data?.error || "(error)";
         const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
-        // Mirror of the live-SSE stream-drop fast-path.
-        if (_isStreamDropError(msg)) {
+        // Mirror of the live-SSE stream-drop fast-path (passes full data
+        // so the helper can prefer the backend-classified category).
+        if (_isStreamDropError(ev.data || msg)) {
           _handleStreamDropError(agentName);
         } else {
           const errorCard = _buildErrorCard(msg, agentName, ev.data || {});
@@ -5756,16 +5792,7 @@
     });
     card.querySelector(".agent-error-cta")?.addEventListener("click", (e) => {
       const action = e.currentTarget.dataset.action;
-      if (action === "fresh-session") {
-        // Bump the session id and clear chat-log to force a brand-new
-        // ADK session on the next message. Keeps engagement_id but
-        // drops the in-memory PERSISTENT session state.
-        if (typeof chatSessionId !== "undefined") {
-          chatSessionId = `chat-${currentProjectId() || "x"}-${Date.now()}`;
-        }
-        chatLog.innerHTML = "";
-        appendChatMessage("agent", "Started a new chat session. Prior artifacts and decisions are still on disk — you can resume any phase from the Progress page.");
-      }
+      if (action === "fresh-session") startFreshChatSession();
     });
     return card;
   }
@@ -5854,8 +5881,24 @@
   // crashed mid-work but partial progress (decisions, artifacts) is on
   // disk. Same recovery flow works for all of these — re-dispatch and
   // let the agent resume from on-disk state.
-  function _isTransientLLMError(msg) {
-    const m = (msg || "").toLowerCase();
+  //
+  // Now accepts the full error-event data so we can prefer the gateway-
+  // emitted ``category`` / ``auto_retryable`` codes when present (set by
+  // the backend's error_classifier). Falls back to substring matching on
+  // the message for older paths and any future error sources we haven't
+  // wired through the classifier.
+  function _isTransientLLMError(msgOrEvData) {
+    // Backend-classified path — most reliable
+    if (msgOrEvData && typeof msgOrEvData === "object") {
+      if (msgOrEvData.auto_retryable === true) return true;
+      // Some non-transient categories (context_limit, authentication, etc.)
+      // explicitly should NOT trigger auto-resume even if the message looks
+      // similar. Respect the backend classification when present.
+      if (msgOrEvData.category && msgOrEvData.auto_retryable === false) return false;
+      // Fall through to message-based check if no category was assigned.
+      msgOrEvData = msgOrEvData.message || msgOrEvData.error || "";
+    }
+    const m = (msgOrEvData || "").toLowerCase();
     return (
       // Upstream provider dropped the streaming response mid-flight
       m.includes("midstreamfallbackerror")
@@ -5875,6 +5918,11 @@
   // still reference the narrower name. Keep as a thin alias rather than
   // a separate function so they can't drift.
   const _isStreamDropError = _isTransientLLMError;
+  // (Removed _isSessionFullError — context-limit errors already route
+  // through _buildErrorCard's "Context limit" branch which surfaces the
+  // fresh-session CTA, so a dedicated helper had no caller. The
+  // auto_retryable=false short-circuit in _isTransientLLMError covers
+  // the don't-auto-retry case.)
 
   function _autoResumeKey(eid) { return `sa.resume_retries.${eid}`; }
   function _getAutoResumeRetries(eid) {
@@ -5914,13 +5962,21 @@
     card.className = "chat-msg agent stream-drop-card";
     const remaining = MAX_AUTO_RESUMES - retries;
     const willAutoResume = autoMode && remaining > 0;
+    // When retries are exhausted (or we're already on the 2nd+ retry of a
+    // run that hasn't yet finished a turn) the failure is likely structural
+    // (e.g. context-window saturation from a persistent session), not a
+    // one-off stream drop. Offer the fresh-session escape hatch.
+    const offerFreshSession = retries >= 1;
     const statusLine = willAutoResume
       ? `<p class="stream-drop-countdown">Auto-resuming in <span class="stream-drop-secs">8</span>s… (attempt ${retries + 1} of ${MAX_AUTO_RESUMES})</p>`
       : (autoMode
-          ? `<p class="muted">Auto-resume cap reached (${MAX_AUTO_RESUMES} attempts). Click <strong>Resume now</strong> to try once more, or check <code>sam/sam.log</code> if this keeps happening.</p>`
-          : `<p class="muted">Click <strong>Resume now</strong> to continue.</p>`);
+          ? `<p class="muted">Auto-resume cap reached (${MAX_AUTO_RESUMES} attempts). Click <strong>Resume now</strong> to try once more — or, if this keeps happening, <strong>Start fresh session</strong> usually unsticks it (the in-memory agent session may be saturated).</p>`
+          : `<p class="muted">Click <strong>Resume now</strong> to continue${offerFreshSession ? " — or <strong>Start fresh session</strong> if retries aren't getting through" : ""}.</p>`);
     const pauseBtn = willAutoResume
       ? `<button type="button" class="cta-btn cta-btn-secondary stream-drop-pause">Pause Auto</button>`
+      : ``;
+    const freshBtn = offerFreshSession
+      ? `<button type="button" class="cta-btn cta-btn-secondary stream-drop-fresh-session">Start fresh session</button>`
       : ``;
     card.innerHTML = `
       <div class="stream-drop-header">
@@ -5934,6 +5990,7 @@
       </div>
       <div class="stream-drop-actions">
         ${pauseBtn}
+        ${freshBtn}
         <button type="button" class="cta-btn stream-drop-now">Resume now</button>
       </div>
     `;
@@ -5985,6 +6042,10 @@
         body.innerHTML = `<p class="muted">Auto mode paused. Click <strong>Resume now</strong> to continue manually.</p>`;
       }
       card.querySelector(".stream-drop-pause")?.remove();
+    });
+    card.querySelector(".stream-drop-fresh-session")?.addEventListener("click", () => {
+      _cancelPendingAutoResume();
+      startFreshChatSession();   // also drops the card via chatLog.innerHTML = ""
     });
 
     if (willAutoResume) {

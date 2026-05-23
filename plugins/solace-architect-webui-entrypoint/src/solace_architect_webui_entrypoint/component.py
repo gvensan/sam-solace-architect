@@ -37,6 +37,16 @@ from a2a.types import (
     TextPart,
 )
 
+from solace_architect_webui_entrypoint._sse_persistence import (
+    DEFAULT_CLEANUP_INTERVAL_SECONDS as _SSE_DEFAULT_CLEANUP_INTERVAL,
+    DEFAULT_SNAPSHOT_TTL_SECONDS as _SSE_DEFAULT_SNAPSHOT_TTL,
+    cleanup_stale_snapshots as _sse_snapshot_cleanup,
+    is_terminal_event as _is_terminal_sse_event,
+    load_snapshot as _load_sse_snapshot,
+    run_periodic_cleanup as _run_sse_snapshot_rotation,
+    write_snapshot as _write_sse_snapshot,
+)
+from solace_architect_webui_entrypoint.error_classifier import classify as _classify_error
 from solace_architect_webui_entrypoint.auth import (
     AuthState, add_auth_routes, ensure_initialized, install_middleware,
 )
@@ -157,15 +167,60 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         # Created lazily on the HTTP loop thread; cross-thread access uses run_coroutine_threadsafe.
         self._sse_queues: Dict[str, asyncio.Queue] = {}
 
-        # Per-session replay buffer — last 100 events, indexed by monotonic id.
+        # Per-session replay buffer — last N events, indexed by monotonic id.
         # Required for SSE Last-Event-Id reconnection: when the browser drops
         # and reconnects (proxy timeout, tab throttling, network blip), it
         # sends Last-Event-Id and we replay every event newer than that id.
         # Without this, the only recovery is the heavy "RESULT NOT RECEIVED"
         # card — a 5-second disconnect costs the user a full state reload.
+        #
+        # ``WEBUI_REPLAY_BUFFER_SIZE`` env var lets ops tune the per-session
+        # cap (default 100). Bumping to e.g. 1000 helps under high-rate
+        # streaming agents at the cost of memory; lowering to 20 trims
+        # memory for stable, low-throughput deployments.
         from collections import deque as _deque
         self._sse_replay: Dict[str, "_deque"] = {}
         self._sse_next_id: Dict[str, int] = {}
+        try:
+            self._replay_buffer_size = int(os.environ.get("WEBUI_REPLAY_BUFFER_SIZE", "100"))
+        except ValueError:
+            self._replay_buffer_size = 100
+        if self._replay_buffer_size < 1:
+            self._replay_buffer_size = 100
+        log.info(
+            "%s SSE replay buffer size: %d events per session (WEBUI_REPLAY_BUFFER_SIZE)",
+            self.log_identifier, self._replay_buffer_size,
+        )
+
+        # Per-session drop counter — increments every time the replay buffer
+        # overflows (oldest event evicted to make room). Surfaced via the
+        # ``GET /api/_internal/sse-stats`` endpoint for ops visibility, and
+        # logged every Nth drop (with cumulative count) so a flapping client
+        # doesn't spam logs but the issue stays visible.
+        self._sse_drop_counts: Dict[str, int] = {}
+        self._SSE_DROP_LOG_EVERY = 25      # log on 1st, 25th, 50th… drop per session
+
+        # Snapshot rotation knobs. TTL defaults to 48h of replayable history;
+        # cleanup runs once on startup and every interval thereafter. Tuned
+        # via env so ops can lengthen/shorten without a code change.
+        try:
+            self._sse_snapshot_ttl = int(
+                os.environ.get("WEBUI_SSE_SNAPSHOT_TTL_SECONDS",
+                               str(_SSE_DEFAULT_SNAPSHOT_TTL)),
+            )
+        except ValueError:
+            self._sse_snapshot_ttl = _SSE_DEFAULT_SNAPSHOT_TTL
+        if self._sse_snapshot_ttl < 60:        # disallow nonsense values
+            self._sse_snapshot_ttl = _SSE_DEFAULT_SNAPSHOT_TTL
+        try:
+            self._sse_cleanup_interval = int(
+                os.environ.get("WEBUI_SSE_CLEANUP_INTERVAL_SECONDS",
+                               str(_SSE_DEFAULT_CLEANUP_INTERVAL)),
+            )
+        except ValueError:
+            self._sse_cleanup_interval = _SSE_DEFAULT_CLEANUP_INTERVAL
+        if self._sse_cleanup_interval < 60:
+            self._sse_cleanup_interval = _SSE_DEFAULT_CLEANUP_INTERVAL
 
         # aiohttp web objects (set in _start_listener's worker thread)
         self._app: Optional[web.Application] = None
@@ -174,6 +229,11 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         self._http_loop: Optional[asyncio.AbstractEventLoop] = None   # the HTTP thread's loop
         self._http_thread: Optional[threading.Thread] = None
         self._http_ready = threading.Event()                          # signals listener up
+        # Background task that rotates SSE-replay snapshot files on a schedule.
+        # Created in _start_listener once the HTTP loop is running; cancelled
+        # in _stop_listener so the shutdown coroutine doesn't deadlock waiting
+        # for the loop's sleep.
+        self._sse_rotation_task: Optional[asyncio.Task] = None
 
     # ---------- SAM-required lifecycle hooks ----------
 
@@ -273,6 +333,11 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 # Health probes (unauthenticated)
                 self._app.router.add_get("/health",  self._health)
                 self._app.router.add_get("/ready",   self._ready)
+                # Ops introspection — live SSE queue + replay state per
+                # session, plus cumulative drop counts. Unauthenticated;
+                # served only over loopback in typical deployments via the
+                # network policy. JSON output keeps it scriptable.
+                self._app.router.add_get("/api/_internal/sse-stats", self._sse_stats)
                 # Serve rendered export files (audience-pack HTML, package
                 # ZIP, etc.) as raw bytes with correct Content-Type. The
                 # render endpoints return ABSOLUTE filesystem paths from
@@ -310,6 +375,24 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 log.info("%s %s", self.log_identifier, _banner)
                 log.info("%s  WebUI ready → %s", self.log_identifier, _browser_url)
                 log.info("%s %s", self.log_identifier, _banner)
+                # GC stale SSE-replay snapshots immediately so a stale dir
+                # doesn't hang around if the gateway was down longer than
+                # the TTL. Best-effort; never blocks startup.
+                _ttl = self._sse_snapshot_ttl
+                try:
+                    _sse_snapshot_cleanup(_ttl)
+                except Exception:    # noqa: BLE001
+                    log.debug("%s SSE snapshot cleanup raised on startup",
+                              self.log_identifier, exc_info=True)
+                # Schedule periodic rotation on the HTTP loop. Files older
+                # than the TTL get unlinked every interval; the task is
+                # cancelled cleanly in _stop_listener.
+                self._sse_rotation_task = loop.create_task(
+                    _run_sse_snapshot_rotation(
+                        max_age_seconds=_ttl,
+                        interval_seconds=self._sse_cleanup_interval,
+                    ),
+                )
                 self._http_ready.set()
 
                 loop.run_forever()    # serve requests until _stop_listener triggers loop.stop
@@ -334,6 +417,18 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
             return
 
         async def _shutdown() -> None:
+            # Cancel the snapshot-rotation task FIRST so the asyncio.sleep
+            # in run_periodic_cleanup doesn't keep the loop alive past
+            # site/runner teardown. CancelledError is expected and swallowed.
+            if self._sse_rotation_task and not self._sse_rotation_task.done():
+                self._sse_rotation_task.cancel()
+                try:
+                    await self._sse_rotation_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:    # noqa: BLE001 — never let cleanup mask shutdown
+                    log.exception("%s Error during SSE rotation task shutdown",
+                                  self.log_identifier)
             if self._site:
                 await self._site.stop()
             if self._runner:
@@ -492,11 +587,20 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
             except Exception:    # noqa: BLE001 — never let status-write failure mask the error
                 log.exception("%s [error_id=%s] failed to mark engagement steps BLOCKED",
                               self.log_identifier, error_id)
+        # Classify the error so the frontend can switch on a stable category
+        # code (e.g. "context_limit", "rate_limit", "stream_drop") rather than
+        # pattern-matching the user-facing message string. SAM's friendly
+        # strings are the source of truth — see error_classifier._PATTERNS for
+        # the mapping rationale.
+        classification = _classify_error(error_data.message or "")
         await self._enqueue_sse(external_request_context, {
             "type": "Error",
             "data": {"code": error_data.code, "message": error_data.message,
                      "data": getattr(error_data, "data", None),
-                     "error_id": error_id},
+                     "error_id": error_id,
+                     "category": classification["category"],
+                     "severity": classification["severity"],
+                     "auto_retryable": classification["auto_retryable"]},
         })
 
     # ---------- HTTP handlers ----------
@@ -691,6 +795,13 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         1-3 LLM calls' worth of tokens (better than letting the agent run
         to completion, but not free).
 
+        Peer sub-task cancellation is automatic: when the cancel reaches the
+        target agent (e.g. SAOrchestratorAgent), SAM's runner calls
+        ``_propagate_cancellation_to_peers`` (runner.py:1413) which walks
+        the task context's ``active_peer_sub_tasks`` and publishes cancel
+        for each. Verified 2026-05-23 — we don't need to track child task
+        IDs at the gateway layer.
+
         Returns True if the cancel request was published; False if the task
         context can't be found (already finalized, never existed, or
         belongs to a different session).
@@ -791,6 +902,51 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
             headers={"Cache-Control": "no-store"},
         )
 
+    async def _sse_stats(self, request: web.Request) -> web.Response:
+        """Internal ops endpoint: per-session SSE queue + replay + drop state.
+
+        Returns one row per known session: queue depth, replay buffer fill,
+        cumulative drop count, last event id. Drop counts persist for the
+        process lifetime; restart resets them. Use this to detect proxy
+        timeout / tab-throttling issues without trawling sam.log.
+
+        Access restricted to loopback by default — the payload reveals
+        active session IDs (information disclosure if WEBUI_HOST is
+        public). Override with ``WEBUI_SSE_STATS_PUBLIC=1`` if you have
+        front-end auth in place (e.g. behind an authenticated proxy).
+        """
+        if os.environ.get("WEBUI_SSE_STATS_PUBLIC", "").lower() not in ("1", "true", "yes"):
+            # Aiohttp exposes the remote peer's IP via request.remote.
+            # For TCP requests this is the connecting host's address;
+            # over a reverse proxy it'll be the proxy's loopback IP.
+            remote = request.remote or ""
+            if remote not in ("127.0.0.1", "::1", "localhost"):
+                return web.json_response(
+                    {"error": "loopback-only endpoint; set WEBUI_SSE_STATS_PUBLIC=1 to override"},
+                    status=403, headers={"Cache-Control": "no-store"},
+                )
+        sessions: list[dict] = []
+        for sid, queue in self._sse_queues.items():
+            replay = self._sse_replay.get(sid)
+            sessions.append({
+                "session_id": sid,
+                "queue_depth": queue.qsize() if queue else 0,
+                "replay_size": len(replay) if replay else 0,
+                "replay_cap": replay.maxlen if replay else self._replay_buffer_size,
+                "last_event_id": self._sse_next_id.get(sid, 0),
+                "drops": self._sse_drop_counts.get(sid, 0),
+            })
+        return web.json_response(
+            {
+                "replay_buffer_size_config": self._replay_buffer_size,
+                "drop_log_every_n": self._SSE_DROP_LOG_EVERY,
+                "sessions": sessions,
+                "total_sessions": len(sessions),
+                "total_drops": sum(self._sse_drop_counts.values()),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
     async def _agents_list(self, request: web.Request) -> web.Response:
         """List agents currently discovered on the SAM mesh (for the chat picker)."""
         default_name = self.get_config("default_agent_name") or ""
@@ -829,7 +985,31 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         from collections import deque
         session_id = request.match_info["session_id"]
         queue = self._sse_queues.setdefault(session_id, asyncio.Queue())
-        replay = self._sse_replay.setdefault(session_id, deque(maxlen=100))
+        replay = self._sse_replay.setdefault(
+            session_id, deque(maxlen=self._replay_buffer_size),
+        )
+        # Cold-start recovery: if this is a brand-new session deque (gateway
+        # just restarted, or user is reconnecting after session_ttl_seconds
+        # GC'd the in-memory state), hydrate from the on-disk snapshot. The
+        # snapshot is only written on terminal events (see below), so it
+        # captures the agent's last reply — exactly what a reconnecting
+        # user needs to see.
+        if not replay and self._sse_next_id.get(session_id, 0) == 0:
+            persisted = _load_sse_snapshot(session_id)
+            if persisted:
+                # Preserve the original monotonic ids so Last-Event-Id replay
+                # downstream still works (the client's stored id is what it
+                # sent the last time we delivered to it).
+                for ev_id, event in persisted[-replay.maxlen:]:
+                    replay.append((ev_id, event))
+                # Bump the next-id counter past the highest restored id so
+                # new live events don't collide.
+                self._sse_next_id[session_id] = persisted[-1][0]
+                log.info(
+                    "%s SSE: hydrated %d events from disk for session=%s "
+                    "(cold-start recovery)",
+                    self.log_identifier, len(persisted), session_id,
+                )
 
         resp = web.StreamResponse(status=200, headers={
             "Content-Type": "text/event-stream",
@@ -869,6 +1049,21 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                     break
                 ev_id = self._sse_next_id.get(session_id, 0) + 1
                 self._sse_next_id[session_id] = ev_id
+                # Track replay-buffer overflows. A deque at maxlen evicts
+                # silently on append; we count those evictions so ops can
+                # detect "the client is gone for so long we've already
+                # forgotten events it'll need on reconnect." Logged every
+                # _SSE_DROP_LOG_EVERY-th drop per session so a long-idle
+                # session under heavy stream load doesn't spam.
+                if len(replay) == replay.maxlen:
+                    drops = self._sse_drop_counts.get(session_id, 0) + 1
+                    self._sse_drop_counts[session_id] = drops
+                    if drops == 1 or drops % self._SSE_DROP_LOG_EVERY == 0:
+                        log.warning(
+                            "%s SSE replay buffer overflow for session=%s: %d events evicted (buffer cap=%d). "
+                            "Client reconnects beyond this point will miss the oldest events.",
+                            self.log_identifier, session_id, drops, replay.maxlen,
+                        )
                 replay.append((ev_id, event))
                 payload = _safe_json_dumps(event)
                 await resp.write(
@@ -876,6 +1071,18 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 )
                 if event.get("final") or event.get("type") in ("FinalResponse", "Error"):
                     await resp.write(b"event: complete\ndata: {}\n\n")
+                # Persist the replay snapshot on terminal events. The disk
+                # snapshot is what cold-start hydration above reads. Skip on
+                # mid-stream events to avoid burning I/O on every chunk —
+                # FinalResponse/Error/final-marked are the moments the
+                # replay buffer matters most for resume.
+                if _is_terminal_sse_event(event):
+                    # Snapshot off the event loop's hot path. asyncio.to_thread
+                    # is available on Py 3.9+; we're on 3.12. Failure inside
+                    # the thread is logged in _write_sse_snapshot; never raises.
+                    asyncio.create_task(
+                        asyncio.to_thread(_write_sse_snapshot, session_id, list(replay)),
+                    )
         except (asyncio.CancelledError, ConnectionResetError):
             pass
         finally:
