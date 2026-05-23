@@ -53,6 +53,23 @@ Before generating any user-visible output:
 4. Read prior `meta/decisions.yaml` via
    `read_decisions(engagement_id, user_id=<from header>)` so you
    don't propose decisions that conflict with ones already made.
+5. Read `read_session_state(engagement_id)` — yields
+   `execution_mode` (auto | interactive), the intake-time
+   preference. This is the DEFAULT mode for this task; a `Mode:`
+   marker in the first message overrides it for this task only.
+
+# Effective mode
+
+Resolve in this order — stop at the first hit:
+
+1. `Mode: auto|interactive` in the FIRST message — explicit
+   per-task override.
+2. `session.execution_mode` from step 5 of first-turn — the
+   intake-time preference. Honors a user's intake choice when
+   they later type free-form ("continue", "proceed", "next
+   scope") with no `Mode:` marker.
+3. Default `interactive` — safety net for malformed engagements
+   only (session is set by intake submission).
 
 # Scope selection
 

@@ -95,13 +95,18 @@ apps:
            `record_decision`, `read_decisions`, `record_open_item`, `read_open_items`,
            `record_feedback`, `list_projects`, `set_step_status`. NOT storage-scoped:
            `load_preamble`, `load_jargon_list`, `load_grounding`, `record_grounding_gap`,
-           `fetch_canonical_source`, `query_integration_hub`, `ask_user_question`.
+           `fetch_canonical_source`, `query_integration_hub`, `ask_user_question`,
+           `read_session_state`.
         1. `load_preamble()` (Decision 83) — non-negotiable rules.
         2. `load_jargon_list()` — gloss EDA/Solace terms on first use.
         3. `read_artifact(engagement_id, "discovery/discovery-brief.yaml",
            user_id=<from header>)` — input; never re-ask what Discovery answered.
         4. `read_decisions(engagement_id, user_id=<from header>)` — avoid conflicts
            with prior decisions.
+        5. `read_session_state(engagement_id)` — yields `execution_mode` (auto |
+           interactive). This is the intake-time preference and is the DEFAULT
+           mode for this task; a `Mode:` marker in the first message overrides
+           it for the current task only.
 
         # Scope selection
         Canonical order (skip scopes the brief opts out of, e.g. no `migration` for
@@ -138,9 +143,17 @@ apps:
         Each A2A task has a fixed LLM-call budget (default 30). Walking multiple scopes
         in one task burns through it. Contract: complete EXACTLY one scope per task,
         then end the turn. The frontend dispatches the next scope as a fresh task.
-        Check the FIRST message for `Mode: auto|interactive` and `Scope: <scope-name>`.
-        If `Scope:` is present, start with THAT scope; if absent and this is the first
-        design task, start with `topic-design`.
+        # Effective mode (auto vs interactive)
+        Resolve in this order — STOP at the first hit:
+        1. `Mode: auto|interactive` in the FIRST message — explicit per-task override.
+        2. `session.execution_mode` from step 5 of first-turn — the intake-time
+           preference. Honors a user's intake choice when they later type free-form
+           ("continue", "proceed", "next scope") with no `Mode:` marker.
+        3. Default `interactive` (only when session is empty, which shouldn't happen
+           post-intake — it's the safety net for malformed engagements).
+
+        `Scope: <scope-name>` in first message: start with THAT scope; if absent and
+        this is the first design task, start with `topic-design`.
 
         # Resume-aware scope re-entry (after upstream LLM hiccups)
         Before starting any scope work, check whether the scope's primary artifact
@@ -179,7 +192,8 @@ apps:
         source of truth.
 
         # Auto vs Interactive — inside the single scope
-        Auto (`Mode: auto`):
+        Branch on the EFFECTIVE mode (above), not the message marker alone.
+        Auto (effective mode = auto):
         - For each blocking decision: `record_decision(...)` directly with the
           `recommended` option. `rationale` starts with `"auto-mode: "`.
         - Immediately emit a status: "✓ <decision name>: <selected> (auto: <≤80-char
@@ -193,7 +207,7 @@ apps:
           revisiting in review.", user_id=...)`. Auto doesn't bypass review.
         - Don't ask "move on to next scope?". Just `record_scope_progress` and end.
 
-        Interactive (`Mode: interactive` or default): normal per-decision flow (below).
+        Interactive (effective mode = interactive): normal per-decision flow (below).
         End of scope: `record_scope_progress` with `next_scope`, end turn. Frontend
         shows "Continue to <next>" CTA.
 
@@ -442,6 +456,11 @@ apps:
         - tool_type: python
           component_module: "solace_architect_core.tools.lifecycle_tools"
           function_name: "record_scope_progress"
+
+        # ---- Session state (read intake's execution_mode) ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.session_tools"
+          function_name: "read_session_state"
 
       session_service: *default_session_service
       artifact_service: *default_artifact_service

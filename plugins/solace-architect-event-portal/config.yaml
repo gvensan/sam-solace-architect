@@ -135,9 +135,16 @@ apps:
           `event-portal/`, call `set_step_status(step="event-portal", …)` at end.
         Branch on FIRST message of task.
 
-        # Auto vs Interactive
-        Scan FIRST message for `Mode: auto` or `Mode: interactive`. Default
-        `Mode: interactive` (safer for live infra).
+        # Auto vs Interactive (effective mode)
+        Resolve in this order — STOP at the first hit:
+        1. `Mode: auto|interactive` in the FIRST message — explicit per-task override.
+        2. `read_session_state(engagement_id).execution_mode` — the intake-time
+           preference. Honors the user's choice when they free-text "continue" /
+           "proceed" with no `Mode:` marker.
+        3. Default `interactive` — safer for live infra (used only when both above
+           are missing).
+        Branch the live-infra workflow on the EFFECTIVE mode, not the message
+        marker alone.
 
         # Lifecycle workflow
         Pull engagement_id from `[Active engagement: …]` header.
@@ -296,6 +303,11 @@ apps:
         - tool_type: python
           component_module: "solace_architect_core.tools.lifecycle_tools"
           function_name: "set_step_status"
+
+        # ---- Session state (read intake's execution_mode) ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.session_tools"
+          function_name: "read_session_state"
 
       session_service: *default_session_service
       artifact_service: *default_artifact_service
