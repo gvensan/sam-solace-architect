@@ -3866,6 +3866,29 @@
     // Independently of pill matching, look for a step-completion signal so
     // the handoff card can render once this turn finalizes.
     _queuePhaseHandoffFromToolResult(d);
+    // Capture ask_user_question schemas from the tool result itself. The
+    // prompt asks the agent to echo the schema as a fenced ```question
+    // block in its text, but LLMs sometimes truncate the echo to just the
+    // trailing characters (observed 2026-05-23: 6-byte trailing `"} ``` `
+    // with no chip card rendered). The tool's authoritative result carries
+    // the full schema; we stash it as a fallback so finalizeAgentBubble
+    // can render the form even when the text echo is missing or partial.
+    _captureToolEmittedQuestionSchema(d);
+  }
+
+  // Stash ask_user_question schemas from tool_result data parts onto the
+  // pending bubble. Indexed by schema.id for dedup against text-echoed
+  // ```question blocks (text wins; tool fills the gap).
+  function _captureToolEmittedQuestionSchema(d) {
+    if (!pendingAgentMsg) return;
+    if (d?.tool_name !== "ask_user_question") return;
+    const result = d.result_data;
+    if (!result || result.ok === false) return;
+    const schema = result?.data?.schema;
+    if (!schema || typeof schema !== "object") return;
+    if (!schema.id || !schema.kind) return;
+    pendingAgentMsg.toolEmittedSchemas = pendingAgentMsg.toolEmittedSchemas || [];
+    pendingAgentMsg.toolEmittedSchemas.push(schema);
   }
 
   // Phase-handoff: shared vocabulary used by the in-chat completion card and
@@ -4651,8 +4674,47 @@
     // (rarely) carry both — they're independent sidecars.
     const qResult = parseQuestionBlocks(text);
     const sResult = parseSwitchAgentBlocks(qResult.cleanText);
-    const cleanText = sResult.cleanText;
+    let cleanText = sResult.cleanText;
     const blocks = qResult.blocks;
+    // Tool-result fallback: when the agent called ask_user_question but
+    // its text echo was missing or truncated (the schema only lives in
+    // the tool call args at that point), splice the tool-result schemas
+    // in so the form still renders. Dedup by id — text wins, tool fills
+    // the gap. Without this, an agent whose final 6 bytes of text are
+    // `"}` + closing fence (observed 2026-05-23) shows the user trash
+    // text and no actionable form card.
+    const _toolSchemas = (pendingAgentMsg?.toolEmittedSchemas) || [];
+    let _usedToolFallback = false;
+    if (_toolSchemas.length) {
+      const knownIds = new Set(blocks.map(b => b.id));
+      for (const ts of _toolSchemas) {
+        if (!knownIds.has(ts.id)) {
+          blocks.push(ts);
+          knownIds.add(ts.id);
+          _usedToolFallback = true;
+          console.debug(
+            "[question-fallback] using tool-emitted schema for id=%s (no text echo found)",
+            ts.id,
+          );
+        }
+      }
+    }
+    // When the fallback fired, the agent's text usually contains trailing
+    // fence-tail residue from an aborted echo attempt (e.g. `"}\n````).
+    // parseQuestionBlocks didn't strip it because the opening ```question
+    // never made it into the stream. Detect a SHORT trailing tail that
+    // looks like JSON+fence epilogue and drop it before rendering.
+    if (_usedToolFallback && cleanText) {
+      const tail = cleanText.replace(/\s+$/, "");
+      // Match: optional leading prose + trailing run of [", }, whitespace]
+      // followed by an isolated ``` (the closing fence of a truncated block).
+      // Conservative: only strip when the residue is <= 40 chars; longer
+      // text is probably real prose we want to preserve.
+      const m = tail.match(/^([\s\S]*?)([\s"\\}\n]{0,30}\n?\s*```\s*)$/);
+      if (m && m[2].length <= 40) {
+        cleanText = m[1].trim();
+      }
+    }
     // Filter out suggestions the user has already dismissed this session.
     const dismissed = _getDismissedSwitchTargets();
     const switchSuggestions = sResult.suggestions.filter(s =>

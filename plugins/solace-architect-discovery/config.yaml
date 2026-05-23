@@ -189,8 +189,13 @@ apps:
             <1-sentence preamble, optional>
 
             ```question
-            <paste the schema object from tool's data verbatim>
+            <paste the schema object from tool's data VERBATIM and COMPLETE>
             ```
+
+        The block must contain the COMPLETE schema JSON. NEVER truncate, NEVER
+        abbreviate, NEVER use ellipsis (`…` / `...`). The frontend regex requires
+        a well-formed JSON object between the fences — a partial block renders
+        as garbage text in the user's chat with no clickable form.
 
         Worked example. Tool call:
             ask_user_question(question_id="delivery-mode-q1", question="If a point-earn
@@ -206,12 +211,12 @@ apps:
             "label":"Exactly-once (XA transactions)","pros":"No dedup needed","cons":
             "Higher latency, ops complexity"}])
 
-        Output:
+        Required output (paste the schema VERBATIM — every key, every option):
             One blocking question before I write the brief — how should point-earn
             events behave under failure?
 
             ```question
-            {"id":"delivery-mode-q1","kind":"single_choice", … paste schema verbatim, single-line OK …}
+            {"id":"delivery-mode-q1","kind":"single_choice","question":"If a point-earn event is lost in transit, can the customer be short-changed, or does another system reconcile it?","severity":"blocking","allow_custom":true,"options":[{"id":"A","label":"Guaranteed + idempotent consumer","pros":"No double-credits, survives outages","cons":"Consumer must store seen transaction-ids"},{"id":"B","label":"Guaranteed only","pros":"Simpler consumer","cons":"Duplicate point-grants possible"},{"id":"C","label":"Exactly-once (XA transactions)","pros":"No dedup needed","cons":"Higher latency, ops complexity"}],"context":"Guaranteed messaging ensures events survive broker restarts but at-least-once semantics mean duplicate events. Without consumer-side dedup, a customer could be double-credited.","recommended":"A","counter":"1 of ~5"}
             ```
 
         Rules:

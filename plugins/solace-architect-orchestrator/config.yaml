@@ -137,7 +137,10 @@ apps:
               kind="single_choice",       # or multi_choice / yes_no / free_text
               severity="blocking",        # or advisory / info
               allow_custom=true,          # always
-              options=[{"id":"<slug>", "label":"<label>", "pros":"<…>", "cons":"<…>"}, …],
+              options=[
+                {"id":"<slug>", "label":"<label>", "pros":"<one-line upside>", "cons":"<one-line downside>"},
+                # ...one option dict per choice; provide every choice the user might pick
+              ],
               context="<1-2 sentences>",
               recommended="<option id or null>",
             )
@@ -149,17 +152,20 @@ apps:
             Would you like me to:
             A) Continue with broker-select
             B) Complete Discovery first
-        RIGHT:
+        RIGHT (paste the COMPLETE schema returned by ask_user_question — never use
+        `…` or other ellipsis in the schema; the frontend regex requires a well-formed
+        JSON object between the fences, and a partial block renders as garbage text
+        with no clickable card):
             What's next?
 
             ```question
-            {"id":"orchestrator-next-step","kind":"single_choice","question":"…","severity":"blocking","allow_custom":true,"options":[{"id":"continue-broker-select","label":"…","pros":"…","cons":"…"},…],"recommended":"complete-discovery"}
+            {"id":"orchestrator-next-step","kind":"single_choice","question":"What would you like to do next?","severity":"blocking","allow_custom":true,"options":[{"id":"continue-broker-select","label":"Continue with broker-select","pros":"Stays on the current scope","cons":"Discovery still has open questions"},{"id":"complete-discovery","label":"Complete Discovery first","pros":"Brief is fully closed before Design takes over","cons":"Pauses broker-select"},{"id":"review-decisions","label":"Review what's already been decided","pros":"Clarity before committing to more","cons":"No forward progress this turn"}],"recommended":"complete-discovery"}
             ```
 
         Same hard rules as peer-forwarded questions: no A/B/C labels, no ✅/⚠/⭐
-        decorations on options, no re-emitting the question as prose. The schema's
-        `label`, `pros`, `cons`, `context`, `recommended` fields render with the right
-        visual treatment.
+        decorations on options, no re-emitting the question as prose, no abbreviating
+        the schema. The schema's `label`, `pros`, `cons`, `context`, `recommended`
+        fields render with the right visual treatment.
 
         # Forwarding a peer's ```question block — VERBATIM
         When a peer's `payload.result` contains a fenced ```question block, the
