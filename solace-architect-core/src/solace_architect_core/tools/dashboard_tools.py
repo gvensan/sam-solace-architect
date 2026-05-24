@@ -92,10 +92,30 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
             done += 1  # skipped counts as "done" for the phase progress bar
         phase_counts[phase] = (done, total)
 
-    # Connected systems (from discovery brief)
-    systems = brief.get("systems", []) or []
-    producers = sum(1 for s in systems if isinstance(s, dict) and "producer" in (s.get("role", "") or "").lower())
-    consumers = sum(1 for s in systems if isinstance(s, dict) and "consumer" in (s.get("role", "") or "").lower())
+    # Connected systems (from discovery brief). Systems live at
+    # `landscape.systems` per the Discovery brief schema; older / hand-written
+    # briefs occasionally put them at the top level, so check both.
+    # Role taxonomy: "producer" | "consumer" | "both" — and "both" must count
+    # for BOTH columns (substring check `"producer" in "both"` was False,
+    # which is why a hotel brief with 4 systems showed `0 prod · 0 cons`).
+    systems = ((brief.get("landscape") or {}).get("systems")
+               or brief.get("systems") or [])
+
+    def _role_set(role: Any) -> set[str]:
+        r = (role or "").lower().strip()
+        if "both" in r:
+            return {"producer", "consumer"}
+        out: set[str] = set()
+        if "producer" in r or "publisher" in r:
+            out.add("producer")
+        if "consumer" in r or "subscriber" in r:
+            out.add("consumer")
+        return out
+
+    producers = sum(1 for s in systems
+                    if isinstance(s, dict) and "producer" in _role_set(s.get("role")))
+    consumers = sum(1 for s in systems
+                    if isinstance(s, dict) and "consumer" in _role_set(s.get("role")))
 
     # Recommended next step
     runnable = [s for s in plan if s["included"] and s["step"] not in completed]
