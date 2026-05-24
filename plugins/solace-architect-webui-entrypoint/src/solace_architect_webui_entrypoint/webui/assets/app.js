@@ -6330,18 +6330,31 @@
     "SAValidationAgent", "SAEventPortalAgent", "SABlueprintAgent",
   ]);
 
+  // Exponential backoff for same-session auto-resume retries.
+  // Attempt N waits BASE × 2^N seconds: 8s → 16s → 32s (capped at 60s).
+  // Hammering an overloaded upstream every 8s makes it worse — exponential
+  // gives the provider room to recover. After MAX_AUTO_RESUMES, the
+  // fresh-session escalation card takes over with its own 5s countdown.
+  const RESUME_BACKOFF_BASE_SECS = 8;
+  const RESUME_BACKOFF_CAP_SECS = 60;
+  function _backoffSecsForRetry(retries) {
+    const v = RESUME_BACKOFF_BASE_SECS * Math.pow(2, retries);
+    return Math.min(RESUME_BACKOFF_CAP_SECS, Math.round(v));
+  }
+
   function _renderStreamDropResumeCard(agentName, retries, autoMode) {
     const card = document.createElement("div");
     card.className = "chat-msg agent stream-drop-card";
     const remaining = MAX_AUTO_RESUMES - retries;
     const willAutoResume = autoMode && remaining > 0;
+    const backoffSecs = _backoffSecsForRetry(retries);
     // When retries are exhausted (or we're already on the 2nd+ retry of a
     // run that hasn't yet finished a turn) the failure is likely structural
     // (e.g. context-window saturation from a persistent session), not a
     // one-off stream drop. Offer the fresh-session escape hatch.
     const offerFreshSession = retries >= 1;
     const statusLine = willAutoResume
-      ? `<p class="stream-drop-countdown">Auto-resuming in <span class="stream-drop-secs">8</span>s… (attempt ${retries + 1} of ${MAX_AUTO_RESUMES})</p>`
+      ? `<p class="stream-drop-countdown">Auto-resuming in <span class="stream-drop-secs">${backoffSecs}</span>s… (attempt ${retries + 1} of ${MAX_AUTO_RESUMES}, exponential backoff)</p>`
       : (autoMode
           ? `<p class="muted">Auto-resume cap reached (${MAX_AUTO_RESUMES} attempts). Click <strong>Resume now</strong> to try once more — or, if this keeps happening, <strong>Start fresh session</strong> usually unsticks it (the in-memory agent session may be saturated).</p>`
           : `<p class="muted">Click <strong>Resume now</strong> to continue${offerFreshSession ? " — or <strong>Start fresh session</strong> if retries aren't getting through" : ""}.</p>`);
@@ -6505,7 +6518,7 @@
     });
 
     if (willAutoResume) {
-      let secs = 8;
+      let secs = _backoffSecsForRetry(retries);
       const secsEl = card.querySelector(".stream-drop-secs");
       _cancelPendingAutoResume();
       const tick = () => {
