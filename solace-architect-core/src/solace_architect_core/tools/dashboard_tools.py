@@ -12,7 +12,7 @@ from typing import Any
 from .._storage import list_artifacts as _list_artifacts, safe_read_yaml as read_yaml
 from .artifact_tools import ToolResult
 from .session_tools import read_session_state
-from .workflow_tools import get_engagement_plan
+from .workflow_tools import effective_brief, get_engagement_plan
 
 
 # V1 STATUS_RANK (higher = takes precedence on dedup)
@@ -61,6 +61,10 @@ def _phase_of(step: dict) -> str:
 async def compute_overview_stats(engagement_id: str) -> ToolResult:
     """Tile data for the Overview view."""
     brief = read_yaml(engagement_id, "discovery/discovery-brief.yaml") or {}
+    # Merge intake.preferences into the brief so routing rules that match
+    # against preferences.* (e.g. provision_event_portal) see the user's
+    # intake-time choice even when Discovery didn't propagate it.
+    brief = effective_brief(engagement_id, brief)
     session = (await read_session_state(engagement_id)).data
     decisions = read_yaml(engagement_id, "meta/decisions.yaml", default={"decisions": []})["decisions"]
     findings = read_yaml(engagement_id, "meta/findings.yaml", default={"findings": []})["findings"]

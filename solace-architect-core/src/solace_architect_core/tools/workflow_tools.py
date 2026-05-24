@@ -5,6 +5,7 @@ Config-driven via ``configs/skill-routing.yaml``.
 
 from __future__ import annotations
 
+import json
 import time
 from importlib import resources
 from typing import Any, Optional
@@ -22,6 +23,56 @@ def _load_routing_config() -> dict:
     """Load the default skill-routing.yaml from the package."""
     text = (resources.files("solace_architect_core.configs") / "skill-routing.yaml").read_text()
     return yaml.safe_load(text)
+
+
+def _read_intake_json(engagement_id: str) -> dict:
+    """Best-effort read of ``discovery/intake.json``; returns {} on any failure.
+
+    intake.json is the raw user submission; discovery-brief.yaml is the
+    normalized digest the Discovery agent writes. ``preferences.*`` (e.g.
+    ``provision_event_portal``) is captured at intake-submit and lives in
+    intake.json, but the Discovery agent doesn't currently propagate it
+    into the brief — so routing rules that match against ``preferences.*``
+    would see a missing field and silently skip steps. Used by
+    ``effective_brief`` to fill that gap.
+    """
+    from .._storage import safe_artifact_path
+    try:
+        path = safe_artifact_path(engagement_id, "discovery/intake.json")
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+
+
+def effective_brief(engagement_id: str, brief: Optional[dict] = None) -> dict:
+    """Brief merged with intake.preferences.
+
+    The Discovery agent writes ``discovery/discovery-brief.yaml`` without
+    propagating ``preferences.*`` from intake. The routing engine's
+    conditional rules ('when' clauses) reference ``preferences.*`` —
+    without this merge they read an empty dict and falsely mark
+    opt-in phases as skipped (observed 2026-05-24: a hotel-reservation
+    engagement with ``provision_event_portal: true`` in intake.json had
+    Event Portal struck-through on the dashboard because the brief
+    didn't carry the preference).
+
+    Merge order: brief.preferences wins over intake.preferences for any
+    keys both sets. Intake is the fallback, not the override. Discovery
+    is free to refine a preference if it learns something; we don't
+    silently overwrite that with the raw intake value.
+    """
+    if brief is None:
+        brief = read_yaml(engagement_id, "discovery/discovery-brief.yaml") or {}
+    intake = _read_intake_json(engagement_id)
+    intake_prefs = (intake.get("preferences") or {})
+    brief_prefs = (brief.get("preferences") or {})
+    if not intake_prefs:
+        return brief
+    merged = {**intake_prefs, **brief_prefs}
+    out = {**brief, "preferences": merged}
+    return out
 
 
 # ---------- get_engagement_plan ----------
@@ -73,6 +124,10 @@ async def get_next_step(engagement_id: str, discovery_brief: Optional[dict] = No
         # corrupt in the first place.
         brief_res = safe_read_yaml(engagement_id, "discovery/discovery-brief.yaml")
         discovery_brief = brief_res or {}
+    # Merge intake.preferences so routing rules that reference
+    # preferences.* see the user's intake-time choices even when the
+    # Discovery agent didn't propagate them into the brief.
+    discovery_brief = effective_brief(engagement_id, discovery_brief)
 
     plan_res = await get_engagement_plan(discovery_brief)
     plan = plan_res.data
