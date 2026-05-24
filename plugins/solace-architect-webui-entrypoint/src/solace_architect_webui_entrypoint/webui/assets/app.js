@@ -1521,59 +1521,90 @@
     return Math.round(s / 86400) + "d ago";
   }
 
-  // Human labels for design scope ids. Falls back to the raw id when a
-  // new scope is added to skill-routing.yaml that this map doesn't know
-  // about yet (better than rendering nothing).
-  const _DESIGN_SCOPE_LABEL = {
-    "topic-design":         "Topic taxonomy",
-    "broker-select":        "Broker selection",
-    "sam-design":           "SAM topology",
-    "protocol-select":      "Protocol selection",
-    "mesh-design":          "DMR mesh design",
-    "ha-dr":                "HA / DR",
-    "migration":            "Migration plan",
-    "integration":          "Micro-Integration",
-    "event-portal-design":  "Event Portal model",
+  // Human labels keyed by sub-step id, per phase. Falls back to raw id
+  // when a phase adds a new sub-step this map doesn't know about — better
+  // than rendering nothing.
+  const _CHECKLIST_LABELS = {
+    design: {
+      "topic-design":         "Topic taxonomy",
+      "broker-select":        "Broker selection",
+      "sam-design":           "SAM topology",
+      "protocol-select":      "Protocol selection",
+      "mesh-design":          "DMR mesh design",
+      "ha-dr":                "HA / DR",
+      "migration":            "Migration plan",
+      "integration":          "Micro-Integration",
+      "event-portal-design":  "Event Portal model",
+    },
+    review: {
+      "architect":   "Architecture review",
+      "developer":   "Developer review",
+      "ops":         "Operations review",
+      "security":    "Security review",
+    },
+    "event-portal": {
+      "plan":          "Dry-run plan",
+      "provisioned":   "Live provisioning",
+      "asyncapi":      "AsyncAPI export",
+    },
+    blueprint: {
+      "architecture-overview":    "Architecture — overview",
+      "architecture-decisions":   "Architecture — decisions",
+      "architecture-components":  "Architecture — components",
+      "architecture":             "Architecture (TOC)",
+      "runbook-deploy":           "Runbook — deploy",
+      "runbook-failures":         "Runbook — failures",
+      "runbook-dr":               "Runbook — DR",
+      "runbook":                  "Runbook (TOC)",
+      "pack-blueprint":           "Pack — blueprint",
+      "pack-executive":           "Pack — executive",
+      "pack-admin-ops":           "Pack — admin / ops",
+      "pack-developer":           "Pack — developer",
+      "pack-security":            "Pack — security",
+      "engagement-package":       "Final ZIP export",
+    },
   };
-  const _SCOPE_STATUS_ICON = {
+  const _CHECKLIST_STATUS_ICON = {
     done:    "●",
     next:    "◐",
     pending: "◯",
     skipped: "⊘",
   };
-  const _SCOPE_STATUS_LABEL = {
+  const _CHECKLIST_STATUS_LABEL = {
     done:    "Done",
     next:    "Next",
     pending: "Pending",
     skipped: "Skipped",
   };
 
-  function _renderDesignScopeList(scopes) {
-    if (!Array.isArray(scopes) || !scopes.length) return "";
-    const rows = scopes.map(s => {
-      const status = s.status || "pending";
-      const icon = _SCOPE_STATUS_ICON[status] || "◯";
-      const label = _DESIGN_SCOPE_LABEL[s.scope] || s.scope;
-      const statusLabel = _SCOPE_STATUS_LABEL[status] || status;
-      const reasonAttr = s.skip_reason ? ` title="${escapeHtml(s.skip_reason)}"` : "";
+  // Generic per-phase checklist. Items: `[{id, status, ?skip_reason}]`.
+  // Returns empty string when there's nothing to render so callers can
+  // splice the result in unconditionally.
+  function _renderPhaseChecklist(phase, items) {
+    if (!Array.isArray(items) || !items.length) return "";
+    const labels = _CHECKLIST_LABELS[phase] || {};
+    const rows = items.map(it => {
+      const status = it.status || "pending";
+      const icon = _CHECKLIST_STATUS_ICON[status] || "◯";
+      const id = it.id || it.scope || "";
+      const label = labels[id] || id;
+      const statusLabel = _CHECKLIST_STATUS_LABEL[status] || status;
+      const reasonAttr = it.skip_reason ? ` title="${escapeHtml(it.skip_reason)}"` : "";
       return `
-        <li class="design-scope-row design-scope-${escapeHtml(status)}"${reasonAttr}>
-          <span class="design-scope-icon">${icon}</span>
-          <span class="design-scope-label">${escapeHtml(label)}</span>
-          <span class="design-scope-id"><code>${escapeHtml(s.scope)}</code></span>
-          <span class="design-scope-status">${escapeHtml(statusLabel)}</span>
+        <li class="phase-checklist-row phase-checklist-${escapeHtml(status)}"${reasonAttr}>
+          <span class="phase-checklist-icon">${icon}</span>
+          <span class="phase-checklist-label">${escapeHtml(label)}</span>
+          <span class="phase-checklist-id"><code>${escapeHtml(id)}</code></span>
+          <span class="phase-checklist-status">${escapeHtml(statusLabel)}</span>
         </li>`;
     }).join("");
-    // Pending-count hint — only useful when there's enough rows to overflow
-    // the visible area; we let CSS hide it when not needed. Counts both
-    // "next" + "pending" so the user sees "5 still to come" not "4 + 1".
-    const remaining = scopes.filter(s => s.status === "next" || s.status === "pending").length;
+    const remaining = items.filter(s => s.status === "next" || s.status === "pending").length;
     const hint = remaining > 0
-      ? `<div class="design-scope-hint">↓ ${remaining} pending — scroll for more</div>`
+      ? `<div class="phase-checklist-hint">↓ ${remaining} pending — scroll for more</div>`
       : "";
     return `
-      <div class="design-scope-list-wrap">
-        <ul class="design-scope-list" role="list">${rows}</ul>
+      <div class="phase-checklist-wrap">
+        <ul class="phase-checklist" role="list">${rows}</ul>
         ${hint}
       </div>`;
   }
@@ -1699,6 +1730,7 @@
 
     // Blueprint in progress.
     if (blueprintInProgress) {
+      const blueprintListHtml = _renderPhaseChecklist("blueprint", stats?.blueprint_sections || []);
       return `
         <div class="progress-cta in-progress" role="region" aria-label="Blueprint in progress">
           <div class="progress-cta-body">
@@ -1706,9 +1738,8 @@
             <h2>Assembling the engagement package</h2>
             <p>SABlueprintAgent is composing the architecture narrative,
             runbook, diagrams, and 5 audience packs.
-            ${blueprintNote ? `<em>${escapeHtml(blueprintNote)}</em> ` : ""}
-            Click <strong>Continue in chat →</strong> to follow along —
-            the package ZIP appears under <code>exports/</code> when ready.</p>
+            ${blueprintNote ? `<em>${escapeHtml(blueprintNote)}</em>` : ""}</p>
+            ${blueprintListHtml}
             ${_phaseExecHint({ phase: "blueprint", lifecycle, stats })}
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
@@ -1744,6 +1775,7 @@
 
     // Event Portal in progress — MCP-backed agent talking to live tenant.
     if (eventPortalInProgress) {
+      const epListHtml = _renderPhaseChecklist("event-portal", stats?.event_portal_stages || []);
       return `
         <div class="progress-cta in-progress" role="region" aria-label="Event Portal in progress">
           <div class="progress-cta-body">
@@ -1751,10 +1783,8 @@
             <h2>Provisioning to Solace Cloud</h2>
             <p>SAEventPortalAgent is creating Event Portal objects via the
             MCP server.
-            ${eventPortalNote ? `<em>${escapeHtml(eventPortalNote)}</em> ` : ""}
-            In Interactive mode, the agent pauses between layers for
-            Apply / Skip confirmation. Click <strong>Continue in chat →</strong>
-            to answer the next prompt.</p>
+            ${eventPortalNote ? `<em>${escapeHtml(eventPortalNote)}</em>` : ""}</p>
+            ${epListHtml}
             ${_phaseExecHint({ phase: "event-portal", lifecycle, stats })}
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
@@ -1865,17 +1895,15 @@
 
     // Review in progress — orchestrator is fanning out / aggregating.
     if (reviewInProgress) {
+      const reviewListHtml = _renderPhaseChecklist("review", stats?.review_reviewers || []);
       return `
         <div class="progress-cta in-progress" role="region" aria-label="Review in progress">
           <div class="progress-cta-body">
             <div class="progress-cta-eyebrow">Review in progress</div>
             <h2>Reviewers are auditing the design</h2>
-            <p>SAOrchestratorAgent has dispatched the four reviewer agents
-            (architect, developer, ops, security) in parallel.
-            ${reviewNote ? `<em>${escapeHtml(reviewNote)}</em> ` : ""}
-            Each runs as a separate task; findings appear in chat once all
-            four return. Click <strong>Continue in chat →</strong> to follow
-            along.</p>
+            <p>SAOrchestratorAgent has dispatched the four reviewer agents in parallel.
+            ${reviewNote ? `<em>${escapeHtml(reviewNote)}</em>` : ""}</p>
+            ${reviewListHtml}
             ${_phaseExecHint({ phase: "review", lifecycle, stats })}
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
@@ -1911,7 +1939,7 @@
 
     // Design in progress — agent is mid-flow through scopes.
     if (designInProgress) {
-      const scopeListHtml = _renderDesignScopeList(stats?.design_scopes || []);
+      const scopeListHtml = _renderPhaseChecklist("design", stats?.design_scopes || []);
       return `
         <div class="progress-cta in-progress" role="region" aria-label="Design in progress">
           <div class="progress-cta-body">

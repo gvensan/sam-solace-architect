@@ -929,14 +929,14 @@ pre {
 /* Design-scope status list (only rendered inside the
    "Design in progress" CTA card). Fixed-height scrollable area with
    a bottom fade so a long list (9 scopes) doesn't grow the card. */
-.design-scope-list-wrap {
+.phase-checklist-wrap {
   position: relative;
   margin: 10px 0 12px;
   border: 1px solid rgba(9,59,95,0.12);
   border-radius: 6px;
   background: rgba(255,255,255,0.6);
 }
-.design-scope-list {
+.phase-checklist {
   list-style: none;
   margin: 0; padding: 6px 8px;
   max-height: 180px;
@@ -947,7 +947,7 @@ pre {
   mask-image: linear-gradient(to bottom, black calc(100% - 16px), transparent 100%);
   -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 16px), transparent 100%);
 }
-.design-scope-row {
+.phase-checklist-row {
   display: grid;
   grid-template-columns: 18px 1fr auto auto;
   align-items: center;
@@ -956,27 +956,27 @@ pre {
   font-size: 12px;
   line-height: 1.4;
 }
-.design-scope-row + .design-scope-row {
+.phase-checklist-row + .phase-checklist-row {
   border-top: 1px dashed rgba(9,59,95,0.08);
 }
-.design-scope-icon {
+.phase-checklist-icon {
   font-size: 14px;
   text-align: center;
   color: var(--muted);
 }
-.design-scope-done .design-scope-icon { color: var(--accent); }
-.design-scope-next .design-scope-icon { color: #c98800; }   /* matches the amber "in-progress" tile */
-.design-scope-skipped .design-scope-icon { color: rgba(9,59,95,0.35); }
-.design-scope-skipped .design-scope-label,
-.design-scope-skipped .design-scope-id { text-decoration: line-through; opacity: 0.65; }
-.design-scope-label { color: var(--text); font-weight: 600; }
-.design-scope-id {
+.phase-checklist-done .phase-checklist-icon { color: var(--accent); }
+.phase-checklist-next .phase-checklist-icon { color: #c98800; }   /* matches the amber "in-progress" tile */
+.phase-checklist-skipped .phase-checklist-icon { color: rgba(9,59,95,0.35); }
+.phase-checklist-skipped .phase-checklist-label,
+.phase-checklist-skipped .phase-checklist-id { text-decoration: line-through; opacity: 0.65; }
+.phase-checklist-label { color: var(--text); font-weight: 600; }
+.phase-checklist-id {
   font-family: 'Space Mono', monospace;
   color: var(--muted);
   font-size: 11px;
 }
-.design-scope-id code { background: transparent; padding: 0; }
-.design-scope-status {
+.phase-checklist-id code { background: transparent; padding: 0; }
+.phase-checklist-status {
   font-family: 'Space Mono', monospace;
   font-size: 10px;
   text-transform: uppercase;
@@ -986,19 +986,19 @@ pre {
   border-radius: 999px;
   border: 1px solid rgba(9,59,95,0.15);
 }
-.design-scope-done .design-scope-status {
+.phase-checklist-done .phase-checklist-status {
   color: var(--accent);
   border-color: rgba(0,200,149,0.4);
 }
-.design-scope-next .design-scope-status {
+.phase-checklist-next .phase-checklist-status {
   color: #c98800;
   border-color: rgba(201,136,0,0.4);
   background: rgba(255,196,84,0.12);
 }
-.design-scope-skipped .design-scope-status {
+.phase-checklist-skipped .phase-checklist-status {
   opacity: 0.5;
 }
-.design-scope-hint {
+.phase-checklist-hint {
   text-align: center;
   font-family: 'Space Mono', monospace;
   font-size: 10px;

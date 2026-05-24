@@ -132,7 +132,59 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
         else:
             design_scopes.append({"scope": scope_id, "status": "pending"})
 
+    # Per-reviewer / per-section / per-stage status arrays for the
+    # review / blueprint / event-portal in-progress dashboard panels.
+    # Derived from on-disk artifact presence (the only source of truth
+    # for these phases today — agents don't track sub-step state
+    # separately). When the agent hasn't yet written the canonical
+    # artifact for a sub-step, that sub-step is "pending"; presence
+    # means "done". Sub-step ids match the FE's _CHECKLIST_LABELS map.
     artifacts = _list_artifacts(engagement_id)
+    artifacts_for_checklists = set(artifacts)
+
+    def _checklist_from_artifacts(item_paths):
+        out = []
+        for item_id, art_path in item_paths:
+            out.append({
+                "id": item_id,
+                "status": "done" if art_path in artifacts_for_checklists else "pending",
+            })
+        return out
+
+    review_reviewers = _checklist_from_artifacts([
+        ("architect",  "reviews/architect-review.md"),
+        ("developer",  "reviews/developer-review.md"),
+        ("ops",        "reviews/ops-review.md"),
+        ("security",   "reviews/security-review.md"),
+    ])
+
+    # Event Portal: 3-stage pipeline (plan → live provisioning → AsyncAPI).
+    # "asyncapi" stage is "done" when at least one spec exists under the
+    # asyncapi/ subdirectory (one per provisioned application).
+    ep_asyncapi_done = any(a.startswith("event-portal/asyncapi/") for a in artifacts_for_checklists)
+    event_portal_stages = [
+        {"id": "plan",        "status": "done" if "event-portal/plan.yaml" in artifacts_for_checklists else "pending"},
+        {"id": "provisioned", "status": "done" if "event-portal/provisioned.yaml" in artifacts_for_checklists else "pending"},
+        {"id": "asyncapi",    "status": "done" if ep_asyncapi_done else "pending"},
+    ]
+
+    blueprint_sections = _checklist_from_artifacts([
+        ("architecture-overview",   "blueprint/architecture-overview.md"),
+        ("architecture-decisions",  "blueprint/architecture-decisions.md"),
+        ("architecture-components", "blueprint/architecture-components.md"),
+        ("architecture",            "blueprint/architecture.md"),
+        ("runbook-deploy",          "blueprint/runbook-deploy.md"),
+        ("runbook-failures",        "blueprint/runbook-failures.md"),
+        ("runbook-dr",              "blueprint/runbook-dr.md"),
+        ("runbook",                 "blueprint/runbook.md"),
+        ("pack-blueprint",          "blueprint/packs/blueprint.md"),
+        ("pack-executive",          "blueprint/packs/executive.md"),
+        ("pack-admin-ops",          "blueprint/packs/admin-ops.md"),
+        ("pack-developer",          "blueprint/packs/developer.md"),
+        ("pack-security",           "blueprint/packs/security.md"),
+        ("engagement-package",      "exports/engagement-package.zip"),
+    ])
+
     # ARTIFACTS tile counts workflow-PRODUCED deliverables, not system
     # bookkeeping or user inputs. Without this filter, a freshly-restarted
     # engagement showed 8-9 "artifacts" — but those were all empty meta/*
@@ -175,6 +227,9 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
         "recommended_next_step": recommended_next,
         "skip_reasons": [{"step": s["step"], "reason": s["skip_reason"]} for s in skips],
         "design_scopes": design_scopes,
+        "review_reviewers": review_reviewers,
+        "event_portal_stages": event_portal_stages,
+        "blueprint_sections": blueprint_sections,
     })
 
 
