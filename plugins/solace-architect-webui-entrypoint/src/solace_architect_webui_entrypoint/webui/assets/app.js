@@ -7476,7 +7476,28 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        // 412 is the server-side phase-dispatch gate (component.py:705-746).
+        // The body carries the blockers; render a useful card with a one-
+        // click "Supersede & retry" instead of the generic retry hint.
+        let errBody = null;
+        try { errBody = await res.json(); } catch { /* not JSON */ }
+        if (res.status === 412 && errBody?.blockers?.length && eid) {
+          _renderBlockedDispatchCard({
+            eid,
+            step: errBody.step || "",
+            blockers: errBody.blockers,
+            hint: errBody.hint || "",
+            retryBody: body,
+          });
+          if (chatSend) chatSend.disabled = false;
+          return;
+        }
+        // Other failures fall through to the generic recovery path with
+        // the server's error message when available.
+        const msg = errBody?.error || `HTTP ${res.status}`;
+        throw new Error(msg);
+      }
       // Capture the task_id so STOP can cancel it. The backend returns
       // {"session_id", "task_id", "accepted": true} per component.py's
       // _chat_message handler.
@@ -7496,6 +7517,72 @@
       _recoverFromSubmitError("could not dispatch: " + err.message);
     }
   });
+
+  // Render a phase-blocked card when the server refuses a Phase: <step>
+  // dispatch via 412 because open-items with affecting_step=<step> exist.
+  // The card lists the blockers verbatim and offers a one-click
+  // "Supersede & retry" — resolves each listed item then re-submits the
+  // original chat-message body, so the user doesn't have to walk to the
+  // Open Items view and resolve them by hand. "Resolve in Open Items"
+  // is the safer alternative when the user wants to triage individually.
+  function _renderBlockedDispatchCard({ eid, step, blockers, hint, retryBody }) {
+    const items = (blockers || []).map(b => `
+      <li class="phase-blocked-item">
+        <code>${escapeHtml(b.id || "(no id)")}</code>
+        <span>${escapeHtml(b.description || "(no description)")}</span>
+      </li>`).join("");
+    const card = document.createElement("div");
+    card.className = "chat-msg agent stream-drop-card";
+    card.innerHTML = `
+      <div class="stream-drop-header">
+        <span class="stream-drop-icon">⛔</span>
+        <span class="stream-drop-title">Cannot dispatch <code>${escapeHtml(step)}</code> — ${blockers.length} blocking open item${blockers.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="stream-drop-body">
+        <p>${escapeHtml(hint || "Resolve the listed open-items before dispatching this phase.")}</p>
+        <ul class="phase-blocked-list">${items}</ul>
+      </div>
+      <div class="stream-drop-actions">
+        <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/open-items">Resolve in Open Items →</a>
+        <button type="button" class="cta-btn phase-blocked-supersede-retry">Supersede &amp; retry</button>
+      </div>`;
+    chatLog.appendChild(card);
+    chatLog.scrollTop = chatLog.scrollHeight;
+    card.querySelector(".phase-blocked-supersede-retry")?.addEventListener("click", async () => {
+      const btn = card.querySelector(".phase-blocked-supersede-retry");
+      if (btn) { btn.disabled = true; btn.textContent = "Superseding…"; }
+      try {
+        for (const b of blockers) {
+          if (!b.id) continue;
+          await fetch(`/api/engagements/${encodeURIComponent(eid)}/open-items/${encodeURIComponent(b.id)}/resolve`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ resolution_note: `Superseded by user during ${step} retry — prior dispatch refused with 412.` }),
+          });
+        }
+        card.remove();
+        // Re-submit the original message body now that the blockers are
+        // cleared. _setChatInflight will arm STOP on success.
+        const res = await fetch("/api/chat/message", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(retryBody),
+        });
+        if (!res.ok) {
+          const m = (await res.text()).slice(0, 200);
+          _recoverFromSubmitError(`retry still refused: ${m}`);
+        } else {
+          try {
+            const data = await res.json();
+            if (data?.task_id) _setChatInflight(data.task_id);
+          } catch { /* no body */ }
+        }
+      } catch (err) {
+        if (btn) { btn.disabled = false; btn.textContent = "Supersede & retry"; }
+        appendChatMessage("agent", `[error] supersede-and-retry failed: ${err.message}`);
+      }
+    });
+  }
 
   // ============================================================================
   // Action handlers (inline onclick)
