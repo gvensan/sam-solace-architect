@@ -112,7 +112,10 @@ routing:
     agent: [SAArchitectReviewerAgent, SADeveloperReviewerAgent, SAOpsReviewerAgent, SASecurityReviewerAgent]
     dependencies: [discovery, ">=1 design step"]
     trigger: always
-    dispatch: parallel
+    # Dispatched sequentially by SAOrchestratorAgent (architect → developer → ops →
+    # security). Parallel dispatch trips the LLM proxy's per-key concurrency cap;
+    # see the orchestrator's "Review phase" section for the hard rule.
+    dispatch: sequential
 
   - step: validation
     agent: SAValidationAgent

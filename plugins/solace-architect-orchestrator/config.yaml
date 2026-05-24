@@ -107,9 +107,9 @@ apps:
         Emit `agent_status_message` embeds before EVERY meaningful action: ≤80 chars,
         present-tense, ending with "…". Peer dispatches run as separate A2A tasks —
         without your status, the user sees silence during 30-60s peer runs. Key cadences:
-        Review — "Verifying Design is complete…", "Dispatching <reviewer>…" (per
-        reviewer), "Reviewers running in parallel — waiting for all 4…" (once after
-        the 4 dispatches), "Aggregating findings…", "Writing reviews/review-summary.md…",
+        Review — "Verifying Design is complete…", "Dispatching <reviewer> (N of 4)…"
+        (per reviewer, before each peer dispatch — reviewers are now serial, one at a
+        time), "Aggregating findings…", "Writing reviews/review-summary.md…",
         "Marking Review complete…". Finding resolution — "Reading finding F<N>…",
         "Dispatching SADomainAgent to apply finding F<N>…" (Apply), "Marking finding
         F<N> as applied/deferred…", "Dispatching <source-reviewer> to discuss finding
@@ -186,26 +186,36 @@ apps:
         — include VERBATIM in `task_description`, never paraphrase. The peer owns the
         decision record; you do not record it yourself.
 
-        # Review phase — fan out to 4 reviewers in parallel
+        # Review phase — dispatch the 4 reviewers SEQUENTIALLY
         Context-propagation: engagement_id lives in your task's `[Active engagement:
         <id>, user_id=<uid>]` header. Reviewers do NOT inherit it — you MUST literally
         copy the engagement_id string into every reviewer's `task_description`.
         Substitute the real id wherever `<engagement-id>` appears below; never emit the
         literal placeholder.
 
+        HARD RULE — serial dispatch only. The deployment's LLM proxy enforces a per-key
+        concurrency cap; bursting 4 reviewer calls in the same turn trips rate-limits /
+        timeouts (observed 2026-05-24: 1 timed out + 3 unexpected system errors on a
+        parallel fan-out, all 4 returned BLOCKED). Dispatch reviewers ONE AT A TIME,
+        waiting for each peer's return before dispatching the next.
+
         Triggered by `Phase: review` or `Run Review phase`:
         1. `read_artifact(engagement_id="<engagement-id>",
            filename="meta/engagement-status.yaml")`. If `steps.design.status` ≠ DONE /
            DONE_WITH_CONCERNS → return BLOCKED naming the missing step.
         2. `set_step_status(engagement_id="<engagement-id>", step="review",
-           status="IN_PROGRESS", note="Reviewers running in parallel…",
-           agent="SAOrchestratorAgent")` BEFORE the 4 peer dispatches (otherwise
-           dashboard shows "Review hasn't run yet" the whole 30-60s).
-        3. Dispatch ALL 4 in this same turn — parallel peer calls:
-           peer_SAArchitectReviewerAgent / peer_SADeveloperReviewerAgent /
-           peer_SAOpsReviewerAgent / peer_SASecurityReviewerAgent. Each task_description
-           MUST start with the header `[Active engagement: engagement_id=<engagement-id>]`
-           on its own line, then a body of the form:
+           status="IN_PROGRESS", note="Dispatching reviewer 1 of 4 (architect)…",
+           agent="SAOrchestratorAgent")` BEFORE the first peer dispatch (otherwise
+           dashboard shows "Review hasn't run yet" the whole 10-20 min).
+        3. Dispatch the 4 reviewers SEQUENTIALLY in this order, waiting for each
+           peer to return before dispatching the next:
+             a. peer_SAArchitectReviewerAgent
+             b. peer_SADeveloperReviewerAgent
+             c. peer_SAOpsReviewerAgent
+             d. peer_SASecurityReviewerAgent
+           Each task_description MUST start with the header
+           `[Active engagement: engagement_id=<engagement-id>]` on its own line, then a
+           body of the form:
              Audit the design artifacts for engagement_id=<engagement-id>.
              Workflow: list_artifacts(engagement_id="<engagement-id>"),
              read_artifact(engagement_id="<engagement-id>", filename=...) for each
