@@ -1997,7 +1997,7 @@
     const startEventPortalAutoBtn = root.querySelector("#start-event-portal-auto-btn");
     const startBlueprintBtn = root.querySelector("#start-blueprint-btn");
     lockOnClick(startDiscoveryBtn, "Starting Discovery…");
-    lockOnClick(continueBtn, "Opening chat…");
+    lockOnClick(continueBtn, "Continuing…");
     lockOnClick(startDesignBtn, "Starting Design…");
     lockOnClick(startDesignAutoBtn, "Starting Auto…");
     lockOnClick(startReviewBtn, "Starting Review…");
@@ -2050,7 +2050,13 @@
           loadAgents();
         }
       }
-      openChatWith("", null);
+      // Auto-submit "continue" as if the user typed it. The active phase
+      // agent's resume-aware re-entry section reads scope_progress / on-
+      // disk artifacts and picks up from the next pending unit of work.
+      // Effective mode comes from session.execution_mode (intake-time
+      // preference) — no Mode: marker injected here, since this CTA is
+      // the dashboard's "just continue" affordance, not a phase kickoff.
+      openChatWith("continue", targetAgent);
     });
     startDesignBtn?.addEventListener("click", () => {
       lockBothDesignButtons();
