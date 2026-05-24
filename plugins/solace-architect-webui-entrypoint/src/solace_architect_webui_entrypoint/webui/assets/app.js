@@ -149,6 +149,19 @@
   chatBtn.addEventListener("click", () => {
     const next = document.body.getAttribute("data-chat") === "open" ? "closed" : "open";
     applyChat(next);
+    // When opening the chat panel, auto-scroll to the latest message so
+    // the user lands on the most recent activity (no manual scroll for
+    // a long history). Deferred two frames so any CSS open-transition
+    // has laid out the panel and chatLog has a real scrollHeight to
+    // measure against.
+    if (next === "open") {
+      const log = document.getElementById("chat-log");
+      if (log) {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          log.scrollTop = log.scrollHeight;
+        }));
+      }
+    }
   });
   chatClose.addEventListener("click", () => applyChat("closed"));
   applyChat(STORE.chat());
