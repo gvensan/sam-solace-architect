@@ -58,6 +58,30 @@ def test_stream_drop_raw_pattern():
     assert r["auto_retryable"] is True
 
 
+def test_403_forbidden_is_permission_denied_not_retryable():
+    """A 403 from the LLM proxy is an auth / permission issue, NOT a
+    transient outage — operator must check the API key. Auto-retrying
+    burns budget against a proxy that's reliably saying no.
+    Observed 2026-05-24: 270 '403 Forbidden' lines in sam.log produced
+    by 30 distinct tasks that the FE auto-resumed against.
+
+    The pattern MUST win over the generic 'openaiexception - <html>'
+    pattern below it (first-match-wins in _PATTERNS)."""
+    msg = (
+        "litellm.APIError: APIError: OpenAIException - <html>"
+        "<head><title>403 Forbidden</title></head>"
+        "<body><center><h1>403 Forbidden</h1></center></body></html>"
+        " LiteLLM Retried: 3 times"
+    )
+    r = classify(msg)
+    assert r["category"] == "permission_denied", r
+    assert r["auto_retryable"] is False, r
+    # And the raw PermissionDeniedError class name should hit the same:
+    r2 = classify("openai.PermissionDeniedError: <html>403 Forbidden</html>")
+    assert r2["category"] == "permission_denied"
+    assert r2["auto_retryable"] is False
+
+
 def test_api_error_html_body_is_transient():
     """litellm.APIError + OpenAIException HTML body — observed 2026-05-24
     when the LLM proxy returned an error page instead of JSON. Must classify

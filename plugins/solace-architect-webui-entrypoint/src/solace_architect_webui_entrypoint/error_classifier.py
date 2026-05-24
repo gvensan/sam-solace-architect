@@ -46,11 +46,22 @@ _PATTERNS: list[Tuple[str, str]] = [
     ("stream_drop",        "peer closed connection"),
     ("max_output_limit",   "last event shouldn't be partial"),
     ("max_output_limit",   "llm max output limit"),
-    # API-layer transient errors — observed 2026-05-24: LLM proxy returned
-    # an HTML error body instead of JSON (provider hard-down). These leak
-    # through SAM as raw exception classes (litellm.APIError /
-    # OpenAIException) — match the raw forms so auto-resume + escalation
-    # treat them as transient instead of falling into "unexpected".
+    # Proxy-side 403 / permission-denied. Observed 2026-05-24
+    # (hotel-reservation-eda EP loop): the LLM proxy returned
+    # "<html>403 Forbidden</html>" 270 times across 30 distinct task
+    # failures — an authentication/permission failure, NOT a transient
+    # outage. Auto-retrying a 403 burns budget against a proxy that's
+    # reliably saying no; the operator needs to check the API key.
+    # Must come BEFORE the generic "openaiexception - <html>" pattern
+    # below so this specific shape wins the first-match race.
+    ("permission_denied",  "403 forbidden"),
+    ("permission_denied",  "permissiondeniederror"),
+    # API-layer transient errors — LLM proxy returned an HTML error body
+    # in a way the more-specific patterns above didn't claim (e.g. 502,
+    # generic 500 page). These leak through SAM as raw exception classes
+    # (litellm.APIError / OpenAIException). Match the raw forms so
+    # auto-resume + escalation treat them as transient instead of falling
+    # into "unexpected".
     ("service_unavailable","openaiexception - <html>"),
     ("service_unavailable","apiconnectionerror"),
     ("service_unavailable","litellm.apierror"),
