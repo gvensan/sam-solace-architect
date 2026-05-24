@@ -6324,15 +6324,18 @@
 
     const fire = () => {
       _cancelPendingAutoResume();
-      // Mark BEFORE the jump so a fast re-error after the jump correctly
-      // sees the flag and falls into give-up rather than escalating again.
-      _setFreshEscalated(eid, true);
       // Pin the dispatch to the agent that errored so the resubmit lands
       // on the same agent (the fresh session has no sticky pick yet).
       if (agentName && _PINNABLE_AGENTS.has(agentName) && window.__setPendingDispatchAgent) {
         window.__setPendingDispatchAgent(agentName);
       }
-      startFreshChatSession();    // clears chatLog and resets _autoResumeRetries to 0
+      startFreshChatSession();    // clears chatLog, _autoResumeRetries, AND the escalation flag
+      // Re-set the escalation flag AFTER startFreshChatSession (which clears
+      // it as part of the manual "fresh start" semantics). We want the flag
+      // STICKY across the auto-jump so that the next budget exhaustion hits
+      // give-up rather than triggering a second auto-jump and looping
+      // forever against a genuinely down upstream provider.
+      _setFreshEscalated(eid, true);
       const ci = document.getElementById("chat-input");
       if (ci) {
         ci.value = RESUME_KICKOFF_TEXT;
