@@ -7353,10 +7353,73 @@
   }
   sendToSamCheckbox?.addEventListener("change", _syncDropdownToCheckbox);
 
+  // Slash-command interceptor. When the user types `/<cmd>` as the first
+  // (and typically only) non-whitespace token, we run a FE-side action
+  // instead of dispatching to an agent. Anything else — including the
+  // word "continue" or "stop" without a leading `/` — falls through to
+  // the normal agent dispatch path. Slash commands are explicit so we
+  // can never accidentally fire a UI action when the user meant to ask
+  // the agent a question.
+  function _handleSlashCommand(rawText) {
+    const text = rawText.trim();
+    if (!text.startsWith("/")) return false;
+    const [cmd, ...restArr] = text.slice(1).split(/\s+/);
+    const rest = restArr.join(" ").trim();
+    const c = (cmd || "").toLowerCase();
+    if (c === "new" || c === "fresh") {
+      // Start a fresh chat session. On-disk state is preserved.
+      startFreshChatSession();
+      // If the user passed extra text after /new — e.g. "/new continue" —
+      // submit that as the first message of the fresh session so they
+      // don't have to re-type it.
+      if (rest) {
+        const ci = document.getElementById("chat-input");
+        if (ci) {
+          ci.value = rest;
+          chatForm?.requestSubmit?.();
+        }
+      }
+      chatInput.value = "";
+      return true;
+    }
+    if (c === "stop" || c === "cancel") {
+      if (_currentInflightTaskId && chatSend) {
+        chatSend.click();   // delegates to the existing Stop flow
+        chatInput.value = "";
+      } else {
+        appendChatMessage("agent", "No task is currently in flight — nothing to stop.");
+        chatInput.value = "";
+      }
+      return true;
+    }
+    if (c === "help" || c === "?") {
+      appendChatMessage("agent",
+        "**Slash commands** (typed in this chat, processed by the WebUI — not sent to an agent):\n\n" +
+        "- `/new` — start a fresh chat session (on-disk artifacts / decisions / scope progress are preserved).\n" +
+        "- `/new <message>` — start a fresh session AND submit `<message>` as the first turn.\n" +
+        "- `/stop` (or `/cancel`) — cancel the in-flight task (same as clicking the Stop button).\n" +
+        "- `/help` — show this list.\n\n" +
+        "Anything not starting with `/` is sent to the selected agent as a normal chat message.");
+      chatInput.value = "";
+      return true;
+    }
+    // Unknown slash command — let the user know rather than silently
+    // forwarding it to the agent (which would just be confused by the
+    // leading slash anyway).
+    appendChatMessage("agent",
+      `Unknown command: \`/${escapeHtml(c)}\`. Type \`/help\` to see the available commands.`);
+    chatInput.value = "";
+    return true;
+  }
+
   chatForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = chatInput.value.trim();
     if (!text) return;
+    // Slash-command fast-path — runs a WebUI-side action and skips the
+    // agent dispatch entirely. Falls through to the normal path when
+    // the text doesn't start with `/`.
+    if (_handleSlashCommand(text)) return;
     // C2 fix: disable SEND immediately so a double-click during the dispatch
     // round-trip can't fire two POSTs and produce two in-flight tasks the
     // user can't both cancel. The button stays disabled until either:
