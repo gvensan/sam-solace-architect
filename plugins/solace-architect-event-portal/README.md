@@ -164,6 +164,16 @@ Validation completes). The agent will:
    `provisioning-report.md`, and `asyncapi/*.yaml`
 7. Mark `step="event-portal"` DONE / DONE_WITH_CONCERNS / BLOCKED
 
+### Effective mode
+
+The agent picks Interactive vs Auto by this precedence:
+
+1. `Mode: auto|interactive` in the first task message — explicit override.
+2. `session.execution_mode` from the intake (read via `read_session_state`)
+   — honors the user's intake preference even when they later type
+   "continue" / "proceed" with no `Mode:` marker.
+3. `interactive` as the safety-net default (safer for live infra).
+
 ---
 
 ## Token security
@@ -186,3 +196,16 @@ Blueprint, gated by `preferences.provision_event_portal` in the intake.
 The prior `SAEPProvisioningAgent` plugin and its stub
 `ep_designer_mcp_tools.py` wrappers were removed when this agent
 absorbed the live-provisioning workflow.
+
+### Intake-edit opt-in / opt-out behavior
+
+The intake-submit handler keeps the lifecycle `event-portal` step in
+sync with `preferences.provision_event_portal`:
+
+- **Opt-out → SKIPPED** — the dashboard's EVENT PORTAL tile renders
+  strikethrough; the lifecycle hops directly from Validation to Blueprint.
+- **Opt-in (after a prior opt-out) → SKIPPED is cleared back to
+  NOT_STARTED**, so the phase enters the normal flow on the next submit.
+- A step already in `DONE` / `IN_PROGRESS` / `NEEDS_CONTEXT` / `BLOCKED`
+  is left untouched — flipping the opt-in toggle after the phase ran
+  doesn't erase completion info.

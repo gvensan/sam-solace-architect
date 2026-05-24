@@ -23,7 +23,19 @@ Scope selection comes from the discovery brief; the user can re-enter a scope mi
 - **Interactive** — `ask_user_question` for every blocking decision; user picks from chips with an optional note.
 - **Auto** — proceed with the agent's recommended default; only stop on blocking decisions where confidence is low.
 
+### Effective-mode resolution
+
+The agent picks the effective mode in this order (stops at first hit):
+
+1. `Mode: auto|interactive` in the first message of the A2A task — explicit per-task override.
+2. `session.execution_mode` from `meta/session.yaml` (set by intake submission) — the engagement's standing preference. Honors the intake choice when the user later types free-form like "continue" with no `Mode:` marker.
+3. `interactive` as a safety-net default (only used when both above are missing; shouldn't happen after a successful intake).
+
 The frontend hands each scope to the agent as its own A2A task (the "one scope per task" contract) so a long Design phase doesn't blow the LLM-call cap on one turn.
+
+## Artifact paths
+
+Each scope's artifacts live FLAT under `<scope-name>/<artifact>`. **Never** prefix paths with `design/` — the storage layout has no `design/` parent directory. Correct: `topic-design/topic-taxonomy.yaml`, `event-portal/event-portal-model.yaml`. Wrong: `design/topic-design/topic-taxonomy.yaml`, `design/event-portal/event-portal-model.yaml`. The agent's prompt enforces this as a hard rule.
 
 ## Required env vars
 

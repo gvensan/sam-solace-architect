@@ -177,7 +177,7 @@ After intake submission you land on `/projects/{id}/overview` (the **Progress** 
 | **Timeline** | `/timeline` | Per-step start/end times, durations, and user-wait time (so you see where the engagement spent its hours). |
 | **Open Items** | `/open-items` | Blocking and advisory items the user needs to resolve (Q-numbered). Validation-recorded blockers gate the Blueprint step. |
 | **Artifacts** | `/artifacts` | File browser for everything under the engagement folder — YAMLs, Markdowns, diagrams, exports. |
-| **Stats** | `/stats` | Phase progress (X of Y skills done), token usage by agent/model/day, connected-system counts, EP-provisioning state. |
+| **Stats** | `/stats` | Phase progress (X of Y skills done), token usage by agent/model/day, connected-system counts. (Event Portal status lives on the lifecycle banner's EVENT PORTAL tile — the redundant stats-grid "EP Prov" tile was removed.) |
 | **Export** | `/export` | Download audience packs (Blueprint / Executive / Admin & Ops / Security / Developers) as HTML or PDF, or the full `engagement-package.zip`. |
 
 ### The engagement lifecycle
@@ -196,6 +196,8 @@ The Progress page drives a six-step lifecycle. Each step's "what's next" CTA ope
 
 Each agent reports terminal status via `set_step_status(step=…, status=DONE / DONE_WITH_CONCERNS / BLOCKED, …)`. The Progress view reads `meta/engagement-status.yaml` and shows the next runnable step.
 
+While a multi-step phase is in progress, the **"… in progress"** CTA card renders a scrollable per-sub-step checklist (● done / ◐ next / ◯ pending / ⊘ skipped). Today this is wired for **Design** (9 scopes from `scope_progress` + plan), **Review** (4 reviewers from `reviews/*-review.md` existence), **Event Portal** (3 pipeline stages: plan → provisioned → AsyncAPI), and **Blueprint** (14 sections under `blueprint/` + the final ZIP). The list is fixed-height with a fade-bottom indicator and a "↓ N pending — scroll for more" hint when content overflows.
+
 ### The chat panel
 
 Right side of every page. Resizable; layout state persists in `localStorage`.
@@ -207,6 +209,30 @@ Right side of every page. Resizable; layout state persists in `localStorage`.
 - **Live status narration** — agents emit "Loading docs…", "Writing artifact…", "Provisioning event domains…" before each tool call. These stream via SSE so you see what's happening in real time.
 - **Inline `ask_user_question` chips** — when an agent calls `ask_user_question(...)`, the WebUI renders clickable option chips with an optional note field. Click an option (or type a note + click) to send the structured answer back. This is the standard pause-and-confirm primitive across every SA agent.
 - **Phase handoff cards** — when a phase finishes, the chat shows a "Start <next phase> →" card so you can advance without leaving the chat.
+- **Auto-scroll on toggle** — opening the chat panel from the header button auto-scrolls to the latest message, so you land on current activity rather than the top of a long history.
+- **Streaming text survives refresh** — the in-flight agent bubble is persisted to `localStorage` as it streams (debounced ~750ms), not just on finalize. A page refresh mid-stream — or after a wedged task — recovers whatever was on screen.
+
+#### Slash commands
+
+Type `/` at the start of a chat message to run a WebUI-side action instead of dispatching to an agent. Anything not starting with `/` falls through to the agent as a normal message.
+
+| Command | Action |
+|---|---|
+| `/new` (or `/fresh`) | Start a fresh chat session — clears the in-memory ADK session; on-disk artifacts, decisions, and scope progress are preserved. |
+| `/new <message>` | Fresh session AND auto-submit `<message>` as the first turn — handy for `/new continue`. |
+| `/stop` (or `/cancel`) | Programmatically cancels the in-flight task (same flow as the Stop button). |
+| `/help` (or `/?`) | List the available commands in the chat panel. |
+
+Unknown `/<cmd>` returns an in-chat hint rather than silently forwarding to the agent.
+
+#### Watchdogs
+
+The WebUI auto-recovers from a handful of failure modes without you having to manually intervene:
+
+- **Auto-resume on transient errors** — when an agent task fails with a `MidStreamFallbackError` (LLM stream dropped) or a "service temporarily unavailable" disguised inside a `FinalResponse`, the chat shows an 8s countdown card and re-submits `Continue — pick up where you left off…`. Up to 3 retries per session.
+- **Auto-mode escalation ladder** — when 3 same-session retries fail AND the engagement is in auto mode (intake-time `execution_mode=auto` OR an explicit "Start … Auto" CTA was clicked), a 5s "Switching to a fresh session in 5s…" card fires `startFreshChatSession()` + auto-submits the resume kickoff. A `sa.fresh_escalated.<eid>` localStorage flag prevents looping — a second budget exhaustion shows the give-up card with manual Retry only.
+- **Stuck-task watchdog** — if no SSE event has arrived for 3 minutes AND a task is in flight, a banner offers one-click "Cancel & start fresh" (uses the existing cancel flow then auto-fresh-sessions and resubmits). Suppressed when a question card is waiting — that silence is correct, not a wedge.
+- **Pending-question guard** — all auto-dispatch paths (auto-advance / auto-resume / fresh-session jump / stuck banner) are gated on `.question-card:not(.question-answered)` not being present. Switching tabs back to a tab with an unanswered question can't fire a hidden countdown over your input.
 
 Common chat patterns:
 
@@ -273,6 +299,8 @@ The test suite covers:
 | Chat picker says "(no agents discovered)" | No agents installed or broker discovery still warming up | Wait 15s and the picker re-polls; otherwise install at least one agent plugin |
 | `ValueError: Could not find 'info' dictionary` at startup | Stale install missing module-level `info` | Re-install: `pip install --force-reinstall --no-deps git+…` |
 | `Cannot import 'solace_agent_mesh'` | SAM not in the venv `sam run` uses | `pip install solace-agent-mesh` into that venv |
+| Task appears stuck, no progress for minutes | ADK's `AutoContinue` looping on a deterministic LLM truncation (max-output-tokens hit mid-tool-call). The FE doesn't get any events during the loop. | The stuck-task watchdog renders a banner after 3 minutes of silence. Click "Cancel & start fresh"; agents' resume-aware re-entry picks up from on-disk state. If you'd rather act sooner, type `/stop` then `/new continue`. |
+| "Start a new session" typed in chat — nothing happens | Plain text goes to the agent, which has no power to click WebUI buttons | Type `/new` instead (a slash command — handled WebUI-side). See the Slash commands table in the chat panel section. |
 
 ## License
 
