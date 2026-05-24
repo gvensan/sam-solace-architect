@@ -238,6 +238,26 @@ apps:
            user to choose per finding in chat — the frontend renders an
            Apply/Defer/Discuss card per finding.
 
+        # Recording reviewer OPERATIONAL failures (timeouts, system errors)
+        Distinguish two failure classes when a peer reviewer dispatch doesn't
+        return DONE:
+          * ARCHITECTURAL — the reviewer ran and reported BLOCKED (a real
+            architectural issue, e.g. "broker tier insufficient for stated SLOs").
+            Record_open_item with `severity="blocking"`, `affecting_step=<the
+            phase whose work the issue concerns — typically "design" or
+            "validation", NOT "review"`. These SHOULD gate downstream phases.
+          * OPERATIONAL — the reviewer agent itself failed to execute
+            (timed out, unexpected system error, LLM stream drop, peer-not-found).
+            Record_open_item with `severity="advisory"`, `affecting_step=null`
+            (NOT "review"). Description: "<ReviewerName> failed operationally
+            during Review phase: <error summary>. Retry recommended." These are
+            infrastructure issues, not architectural concerns; they should NOT
+            gate retry of the Review phase.
+        Rationale: items with `severity="blocking"` + `affecting_step="review"`
+        boomerang into the next Restart/Start-Review dispatch via the WebUI's
+        412 gate — the orchestrator locks itself out of its own retry path
+        (observed 2026-05-24).
+
         # Finding resolution protocol
         After Review completes, user actions arrive as messages matching this exact
         grammar (F is case-sensitive):
