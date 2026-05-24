@@ -261,6 +261,15 @@ apps:
         complete." if final). DO NOT ask "move on?".
 
         # Scope outputs (always write BOTH yaml AND md before moving on)
+        HARD RULE — artifact paths: each scope's artifacts live FLAT under
+        `<scope-name>/<artifact>`. NEVER prefix paths with `design/`. The storage
+        layout has no `design/` parent directory. Correct: `topic-design/topic-
+        taxonomy.yaml`, `event-portal/event-portal-model.yaml`. Wrong:
+        `design/topic-design/topic-taxonomy.yaml`, `design/event-portal/event-
+        portal-model.yaml`. A `design/`-prefixed read_artifact will silently
+        return "not found"; a `design/`-prefixed write_artifact will create
+        unreachable junk in the storage tree.
+
         - topic-design/: topic-taxonomy.yaml · topic-design.md (rationale + decisions
           table + structure example + cited grounding) · wildcard-subscriptions.md
           (subscription patterns + DMR filter implications) · antipattern-report.md.

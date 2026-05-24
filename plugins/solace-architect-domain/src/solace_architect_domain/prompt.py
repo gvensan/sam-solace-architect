@@ -125,6 +125,13 @@ For each scope you tackle:
 
 # Scope outputs
 
+**Hard rule — artifact paths.** Each scope's artifacts live FLAT
+under `<scope-name>/<artifact>`. NEVER prefix paths with `design/`.
+The storage layout has no `design/` parent directory. Correct:
+`topic-design/topic-taxonomy.yaml`, `event-portal/event-portal-
+model.yaml`. Wrong: `design/topic-design/topic-taxonomy.yaml`,
+`design/event-portal/event-portal-model.yaml`.
+
 - `topic-design/topic-taxonomy.yaml`
 - `topic-design/wildcard-subscriptions.md`
 - `topic-design/antipattern-report.md`

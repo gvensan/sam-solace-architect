@@ -5535,6 +5535,7 @@
     chatEventSource = new EventSource(`/api/chat/stream/${encodeURIComponent(sessionId)}`);
     chatEventSource.onmessage = (e) => {
       _stampSse();   // any SSE message resets the silence timer
+      _pingProgress();   // and the stuck-task watchdog
       try {
         const ev = JSON.parse(e.data);
         if (ev.type === "TaskStatusUpdateEvent") {
@@ -5797,6 +5798,7 @@
     if (!payload) return;
     try {
       const ev = (typeof payload === "string") ? JSON.parse(payload) : payload;
+      _pingProgress();   // replay events count as progress for the stuck-task watchdog
       // Reuse the EventSource onmessage logic by synthesising an event-
       // shaped object — easiest to just call the relevant branches inline.
       // (Could be refactored to a named function later if the live SSE
@@ -6913,8 +6915,111 @@
   // taskId is empty). Always compare before clearing.
   let _currentInflightTaskId = "";
 
+  // ---------------------------------------------------------------------
+  // Stuck-task watchdog
+  // ---------------------------------------------------------------------
+  // ADK's AutoContinue has no cap on consecutive truncations — if the LLM
+  // deterministically emits the same broken tool call (max-output-tokens
+  // hit mid-call), the task loops internally without emitting any A2A
+  // events to the gateway. The FE then thinks the task is still running
+  // (STOP button armed) but the user sees nothing.
+  //
+  // Watchdog: every WATCHDOG_TICK_MS, if a task is in flight AND no
+  // progress event has arrived in STUCK_THRESHOLD_MS, surface a banner
+  // offering one-click cancel + auto-fresh-session. _lastProgressAt is
+  // pinged by every event handler that hears from the agent — status
+  // updates, text deltas, tool traces, FinalResponses.
+  const STUCK_THRESHOLD_MS = 180000;   // 3 min of agent silence ≈ wedged
+  const WATCHDOG_TICK_MS = 15000;
+  let _lastProgressAt = 0;
+  let _stuckWatchdogInterval = null;
+  let _stuckBannerEl = null;
+
+  function _pingProgress() { _lastProgressAt = Date.now(); }
+
+  function _stopStuckWatchdog() {
+    if (_stuckWatchdogInterval) {
+      clearInterval(_stuckWatchdogInterval);
+      _stuckWatchdogInterval = null;
+    }
+    if (_stuckBannerEl) {
+      _stuckBannerEl.remove();
+      _stuckBannerEl = null;
+    }
+  }
+
+  function _startStuckWatchdog() {
+    _stopStuckWatchdog();
+    _pingProgress();
+    _stuckWatchdogInterval = setInterval(() => {
+      if (!_currentInflightTaskId) {
+        _stopStuckWatchdog();
+        return;
+      }
+      const silentMs = Date.now() - _lastProgressAt;
+      if (silentMs >= STUCK_THRESHOLD_MS && !_stuckBannerEl) {
+        _showStuckBanner(Math.round(silentMs / 1000));
+      }
+    }, WATCHDOG_TICK_MS);
+  }
+
+  function _showStuckBanner(silentSec) {
+    const el = document.createElement("div");
+    el.className = "chat-msg agent stream-drop-card";
+    el.innerHTML = `
+      <div class="stream-drop-header">
+        <span class="stream-drop-icon">⏱</span>
+        <span class="stream-drop-title">Task appears stuck</span>
+      </div>
+      <div class="stream-drop-body">
+        <p>The agent hasn't sent any progress update for <strong>${silentSec}s</strong>. This is usually ADK's auto-continue loop wedged on a truncated tool call — the task is unlikely to recover on its own.</p>
+        <p class="muted">Cancel cleanly + start a fresh chat session — on-disk artifacts and decisions are preserved. The agent's resume-aware re-entry picks up from where it left off.</p>
+      </div>
+      <div class="stream-drop-actions">
+        <button type="button" class="cta-btn cta-btn-secondary stuck-wait">Wait — keep going</button>
+        <button type="button" class="cta-btn stuck-cancel-fresh">Cancel & start fresh</button>
+      </div>`;
+    chatLog.appendChild(el);
+    chatLog.scrollTop = chatLog.scrollHeight;
+    _stuckBannerEl = el;
+    el.querySelector(".stuck-wait")?.addEventListener("click", () => {
+      // Reset the silence timer so the banner doesn't re-appear immediately.
+      _pingProgress();
+      if (_stuckBannerEl) {
+        _stuckBannerEl.remove();
+        _stuckBannerEl = null;
+      }
+    });
+    el.querySelector(".stuck-cancel-fresh")?.addEventListener("click", () => {
+      // Trigger the existing STOP-button flow (cancels via /api/chat/cancel
+      // and unwinds the inflight state). Then after a short grace, start a
+      // fresh chat session and auto-resubmit the standard resume kickoff.
+      if (_stuckBannerEl) {
+        _stuckBannerEl.remove();
+        _stuckBannerEl = null;
+      }
+      if (chatSend && _currentInflightTaskId) {
+        chatSend.click();
+      }
+      setTimeout(() => {
+        startFreshChatSession();
+        const ci = document.getElementById("chat-input");
+        if (ci) {
+          ci.value = RESUME_KICKOFF_TEXT;
+          chatForm?.requestSubmit?.();
+        }
+      }, 1500);
+    });
+  }
+
   function _setChatInflight(taskId) {
     _currentInflightTaskId = taskId || "";
+    // Watchdog: start when a task arms inflight, stop when it clears.
+    if (_currentInflightTaskId) {
+      _startStuckWatchdog();
+    } else {
+      _stopStuckWatchdog();
+    }
     // Body-level data attribute lets CSS gate progress-CTA action buttons
     // (Start Review, View design, etc.) and any other "primary action"
     // surfaces while a task is in flight — without each component knowing
