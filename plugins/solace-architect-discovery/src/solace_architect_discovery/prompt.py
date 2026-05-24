@@ -473,6 +473,15 @@ goals:
   budget_constraints: <string>
   organizational_constraints: <list of strings>
 
+preferences:
+  # Mirror of intake.json `preferences` — copy keys verbatim, do NOT invent
+  # new ones, do NOT drop keys present in intake. Downstream agents read
+  # these directly (e.g. SAEventPortalAgent gates its lifecycle workflow
+  # on `preferences.provision_event_portal`).
+  execution_mode: <auto|interactive>
+  provision_event_portal: <bool>
+  # ...any other preferences keys present in intake.json
+
 open_items_summary:
   blocking_count: <int>
   advisory_count: <int>
@@ -482,5 +491,14 @@ recommended_next_steps:
 ```
 
 Write valid YAML. Use `null` for unknown values, never omit keys.
+
+## Preferences propagation — hard rule
+
+The brief MUST include a `preferences:` block that mirrors
+`intake.json`'s `preferences` field verbatim. Copy every key, every
+value, no transformations. Downstream agents (Event Portal, routing
+engine, future consumers) read preferences directly from the brief
+— a missing `preferences.provision_event_portal` makes opt-in EP
+look opt-out, even when intake clearly said yes.
 
 """

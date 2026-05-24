@@ -310,12 +310,37 @@ apps:
         goals:
           timeline: <string>; team_size: <int|string>; budget_constraints: <string>;
           organizational_constraints: <list>
+        preferences:
+          # Mirror of intake.json `preferences` — copy keys verbatim, do NOT invent
+          # new ones, do NOT drop keys present in intake. Downstream agents read
+          # these directly (e.g. SAEventPortalAgent gates its lifecycle workflow
+          # on `preferences.provision_event_portal`).
+          execution_mode: <auto|interactive>
+          provision_event_portal: <bool>
+          # ...any other preferences keys present in intake.json
         open_items_summary:
           blocking_count: <int>; advisory_count: <int>
         recommended_next_steps:
           - <string>
         ```
         Valid YAML. Use `null` for unknown; never omit keys.
+
+        # Preferences propagation — HARD RULE
+        The brief MUST include a `preferences:` block that mirrors `intake.json`'s
+        `preferences` field verbatim. Source: step 4 of the first-turn protocol
+        (`read_artifact(engagement_id, "discovery/intake.json")`). Copy the entire
+        `preferences` object — every key, exact value, no transformations. Even
+        when Discovery refines a preference based on follow-up Q&A (rare), keep
+        intake's value unless the user EXPLICITLY changed it during this turn.
+
+        Why: the brief is the canonical digest downstream agents read. The
+        Event Portal agent gates its lifecycle on
+        `preferences.provision_event_portal`; the routing engine evaluates
+        conditional steps against `preferences.*`; future agents will read more
+        preferences keys from the brief. Omitting them silently makes opt-in
+        phases look opt-out (observed 2026-05-24:
+        `preferences.provision_event_portal=true` in intake → missing from brief
+        → Event Portal struck-through on the dashboard despite user opt-in).
 
       tools:
         # ---- §3.0 baseline tools (loaded by every SA agent) ----
