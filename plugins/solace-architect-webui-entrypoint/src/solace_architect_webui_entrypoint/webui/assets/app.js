@@ -3134,6 +3134,49 @@
     return loadChatHistory(sid).length > 0;
   }
 
+  // Persist (or update) an in-flight streaming agent bubble keyed by
+  // msgId so the same entry is replaced as text streams in. Without
+  // this, only the FINAL text (from finalizeAgentBubble) lands in
+  // localStorage — refresh mid-stream and the partial bubble vanishes,
+  // even though it was visible on screen seconds earlier.
+  // The {role: "agent", inflight: true} marker tells the rehydrate path
+  // it's an in-flight snapshot (rendered identically to a finalized one;
+  // if the user resumes, the live SSE replaces this entry on next save).
+  function _persistStreamingAgentText(msgId, text) {
+    if (!chatSessionId || !msgId || !text) return;
+    const log = loadChatHistory(chatSessionId);
+    const idx = log.findIndex(m => m.msgId === msgId);
+    const entry = { role: "agent", text, ts: Date.now(), msgId, inflight: true };
+    if (idx >= 0) log[idx] = entry;
+    else log.push(entry);
+    saveChatHistory(chatSessionId, log);
+  }
+
+  // Debounced wrapper — streaming text updates fire on every chunk
+  // (potentially many per second); persist at most every 750ms so we
+  // don't thrash localStorage on a fast stream.
+  let _streamingPersistTimer = null;
+  let _streamingPersistPending = null;       // { msgId, text }
+  function _schedulePersistStreamingAgent(msgId, text) {
+    _streamingPersistPending = { msgId, text };
+    if (_streamingPersistTimer) return;
+    _streamingPersistTimer = setTimeout(() => {
+      _streamingPersistTimer = null;
+      const p = _streamingPersistPending;
+      _streamingPersistPending = null;
+      if (p) _persistStreamingAgentText(p.msgId, p.text);
+    }, 750);
+  }
+  function _flushStreamingPersist() {
+    if (_streamingPersistTimer) {
+      clearTimeout(_streamingPersistTimer);
+      _streamingPersistTimer = null;
+    }
+    const p = _streamingPersistPending;
+    _streamingPersistPending = null;
+    if (p) _persistStreamingAgentText(p.msgId, p.text);
+  }
+
   // Render agent text as sanitized HTML (markdown parsed by marked,
   // sanitized by DOMPurify). User text stays as textContent — we have
   // no reason to render markdown of the user's own input, and it
@@ -4616,6 +4659,7 @@
     pendingAgentMsg = {
       el: wrap, lastText: "", pillsContainer, bubbleEl: bubble,
       dotsEl: dots, pills: [], pillByCallId: new Map(),
+      msgId: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     };
     chatLog.scrollTop = chatLog.scrollHeight;
   }
@@ -4641,6 +4685,7 @@
       pendingAgentMsg = {
         el: wrap, lastText: text, pillsContainer, bubbleEl: bubble,
         dotsEl: null, pills: [], pillByCallId: new Map(),
+        msgId: `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       };
       if (isPill) {
         appendActivityPill(text);
@@ -4660,6 +4705,13 @@
       } else {
         renderAgentMarkdown(pendingAgentMsg.bubbleEl, display);
       }
+    }
+    // Persist the in-flight bubble's current text so a page refresh
+    // mid-stream still recovers what was on screen. Status-pill text
+    // is skipped — pills are transient activity markers, not the
+    // agent's reply.
+    if (!isPill && pendingAgentMsg?.msgId) {
+      _schedulePersistStreamingAgent(pendingAgentMsg.msgId, text);
     }
     chatLog.scrollTop = chatLog.scrollHeight;
   }
@@ -4970,9 +5022,30 @@
     // Persist the final text to history (forms are not persisted — on reload
     // the user sees the cleanText only, which is intentional: the form is
     // single-use; the answer they gave appears as their own message).
+    //
+    // If the streaming-persist path was active (pendingAgentMsg had a
+    // stable msgId), REPLACE that in-flight entry with the cleaned final
+    // — don't append a duplicate. Cancel any pending debounced save so
+    // we don't immediately overwrite the final with stale streaming text.
     if (text && chatSessionId) {
+      _flushStreamingPersist();
+      // Drop the trailing debounce — we're about to overwrite anyway.
+      _streamingPersistPending = null;
+      if (_streamingPersistTimer) {
+        clearTimeout(_streamingPersistTimer);
+        _streamingPersistTimer = null;
+      }
       const log = loadChatHistory(chatSessionId);
-      log.push({ role: "agent", text: cleanText || "[question card]", ts: Date.now() });
+      const finalEntry = {
+        role: "agent",
+        text: cleanText || "[question card]",
+        ts: Date.now(),
+      };
+      const idx = (pendingAgentMsg?.msgId)
+        ? log.findIndex(m => m.msgId === pendingAgentMsg.msgId)
+        : -1;
+      if (idx >= 0) log[idx] = finalEntry;
+      else log.push(finalEntry);
       saveChatHistory(chatSessionId, log);
       updateLoadHistoryButton?.();
     }
@@ -7656,17 +7729,10 @@
       <div class="stat-tile-value">${stats.open_items_blocking}/${stats.open_items_advisory}</div>
       <div class="stat-tile-meta">blocking/advisory</div>
     </div>`);
-    // Map "not-requested" → "N/A" for the EP Prov tile. The internal status
-    // string is informative for tooling but reads as opaque noise in the
-    // dashboard — "N/A" matches user mental model (provisioning isn't
-    // applicable to this engagement).
-    const epProvDisplay = (stats.ep_provisioning_status === "not-requested")
-      ? "N/A"
-      : stats.ep_provisioning_status;
-    tiles.push(`<div class="stat-tile">
-      <div class="stat-tile-label">EP Prov</div>
-      <div class="stat-tile-value">${epProvDisplay}</div>
-    </div>`);
+    // EP Prov tile removed: the top lifecycle banner's EVENT PORTAL tile
+    // (strikethrough on opt-out / DONE check on success / IN_PROGRESS on
+    // active provisioning) already conveys the same state. Keeping both
+    // duplicated the information and crowded the stats row.
 
     return `<div class="tile-row">${tiles.join("")}</div>`;
   }
