@@ -641,6 +641,17 @@ body[data-chat="closed"] .chat-panel { display: none; }
 }
 .chat-send-to-sam input[type="checkbox"] { margin: 0; cursor: pointer; }
 .chat-send-to-sam.hidden { display: none; }
+/* Visual cue when the input is disabled (mid-flight turn). The JS sets
+   `disabled` on the inner <input> via _setChatInflight; without this the
+   label text + chip styling looked identical to active, so the user
+   thought the checkbox was still clickable mid-flight. The dropdown
+   gets a native disabled style; this matches that behavior on the
+   label wrapper. */
+.chat-send-to-sam:has(input:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chat-send-to-sam input[type="checkbox"]:disabled { cursor: not-allowed; }
 
 .chat-form button {
   padding: 8px 16px; background: var(--primary); color: white;
