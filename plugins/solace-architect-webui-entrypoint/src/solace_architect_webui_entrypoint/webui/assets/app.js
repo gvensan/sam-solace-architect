@@ -5472,28 +5472,45 @@
           // after page re-init" bug.
           const ag = _extractRespondingAgent(ev) || (chatAgentSelect?.value || null);
           if (ag) setStickyAgent(currentProjectId(), ag);
-          finalizeAgentBubble(extractAgentText(ev));
-          // C1 fix: only restore SEND if THIS task is the one currently
-          // tracked. A delayed FinalResponse for an older task must not
-          // clobber a newer task's STOP state.
+          const finalText = extractAgentText(ev);
           const finId = ev.data?.id || null;
-          // If the matching CANCELED final arrives normally, drop the
-          // post-cancel safety net so it doesn't fire and print a hint
-          // for a stop that worked.
-          if (finId && finId === _lastCancelTaskId) _clearStopSafetyTimer();
-          _clearChatInflightIfMatches(finId);
-          // A successful turn means the stream-drop retry budget refills.
-          // Without this reset, three consecutive errors during a multi-
-          // scope auto run would lock the auto-resume out for the rest of
-          // the engagement.
-          const _eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
-          if (_eid) {
-            _setAutoResumeRetries(_eid, 0);
-            // Successful turn clears any pending auto-jump-to-fresh-session
-            // state too — the engagement is healthy again, so future error
-            // bursts get the full two-step budget (same-session, then fresh)
-            // rather than skipping straight to give-up.
-            _setFreshEscalated(_eid, false);
+          // Disguised-error fast-path: SAM's common/error_handlers catches
+          // upstream LLM 5xx and returns the human-facing string as a
+          // SUCCESSFUL FinalResponse — not an Error event. Without this
+          // intercept, the text would render as a normal bubble AND the
+          // retry-counter reset below would treat the failure as a
+          // success, breaking the escalation ladder. Route the disguised
+          // error through _handleStreamDropError instead and skip the
+          // success-path reset.
+          const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
+          if (finalText && typeof _isTransientLLMError === "function"
+              && _isTransientLLMError(finalText)) {
+            _handleStreamDropError(agentName);
+            if (finId && finId === _lastCancelTaskId) _clearStopSafetyTimer();
+            _clearChatInflightIfMatches(finId);
+          } else {
+            finalizeAgentBubble(finalText);
+            // C1 fix: only restore SEND if THIS task is the one currently
+            // tracked. A delayed FinalResponse for an older task must not
+            // clobber a newer task's STOP state.
+            // If the matching CANCELED final arrives normally, drop the
+            // post-cancel safety net so it doesn't fire and print a hint
+            // for a stop that worked.
+            if (finId && finId === _lastCancelTaskId) _clearStopSafetyTimer();
+            _clearChatInflightIfMatches(finId);
+            // A successful turn means the stream-drop retry budget refills.
+            // Without this reset, three consecutive errors during a multi-
+            // scope auto run would lock the auto-resume out for the rest of
+            // the engagement.
+            const _eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
+            if (_eid) {
+              _setAutoResumeRetries(_eid, 0);
+              // Successful turn clears any pending auto-jump-to-fresh-session
+              // state too — the engagement is healthy again, so future error
+              // bursts get the full two-step budget (same-session, then fresh)
+              // rather than skipping straight to give-up.
+              _setFreshEscalated(_eid, false);
+            }
           }
         } else if (ev.type === "Error") {
           const msg = ev.data?.message || ev.data?.error || "(error)";
@@ -5701,16 +5718,30 @@
         const text = extractAgentText(ev);
         if (text) startOrUpdateAgentBubble(text);
       } else if (ev.type === "FinalResponse" || ev.type === "Task") {
-        finalizeAgentBubble(extractAgentText(ev));
-        // Mirror of live-SSE: only clear if this task matches the in-flight one.
+        // Disguised-error fast-path (mirror of live-SSE branch above).
+        // SAM returns upstream LLM 5xx as a successful FinalResponse with
+        // the error string as content — route those through the
+        // stream-drop handler instead of rendering as a bubble + resetting
+        // the retry budget.
+        const finalText = extractAgentText(ev);
         const finId = ev.data?.id || null;
-        if (finId && finId === _lastCancelTaskId) _clearStopSafetyTimer();
-        _clearChatInflightIfMatches(finId);
-        // Mirror of live-SSE: refill the stream-drop retry budget on success.
-        const _eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
-        if (_eid) {
-          _setAutoResumeRetries(_eid, 0);
-          _setFreshEscalated(_eid, false);
+        const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
+        if (finalText && typeof _isTransientLLMError === "function"
+            && _isTransientLLMError(finalText)) {
+          _handleStreamDropError(agentName);
+          if (finId && finId === _lastCancelTaskId) _clearStopSafetyTimer();
+          _clearChatInflightIfMatches(finId);
+        } else {
+          finalizeAgentBubble(finalText);
+          // Mirror of live-SSE: only clear if this task matches the in-flight one.
+          if (finId && finId === _lastCancelTaskId) _clearStopSafetyTimer();
+          _clearChatInflightIfMatches(finId);
+          // Mirror of live-SSE: refill the stream-drop retry budget on success.
+          const _eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
+          if (_eid) {
+            _setAutoResumeRetries(_eid, 0);
+            _setFreshEscalated(_eid, false);
+          }
         }
       } else if (ev.type === "Error") {
         const msg = ev.data?.message || ev.data?.error || "(error)";
@@ -6185,7 +6216,17 @@
   function _handleStreamDropError(agentName) {
     const eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
     const retries = _getAutoResumeRetries(eid);
-    const autoMode = (typeof isAutoModeActive === "function") ? isAutoModeActive(eid) : false;
+    // Auto-mode applies if EITHER:
+    //   (a) the ephemeral auto-mode flag is set (user clicked a "Start … Auto"
+    //       CTA earlier and hasn't Paused), OR
+    //   (b) the intake preference cached via rememberExecutionMode is "auto".
+    // Gating on (a) alone broke the escalation when a user came in via
+    // "Continue in chat" / typed-"continue" mid-engagement — those paths
+    // don't call setAutoMode, so an auto-intake engagement looked like
+    // interactive to this function.
+    const ephemeralAuto = (typeof isAutoModeActive === "function") && isAutoModeActive(eid);
+    const intakeAuto = (typeof recallExecutionMode === "function") && recallExecutionMode(eid) === "auto";
+    const autoMode = ephemeralAuto || intakeAuto;
     const escalated = _getFreshEscalated(eid);
 
     // AUTO-MODE ESCALATION LADDER:
