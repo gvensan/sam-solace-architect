@@ -1091,14 +1091,37 @@ async def _persist_intake_artifacts(eid: str, intake: dict, flat: dict) -> list:
 
     # Opt-out phases marked SKIPPED at intake so the dashboard knows they're
     # not applicable rather than sitting in NOT_STARTED limbo. The only
-    # opt-in phase today is Event Portal provisioning.
+    # opt-in phase today is Event Portal provisioning. This block runs on
+    # EVERY intake submit (including edits), so it must keep the lifecycle
+    # status in sync with the current preference — without an inverse
+    # branch, an edit that flips opt-out → opt-in would leave the prior
+    # SKIPPED status stuck, and the dashboard would keep striking through
+    # the Event Portal tile despite the user having opted in.
     prefs = flat.get("preferences") or {}
-    if not prefs.get("provision_event_portal"):
-        await lifecycle_tools.set_step_status(
-            eid, step="event-portal", status="SKIPPED",
-            agent="WebUI-intake",
-            note="Opt-out at intake (preferences.provision_event_portal=false).",
-        )
+    ep_optin = bool(prefs.get("provision_event_portal"))
+    current_status = (
+        (await lifecycle_tools.get_engagement_status(eid)).data or {}
+    ).get("steps", {}).get("event-portal", {}).get("status", "NOT_STARTED")
+    if ep_optin:
+        # Opt-in: undo a prior intake-time SKIPPED so the phase enters the
+        # normal lifecycle. Leave DONE / IN_PROGRESS / NEEDS_CONTEXT / BLOCKED
+        # alone — flipping opt-in on after the phase already ran shouldn't
+        # erase completion info.
+        if current_status == "SKIPPED":
+            await lifecycle_tools.set_step_status(
+                eid, step="event-portal", status="NOT_STARTED",
+                agent="WebUI-intake",
+                note="Opt-in at intake edit (preferences.provision_event_portal=true).",
+            )
+    else:
+        # Opt-out: write SKIPPED unless the phase already has a non-trivial
+        # status (don't overwrite DONE or in-progress states).
+        if current_status in ("NOT_STARTED", "SKIPPED"):
+            await lifecycle_tools.set_step_status(
+                eid, step="event-portal", status="SKIPPED",
+                agent="WebUI-intake",
+                note="Opt-out at intake (preferences.provision_event_portal=false).",
+            )
 
     # Propagate the user's intake-time execution_mode choice into the live
     # session. Without this, session.yaml defaults to "interactive" no
