@@ -58,6 +58,21 @@ def test_stream_drop_raw_pattern():
     assert r["auto_retryable"] is True
 
 
+def test_api_error_html_body_is_transient():
+    """litellm.APIError + OpenAIException HTML body — observed 2026-05-24
+    when the LLM proxy returned an error page instead of JSON. Must classify
+    as service_unavailable so auto-resume + escalation fire (without this,
+    the FE looped 15+ times against a hard-down upstream)."""
+    for msg in (
+        "litellm.APIError: APIError: OpenAIException - <html>",
+        "APIConnectionError: peer reset",
+        "litellm.APIConnectionError: connect timed out",
+    ):
+        r = classify(msg)
+        assert r["category"] == "service_unavailable", msg
+        assert r["auto_retryable"] is True, msg
+
+
 def test_max_output_limit():
     """The ADK 'Last event shouldn't be partial' pattern."""
     r = classify("Last event shouldn't be partial. LLM max output limit may be reached.")

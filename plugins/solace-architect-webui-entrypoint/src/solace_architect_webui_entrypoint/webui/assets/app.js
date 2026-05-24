@@ -6258,6 +6258,15 @@
       // reached." Observed 2026-05-22 23:40:50, Domain agent.
       || m.includes("last event shouldn't be partial")
       || m.includes("llm max output limit")
+      // API-layer transient — observed 2026-05-24: LLM proxy returned an
+      // HTML error body instead of JSON. Surfaces as litellm.APIError /
+      // OpenAIException strings. Without these patterns, the FE's
+      // auto-resume escalation never fires and the user loops forever
+      // against a hard-down upstream.
+      || m.includes("openaiexception - <html>")
+      || m.includes("apiconnectionerror")
+      || m.includes("litellm.apierror")
+      || m.includes("litellm.apiconnectionerror")
     );
   }
   // Back-compat alias — earlier code (and future PRs being rebased) may

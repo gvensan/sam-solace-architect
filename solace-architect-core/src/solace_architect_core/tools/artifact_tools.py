@@ -85,9 +85,30 @@ def _check_terminology(content: str) -> ValidationResult:
 def _check_path(engagement_id: str, artifact_name: str) -> ValidationResult:
     try:
         safe_artifact_path(engagement_id, artifact_name)
-        return ValidationResult(ok=True, violations=[])
     except ValueError as e:
         return ValidationResult(ok=False, violations=[], error=str(e))
+    # SADomainAgent hallucination guard. The Design phase's per-scope artifact
+    # layout is FLAT — `topic-design/topic-taxonomy.yaml`, `event-portal/event-
+    # portal-model.yaml`, etc. NOT `design/topic-design/...` or `design/event-
+    # portal/...`. Domain's prompt has a HARD RULE saying so, but LLMs are
+    # non-deterministic and we observed (2026-05-24, hotel-reservation-eda)
+    # the EP model written at `design/event-portal/event-portal-model.yaml`
+    # — which means the downstream EP agent's read_artifact at the canonical
+    # path fails with not-found and the lifecycle stalls.
+    # Reject writes here so the agent sees a clear error and corrects,
+    # rather than silently dumping at the wrong path.
+    if artifact_name.startswith("design/"):
+        return ValidationResult(
+            ok=False, violations=[],
+            error=(
+                f"artifact path '{artifact_name}' starts with 'design/' — the "
+                f"Design phase uses a FLAT per-scope layout. Drop the 'design/' "
+                f"prefix and retry "
+                f"(e.g. 'event-portal/event-portal-model.yaml', NOT "
+                f"'design/event-portal/event-portal-model.yaml')."
+            ),
+        )
+    return ValidationResult(ok=True, violations=[])
 
 
 def _check_naming(content: str) -> ValidationResult:

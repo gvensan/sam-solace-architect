@@ -46,6 +46,23 @@ async def test_path_traversal_rejected():
 
 
 @pytest.mark.asyncio
+async def test_design_prefix_rejected():
+    """The Design phase per-scope layout is FLAT — `topic-design/…`,
+    `event-portal/…`. Domain agent hallucinations like `design/event-portal/
+    event-portal-model.yaml` (observed 2026-05-24, hotel-reservation-eda)
+    must be rejected so the agent retries with the canonical path.
+    Without this, downstream agents looking at the canonical path see
+    nothing on disk and the lifecycle stalls."""
+    r = await artifact_tools.write_artifact(
+        "eng-design-prefix",
+        "design/event-portal/event-portal-model.yaml",
+        "application_domain: {name: x}",
+    )
+    assert not r.ok
+    assert "design/" in (r.error or "").lower()
+
+
+@pytest.mark.asyncio
 async def test_read_missing_artifact():
     r = await artifact_tools.read_artifact("eng-4", "missing/file.yaml")
     assert not r.ok
@@ -288,12 +305,16 @@ async def test_overview_artifacts_count_excludes_meta_and_intake():
     # Plus the user's intake (INPUT, should not count).
     await artifact_tools.write_artifact(eid, "discovery/intake.json", '{"x": 1}')
     await artifact_tools.write_artifact(eid, "discovery/intake.md", "# intake")
-    # Real workflow outputs (SHOULD count).
+    # Real workflow outputs (SHOULD count). Use canonical paths — the
+    # Design phase's per-scope layout is FLAT (`topic-design/…`,
+    # `integration/…`), not `design/…`. write_artifact rejects the
+    # `design/` prefix as an LLM-hallucination guard, so the test must
+    # use the real layout to land artifacts on disk.
     await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml",
                                         "systems: []\nrequirements: {}\npreferences: {}")
     await artifact_tools.write_artifact(eid, "discovery/discovery-report.md", "# report")
-    await artifact_tools.write_artifact(eid, "design/topic-taxonomy.yaml", "topics: []")
-    await artifact_tools.write_artifact(eid, "design/integration/integration-map.yaml", "links: []")
+    await artifact_tools.write_artifact(eid, "topic-design/topic-taxonomy.yaml", "topics: []")
+    await artifact_tools.write_artifact(eid, "integration/integration-map.yaml", "links: []")
     await artifact_tools.write_artifact(eid, "blueprint/architecture.md", "# arch")
 
     r = await dashboard_tools.compute_overview_stats(eid)
