@@ -6186,6 +6186,22 @@
     }
   }
 
+  // Returns true when at least one question card is still awaiting the
+  // user's answer. Used as a hard gate on every auto-dispatch path
+  // (auto-advance, auto-resume, fresh-session escalation, stuck-task
+  // watchdog) — countdowns continue to run while the tab is hidden
+  // (browsers throttle but don't pause setTimeout), so without this
+  // gate switching back to the tab could fire a dispatch on top of an
+  // unanswered question and silently pick an option for the user.
+  //
+  // A card with class `question-answered` (set by the click handlers)
+  // is treated as no-longer-pending.
+  function _hasPendingQuestionCard() {
+    try {
+      return !!chatLog?.querySelector?.(".question-card:not(.question-answered)");
+    } catch { return false; }
+  }
+
   // ── Stream-drop auto-resume ──────────────────────────────────────────────
   //
   // Observed pattern (2026-05-23): upstream OpenAI streaming connection drops
@@ -6440,6 +6456,16 @@
 
     const dispatch = () => {
       _cancelPendingAutoResume();
+      // Block auto-resume while a question card is waiting — typing
+      // "continue" over an unanswered form card would silently bypass
+      // the agent's prompt and submit nothing meaningful.
+      if (_hasPendingQuestionCard()) {
+        const body = card.querySelector(".stream-drop-body");
+        if (body) {
+          body.innerHTML = `<p class="muted">Auto-resume paused — a question card is awaiting your answer. Resume manually after you answer.</p>`;
+        }
+        return;
+      }
       _setAutoResumeRetries(eid, retries + 1);
       // Pin the dispatch to the agent that errored — only if it's a real
       // SA agent name (not the "the agent" placeholder fallback).
@@ -6502,6 +6528,17 @@
 
     const fire = () => {
       _cancelPendingAutoResume();
+      // Block the auto-jump while a question card is waiting. (Note:
+      // startFreshChatSession clears chatLog wholesale, which would
+      // destroy the user's pending question card without them having
+      // answered.) Pause silently — the user can hit Switch now manually.
+      if (_hasPendingQuestionCard()) {
+        const body = card.querySelector(".stream-drop-body");
+        if (body) {
+          body.innerHTML = `<p class="muted">Fresh-session jump paused — a question card is awaiting your answer. Answer it, then click Switch now if you still want to start fresh.</p>`;
+        }
+        return;
+      }
       // Pin the dispatch to the agent that errored so the resubmit lands
       // on the same agent (the fresh session has no sticky pick yet).
       if (agentName && _PINNABLE_AGENTS.has(agentName) && window.__setPendingDispatchAgent) {
@@ -6611,6 +6648,9 @@
     const eid = currentProjectId?.();
     if (!eid) return;
     if (!isAutoModeActive(eid)) return;
+    // Block on unanswered questions — don't auto-dispatch the next scope
+    // while the agent is still expecting an explicit user answer.
+    if (_hasPendingQuestionCard()) return;
     let lifecycle;
     try {
       lifecycle = await fetch(`/api/engagements/${encodeURIComponent(eid)}/lifecycle`)
@@ -6645,6 +6685,15 @@
 
     const dispatch = () => {
       _cancelPendingAutoAdvance();
+      // Late gate — a question card may have appeared during the 3s
+      // countdown (or tab was hidden through it). Don't auto-dispatch
+      // over a pending answer.
+      if (_hasPendingQuestionCard()) {
+        card.querySelector(".auto-advance-body").innerHTML =
+          `<p class="muted">A question is waiting for your answer. Auto-advance paused — answer the question and the next scope will dispatch on the agent's next turn.</p>`;
+        card.querySelector(".auto-advance-actions").innerHTML = "";
+        return;
+      }
       card.remove();
       try { localStorage.setItem(dedupKey, fingerprint); } catch {}
       const ci = document.getElementById("chat-input");
@@ -7029,6 +7078,10 @@
         _stopStuckWatchdog();
         return;
       }
+      // Don't flag as stuck when the agent is legitimately waiting on
+      // the user's answer to a question card — the silence is correct,
+      // not a wedge.
+      if (_hasPendingQuestionCard()) return;
       const silentMs = Date.now() - _lastProgressAt;
       if (silentMs >= STUCK_THRESHOLD_MS && !_stuckBannerEl) {
         _showStuckBanner(Math.round(silentMs / 1000));
