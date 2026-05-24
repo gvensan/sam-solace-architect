@@ -97,6 +97,41 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
     runnable = [s for s in plan if s["included"] and s["step"] not in completed]
     recommended_next = runnable[0]["step"] if runnable else None
 
+    # Per-design-scope status array for the design-in-progress dashboard
+    # panel. Pulls scope_progress from meta/engagement-status.yaml and
+    # joins with the plan so each scope row has {scope, status, ?reason}.
+    # Status taxonomy (FE renders ● ◐ ◯ ⊘):
+    #   - done    — scope is in scope_progress.done[]
+    #   - next    — scope == scope_progress.next (about to dispatch)
+    #   - pending — included by intake but not yet started
+    #   - skipped — intake-gated out (skip_reason from the plan entry)
+    status_doc = read_yaml(engagement_id, "meta/engagement-status.yaml", default={"steps": {}}) or {"steps": {}}
+    sp = ((status_doc.get("steps") or {}).get("design") or {}).get("scope_progress") or {}
+    sp_done = set(sp.get("done") or [])
+    sp_next = sp.get("next")
+    design_scopes = []
+    for s in plan:
+        # Domain-owned design steps are the multi-scope rows in skill-routing;
+        # the orchestrator's wrappers / reviewer / validation / EP / blueprint
+        # have different shapes and aren't part of Design's scope list.
+        if s.get("agent") != "SADomainAgent":
+            continue
+        scope_id = s.get("scope") or s.get("step")
+        if not scope_id:
+            continue
+        if not s["included"]:
+            design_scopes.append({
+                "scope": scope_id,
+                "status": "skipped",
+                "skip_reason": s.get("skip_reason") or "",
+            })
+        elif scope_id in sp_done:
+            design_scopes.append({"scope": scope_id, "status": "done"})
+        elif sp_next and scope_id == sp_next:
+            design_scopes.append({"scope": scope_id, "status": "next"})
+        else:
+            design_scopes.append({"scope": scope_id, "status": "pending"})
+
     artifacts = _list_artifacts(engagement_id)
     # ARTIFACTS tile counts workflow-PRODUCED deliverables, not system
     # bookkeeping or user inputs. Without this filter, a freshly-restarted
@@ -139,6 +174,7 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
         "phase_progress": {k: f"{v[0]}/{v[1]}" for k, v in phase_counts.items()},
         "recommended_next_step": recommended_next,
         "skip_reasons": [{"step": s["step"], "reason": s["skip_reason"]} for s in skips],
+        "design_scopes": design_scopes,
     })
 
 

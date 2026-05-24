@@ -1521,6 +1521,63 @@
     return Math.round(s / 86400) + "d ago";
   }
 
+  // Human labels for design scope ids. Falls back to the raw id when a
+  // new scope is added to skill-routing.yaml that this map doesn't know
+  // about yet (better than rendering nothing).
+  const _DESIGN_SCOPE_LABEL = {
+    "topic-design":         "Topic taxonomy",
+    "broker-select":        "Broker selection",
+    "sam-design":           "SAM topology",
+    "protocol-select":      "Protocol selection",
+    "mesh-design":          "DMR mesh design",
+    "ha-dr":                "HA / DR",
+    "migration":            "Migration plan",
+    "integration":          "Micro-Integration",
+    "event-portal-design":  "Event Portal model",
+  };
+  const _SCOPE_STATUS_ICON = {
+    done:    "●",
+    next:    "◐",
+    pending: "◯",
+    skipped: "⊘",
+  };
+  const _SCOPE_STATUS_LABEL = {
+    done:    "Done",
+    next:    "Next",
+    pending: "Pending",
+    skipped: "Skipped",
+  };
+
+  function _renderDesignScopeList(scopes) {
+    if (!Array.isArray(scopes) || !scopes.length) return "";
+    const rows = scopes.map(s => {
+      const status = s.status || "pending";
+      const icon = _SCOPE_STATUS_ICON[status] || "◯";
+      const label = _DESIGN_SCOPE_LABEL[s.scope] || s.scope;
+      const statusLabel = _SCOPE_STATUS_LABEL[status] || status;
+      const reasonAttr = s.skip_reason ? ` title="${escapeHtml(s.skip_reason)}"` : "";
+      return `
+        <li class="design-scope-row design-scope-${escapeHtml(status)}"${reasonAttr}>
+          <span class="design-scope-icon">${icon}</span>
+          <span class="design-scope-label">${escapeHtml(label)}</span>
+          <span class="design-scope-id"><code>${escapeHtml(s.scope)}</code></span>
+          <span class="design-scope-status">${escapeHtml(statusLabel)}</span>
+        </li>`;
+    }).join("");
+    // Pending-count hint — only useful when there's enough rows to overflow
+    // the visible area; we let CSS hide it when not needed. Counts both
+    // "next" + "pending" so the user sees "5 still to come" not "4 + 1".
+    const remaining = scopes.filter(s => s.status === "next" || s.status === "pending").length;
+    const hint = remaining > 0
+      ? `<div class="design-scope-hint">↓ ${remaining} pending — scroll for more</div>`
+      : "";
+    return `
+      <div class="design-scope-list-wrap">
+        <ul class="design-scope-list" role="list">${rows}</ul>
+        ${hint}
+      </div>`;
+  }
+
   function _phaseExecHint({ phase, lifecycle, stats }) {
     const step = lifecycle?.steps?.[phase] || {};
     const pieces = [];
@@ -1854,16 +1911,15 @@
 
     // Design in progress — agent is mid-flow through scopes.
     if (designInProgress) {
+      const scopeListHtml = _renderDesignScopeList(stats?.design_scopes || []);
       return `
         <div class="progress-cta in-progress" role="region" aria-label="Design in progress">
           <div class="progress-cta-body">
             <div class="progress-cta-eyebrow">Design in progress</div>
             <h2>Continue Design in chat</h2>
             <p>SADomainAgent is working through the design scopes.
-            ${designNote ? `<em>${escapeHtml(designNote)}</em> ` : ""}
-            Click <strong>Continue in chat →</strong> to open the chat panel
-            and answer the next form — each scope's artifact appears on the
-            Artifacts tab as the agent finishes.</p>
+            ${designNote ? `<em>${escapeHtml(designNote)}</em>` : ""}</p>
+            ${scopeListHtml}
             ${_phaseExecHint({ phase: "design", lifecycle, stats })}
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
