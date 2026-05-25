@@ -236,6 +236,18 @@ def install() -> None:
     except Exception as exc:
         log.debug("[SA telemetry] model-price registration skipped: %s", exc)
 
+    # Install the WAF prompt sanitizer (separate concern — see
+    # _waf_prompt_sanitizer). It rides this install() because this is the one
+    # bootstrap entrypoint every agent's lifecycle.init() already calls; the
+    # plugins are installed non-editable, so we can't add a new call to their
+    # lifecycle without a reinstall. Idempotent and fail-safe — a failure here
+    # must never break agent boot.
+    try:
+        from ._waf_prompt_sanitizer import install as _install_waf_sanitizer
+        _install_waf_sanitizer()
+    except Exception as exc:
+        log.warning("[SA telemetry] WAF prompt-sanitizer install skipped: %s", exc)
+
     try:
         from solace_agent_mesh.agent.adk import setup as _sam_setup
     except Exception as e:  # pragma: no cover — SAM should always be importable
