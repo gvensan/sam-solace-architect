@@ -127,21 +127,73 @@ def derive_applications(brief: dict) -> list[dict]:
     return apps
 
 
+# ── schemas ──────────────────────────────────────────────────────────────────
+
+
+def derive_schemas(events: list[dict]) -> list[dict]:
+    """One JSON-schema PLACEHOLDER per event payload (1:1 with the event).
+
+    The design phase can't know the real field set, so each schema is a stub
+    (``type: object`` + an inferred id property) the EP agent/user fills in. But
+    without it the EP model has no schema layer at all — so provisioning creates
+    no schemas and binds no event to a schema version. Emitting a stub gives
+    provisioning a schema to create and an event→schema binding to declare; the
+    ``placeholder`` flag marks it for replacement with the real payload.
+    """
+    schemas: list[dict] = []
+    for ev in events:
+        name = ev.get("name") or "event"
+        noun = ev.get("noun")
+        id_prop = f"{noun}Id" if noun else "id"
+        schemas.append({
+            "name": f"{name}.schema",
+            "schema_type": "jsonSchema",
+            "content_type": "application/json",
+            "version": ev.get("version", "v1"),
+            "event": name,
+            "placeholder": True,
+            "content": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": f"{name} payload",
+                "type": "object",
+                "properties": {
+                    id_prop: {"type": "string",
+                              "description": f"Identifier of the {noun or 'entity'}."},
+                    "eventTime": {"type": "string", "format": "date-time"},
+                },
+                "required": [id_prop],
+            },
+            "note": ("PLACEHOLDER schema — replace properties with the real payload "
+                     "before provisioning."),
+        })
+    return schemas
+
+
 # ── aggregate ────────────────────────────────────────────────────────────────
 
 
 def derive_event_portal_model(taxonomy: Optional[dict], brief: dict) -> dict:
-    """Full starting EP model: domains + applications + event catalog."""
+    """Full starting EP model: domains + schemas + applications + event catalog."""
     taxonomy = taxonomy if isinstance(taxonomy, dict) else {}
     domains = derive_domains(taxonomy, brief)
     events = derive_events(taxonomy, brief)
+    schemas = derive_schemas(events)
+    # Bind each event to its (1:1) schema so provisioning can declare the
+    # event→schema-version relationship.
+    schema_by_event = {s["event"]: s["name"] for s in schemas}
+    for ev in events:
+        ev["schema"] = schema_by_event.get(ev.get("name"))
     apps = derive_applications(brief)
     return {
         "domains": domains,
+        "schemas": schemas,
         "applications": apps,
         "events": events,
-        "counts": {"domains": len(domains), "applications": len(apps), "events": len(events)},
+        "counts": {"domains": len(domains), "schemas": len(schemas),
+                   "applications": len(apps), "events": len(events)},
         "note": ("Starting EP model derived deterministically from topic-taxonomy "
                  "(domain + noun/verb vocabulary) + landscape (apps + pub/sub roles). "
-                 "EP agent: push these via the EP MCP and reconcile; do NOT re-derive."),
+                 "Schemas are PLACEHOLDER stubs (one per event) — replace payloads "
+                 "with the real fields. EP agent: push these via the EP MCP and "
+                 "reconcile; do NOT re-derive."),
     }

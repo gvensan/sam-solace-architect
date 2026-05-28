@@ -67,3 +67,30 @@ def test_full_model_counts():
     assert m["counts"]["applications"] == 3
     assert m["counts"]["events"] >= 3
     assert "domains" in m and "applications" in m and "events" in m
+
+
+def test_schemas_one_per_event():
+    evs = ep.derive_events(_taxonomy(), _brief())
+    schemas = ep.derive_schemas(evs)
+    assert len(schemas) == len(evs)
+    s = schemas[0]
+    assert s["schema_type"] == "jsonSchema"
+    assert s["content_type"] == "application/json"
+    assert s["placeholder"] is True
+    assert s["content"]["type"] == "object"
+    # The inferred id property is required.
+    assert s["content"]["required"]
+
+
+def test_events_bound_to_schema():
+    m = ep.derive_event_portal_model(_taxonomy(), _brief())
+    by_name = {s["name"] for s in m["schemas"]}
+    assert m["events"], "expected at least one event"
+    for ev in m["events"]:
+        assert ev.get("schema") in by_name
+
+
+def test_full_model_counts_includes_schemas():
+    m = ep.derive_event_portal_model(_taxonomy(), _brief())
+    assert "schemas" in m
+    assert m["counts"]["schemas"] == len(m["schemas"]) == len(m["events"])
