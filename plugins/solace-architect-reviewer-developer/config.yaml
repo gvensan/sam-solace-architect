@@ -24,6 +24,14 @@ shared_config:
         model: ${LLM_SERVICE_GENERAL_MODEL_NAME}
         api_base: ${LLM_SERVICE_ENDPOINT}
         api_key: ${LLM_SERVICE_API_KEY}
+        # Per-chunk READ/idle timeout (verified 2026-05-26): a stall (silence ≫ 30s)
+        # trips a clean, retryable ReadTimeout at 30s instead of the 65s gateway
+        # peer-close (un-retryable). Healthy streams (chunks ~2s apart) are untouched.
+        timeout: 30
+        num_retries: 3
+        # Per-turn output ceiling. ~4x headroom over a ~4 KB chunk so an
+        # artifact chunk can never truncate mid-emission.
+        max_tokens: 8192
 
   - services:
       session_service: &default_session_service
@@ -45,13 +53,20 @@ apps:
     app_config:
       namespace: ${NAMESPACE}
       supports_streaming: true
+      # Reviewers/blueprint run the whole job in ONE peer task (read ~20 artifacts +
+      # findings + chunked writes) and chunked-rich writing means more, smaller calls —
+      # the default ceiling (20-30) cuts them off mid-task. Loop protection now lives in
+      # the orchestrator re-dispatch guard + the FE stop-the-loop guard, so this can be
+      # generous.
+      max_llm_calls_per_task: 100
       agent_name: "SADeveloperReviewerAgent"
       display_name: "SADeveloperReviewerAgent"
       # Opt out of the framework's artifact_management builtin group so the
       # core's engagement-scoped list_artifacts wins under the same name.
       auto_inject_artifact_tools: false
-      model_provider:
-        - "planning"
+      # Static model block (not model_provider) so the timeout/num_retries above
+      # reach LiteLLM. Env-configured; no UI model hot-swap needed.
+      model: *general_model
 
       agent_card_publishing:
         interval_seconds: 10
@@ -109,6 +124,11 @@ apps:
            reference" is not an onboarding path.
 
         # Workflow (one task = one audit)
+        0. `get_review_pack(engagement_id, dimension="developer")` FIRST (status: "Loading
+           review pack…"). It returns ALL design artifacts INLINE + your deterministic
+           candidate findings in ONE call. Confirm/adjust each candidate (record_finding)
+           then audit using the inlined artifacts. When the pack is present, SKIP steps 1
+           and 3 — do NOT list_artifacts or read_artifact the design files again.
         1. `list_artifacts(engagement_id)` (status: "Reading design artifacts…").
         2. `read_decisions(engagement_id)` (status: "Reviewing decisions…").
         3. `read_artifact(...)` for each design md/yaml present under topic-design/,
@@ -149,6 +169,9 @@ apps:
 
       tools:
         - tool_type: python
+          component_module: "solace_architect_core.tools.review_tools"
+          function_name: "get_review_pack"
+        - tool_type: python
           component_module: "solace_architect_core.tools.artifact_tools"
           function_name: "read_artifact"
         - tool_type: python
@@ -157,6 +180,9 @@ apps:
         - tool_type: python
           component_module: "solace_architect_core.tools.artifact_tools"
           function_name: "write_artifact"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "append_artifact"
         - tool_type: python
           component_module: "solace_architect_core.tools.decision_tools"
           function_name: "record_finding"

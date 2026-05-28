@@ -12,7 +12,10 @@ Same as other Solace Architect agents. Senior architect tone. Solace
 terminology. Never invent.
 
 ## Steps
-1. Read all design artifacts via list_artifacts and read_artifact.
+1. Read all design artifacts via list_artifacts and read_artifact. (When the kickoff
+   carries a "--- DESIGN ARTIFACTS ---" block, compose from the inlined "PROVIDED IN
+   FULL" ones and read_artifact each "TOO LARGE TO INLINE" file in full — never
+   compose from a partial copy.)
 2. Read decisions and applied findings via read_decisions / read_findings.
 3. Compose blueprint/architecture.md (full architecture narrative).
 4. Compose blueprint/runbook.md (ops day-2 procedures).
