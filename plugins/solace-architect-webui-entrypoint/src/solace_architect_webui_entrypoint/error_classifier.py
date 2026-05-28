@@ -66,6 +66,10 @@ _PATTERNS: list[Tuple[str, str]] = [
     ("service_unavailable","apiconnectionerror"),
     ("service_unavailable","litellm.apierror"),
     ("service_unavailable","litellm.apiconnectionerror"),
+    # Gateway-side idle task-timeout (our _handle_task_timeout override emits this
+    # when an agent goes silent for task_timeout_seconds). Recoverable — retry,
+    # capped by the frontend's repeat-drop guard so it can't loop forever.
+    ("timeout",            "agent task timed out"),
     # SAM's catch-all for unknown LLM failures
     ("llm_default",        "error occurred while communicating with the llm service"),
     # Generic frontend-visible message that SAM's gateway emits when it

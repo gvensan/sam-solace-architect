@@ -1080,6 +1080,8 @@ body[data-inflight="1"] .progress-cta-actions-row a.cta-btn {
 }
 
 /* Auto-mode advance card — rendered between scopes while Auto loop is armed. */
+/* Container style — reused by the orchestrated "Continue scope" card. (The
+   classic auto-advance card's sub-element rules were removed with the engine.) */
 .auto-advance-card {
   background: rgba(0,200,149,0.06);
   border: 1px solid var(--accent, #00C895);
@@ -1088,23 +1090,6 @@ body[data-inflight="1"] .progress-cta-actions-row a.cta-btn {
   margin: 6px 0;
   font-size: 13px;
 }
-.auto-advance-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-.auto-advance-icon { font-size: 16px; }
-.auto-advance-title { color: var(--accent, #00C895); letter-spacing: 0.02em; }
-.auto-advance-body p { margin: 2px 0; line-height: 1.4; }
-.auto-advance-body .muted { color: var(--muted, #888); font-size: 12px; }
-.auto-advance-countdown { font-family: 'Space Mono', monospace; font-size: 12px; }
-.auto-advance-secs { color: var(--accent, #00C895); font-weight: 600; }
-.auto-advance-actions {
-  display: flex; gap: 8px; margin-top: 8px;
-}
-.auto-advance-actions .cta-btn { padding: 4px 10px; font-size: 12px; }
 
 /* Stream-drop resume card — rendered when an upstream LLM stream drops
    mid-turn (MidStreamFallbackError / incomplete chunked read / "service

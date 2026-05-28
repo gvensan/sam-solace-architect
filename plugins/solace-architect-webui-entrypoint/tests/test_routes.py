@@ -557,3 +557,219 @@ async def test_reset_discovery_unlinks_stakeholder_report():
     # And the removed-artifacts list reports the deletions.
     removed = set(result.get("removed_artifacts", []))
     assert "discovery/discovery-report.md" in removed, removed
+
+
+# ----- Design orchestrator (deterministic Design engine) -----
+
+import asyncio
+
+from solace_architect_core._storage import write_yaml, write_text
+from solace_architect_core.orchestrator import design_state as ds
+from solace_architect_webui_entrypoint.routes.api import design_advance, design_state_view
+
+
+def _seed_minimal_brief(eid):
+    """Greenfield brief with no AI / multi-site / guarantee / existing-messaging,
+    so only the always-on design scopes apply (topic-design, broker-select, ...)."""
+    write_yaml(eid, "discovery/discovery-brief.yaml", {
+        "project": {"type": "greenfield"},
+        "landscape": {"systems": [{"name": "orders-service"}]},
+        "requirements": {},
+    })
+
+
+def test_design_orchestrator_routes_registered():
+    paths = {(p, m) for m, p, _ in API_ROUTES}
+    assert ("/api/engagements/{engagement_id}/design/advance", "POST") in paths
+    assert ("/api/engagements/{engagement_id}/design/state", "GET") in paths
+
+
+def test_design_advance_drives_scopes_in_order():
+    eid = "orch-eng-1"
+    _seed_minimal_brief(eid)
+
+    # First advance: no state yet → init from the plan + dispatch the first scope.
+    a1 = asyncio.run(design_advance(eid, mode="auto"))
+    assert a1["action"] == "dispatch"
+    assert a1["scope"] == "topic-design"
+    assert a1["agent"] == "SADomainAgent"
+    assert "WORKER MODE" in a1["kickoff"]
+    assert "Scope: topic-design" in a1["kickoff"]
+    assert a1["done"] == []
+
+    # Worker "completes" topic-design by writing its structured artifact.
+    write_text(eid, "topic-design/topic-taxonomy.yaml", "topics: []\n")
+
+    # Next advance: orchestrator detects the artifact on disk → advances.
+    a2 = asyncio.run(design_advance(eid, mode="auto", last_scope="topic-design"))
+    assert a2["action"] == "dispatch"
+    assert a2["scope"] == "broker-select"
+    assert "topic-design" in a2["done"]
+
+    view = asyncio.run(design_state_view(eid))
+    assert view["exists"] is True
+    assert ds.scope_status(view["state"], "topic-design") == ds.DONE
+
+
+def test_design_advance_failed_attempts_exhaust_budget():
+    eid = "orch-eng-2"
+    _seed_minimal_brief(eid)
+    last = None
+    for _ in range(ds.MAX_ATTEMPTS):
+        a = asyncio.run(design_advance(eid, mode="auto", last_scope=last, outcome="failed" if last else None))
+        assert a["action"] == "dispatch"
+        assert a["scope"] == "topic-design"
+        last = "topic-design"
+    final = asyncio.run(design_advance(eid, mode="auto", last_scope="topic-design", outcome="failed"))
+    assert final["action"] == "retry_exhausted"
+    assert final["scope"] == "topic-design"
+
+
+def test_design_advance_question_parks_for_user():
+    eid = "orch-eng-3"
+    _seed_minimal_brief(eid)
+    asyncio.run(design_advance(eid, mode="interactive"))  # dispatch topic-design
+    a = asyncio.run(design_advance(eid, mode="interactive", last_scope="topic-design", outcome="question"))
+    assert a["action"] == "await_user"
+    assert a["scope"] == "topic-design"
+
+
+def test_design_advance_renders_prose_companion():
+    """Phase C: worker writes only the structured YAML; the orchestrator renders
+    the .md companion deterministically."""
+    from solace_architect_core._storage import read_text
+    eid = "orch-eng-4"
+    _seed_minimal_brief(eid)
+    asyncio.run(design_advance(eid, mode="auto"))  # dispatch topic-design
+    write_text(eid, "topic-design/topic-taxonomy.yaml",
+               "scope: topic-design\nstructure:\n  pattern: domain/noun/verb\n")
+    asyncio.run(design_advance(eid, mode="auto", last_scope="topic-design"))
+    md = read_text(eid, "topic-design/topic-design.md")
+    assert "# Topic Taxonomy" in md
+    assert "Rendered from the `topic-design` structured artifact" in md
+    assert "## Structure" in md
+
+
+def test_broker_select_kickoff_injects_computed_sizing():
+    """Phase B: the orchestrator hands the worker the deterministic spool/band
+    so it doesn't do the arithmetic itself."""
+    eid = "orch-eng-5"
+    write_yaml(eid, "discovery/discovery-brief.yaml", {
+        "project": {"type": "greenfield"},
+        "requirements": {
+            "delivery_mode": "guaranteed",
+            "event_volume": {"peak_events_per_sec": 2000, "average_message_size_kb": 5, "retention_hours": 24},
+        },
+    })
+    # Complete topic-design so the next dispatch is broker-select.
+    asyncio.run(design_advance(eid, mode="auto"))
+    write_text(eid, "topic-design/topic-taxonomy.yaml", "scope: topic-design\n")
+    a = asyncio.run(design_advance(eid, mode="auto", last_scope="topic-design"))
+    assert a["action"] == "dispatch" and a["scope"] == "broker-select"
+    assert "COMPUTED (authoritative" in a["kickoff"]
+    assert "864" in a["kickoff"]      # spool GB injected
+
+
+def test_design_advance_reset_scope_revives_exhausted():
+    """The 'retry scope' affordance: reset_scope clears the exhausted budget so
+    the orchestrator dispatches it again instead of re-surfacing retry_exhausted."""
+    eid = "orch-eng-6"
+    _seed_minimal_brief(eid)
+    last = None
+    for _ in range(ds.MAX_ATTEMPTS):
+        asyncio.run(design_advance(eid, mode="auto", last_scope=last,
+                                   outcome="failed" if last else None))
+        last = "topic-design"
+    assert asyncio.run(design_advance(eid, mode="auto", last_scope="topic-design",
+                                      outcome="failed"))["action"] == "retry_exhausted"
+    a = asyncio.run(design_advance(eid, reset_scope="topic-design"))
+    assert a["action"] == "dispatch" and a["scope"] == "topic-design"
+
+
+def test_design_advance_reset_revives_awaiting_scope():
+    """Resume path: a scope parked in needs_input (await_user) — its question
+    orphaned across sessions — is re-dispatched when reset_scope is sent."""
+    eid = "orch-eng-7"
+    _seed_minimal_brief(eid)
+    asyncio.run(design_advance(eid, mode="auto"))                                  # dispatch topic-design
+    a = asyncio.run(design_advance(eid, mode="auto", last_scope="topic-design", outcome="question"))
+    assert a["action"] == "await_user" and a["scope"] == "topic-design"
+    # The FE's resume re-dispatches via reset_scope → back to a dispatch.
+    a2 = asyncio.run(design_advance(eid, reset_scope="topic-design"))
+    assert a2["action"] == "dispatch" and a2["scope"] == "topic-design"
+
+
+def test_restart_design_clears_orchestrator_state():
+    """Restart Design must delete meta/design-state.yaml so it reliably starts
+    from scratch (not skip the now-artifact-less completed scopes)."""
+    from solace_architect_core._storage import write_text, read_yaml
+    from solace_architect_core.orchestrator import design_state as ds
+    from solace_architect_webui_entrypoint.routes.api import reset_design
+    eid = "orch-eng-restart"
+    _seed_minimal_brief(eid)
+    # Simulate an in-progress orchestrated run: design-state + a done artifact.
+    ds.save_state(eid, ds.init_state(["topic-design", "broker-select"], mode="auto"))
+    write_text(eid, "topic-design/topic-taxonomy.yaml", "scope: topic-design\n")
+    assert ds.load_state(eid) is not None
+    asyncio.run(reset_design(eid))
+    # Orchestrator state gone → next Start re-inits from scratch.
+    assert ds.load_state(eid) is None
+
+
+# ── Adversarial-review regressions: oversized artifacts must stay correct ─────
+# (Codex review 2026-05-28: truncated bundle content must NOT be parsed for
+# validation schema checks, nor presented as authoritative to blueprint.)
+
+from solace_architect_core._storage import write_text
+from solace_architect_webui_entrypoint.routes.api import (
+    _build_validation_kickoff, _build_blueprint_kickoff,
+)
+
+
+def _big_valid_yaml(anchor_key: str, kb: int) -> str:
+    # A VALID YAML doc with a recognised top-level key, padded past `kb` KB.
+    pad = "\n".join(f"  note_{i}: filler line {i} " + "x" * 60 for i in range(kb * 12))
+    return f"{anchor_key}:\n  real: true\n  detail:\n{pad}\n"
+
+
+def test_validation_does_not_false_flag_a_large_valid_artifact():
+    eid = "val-big"
+    # >8 KB, valid, with the schema anchor key 'topics' — old code truncated it
+    # in the bundle, safe_load failed, and schema-sanity emitted a false blocker.
+    big = _big_valid_yaml("topics", 12)
+    assert len(big) > 8000
+    write_text(eid, "topic-design/topic-taxonomy.yaml", big)
+    kickoff = _build_validation_kickoff(eid)
+    # No server-induced "did not parse" blocker for the (valid-on-disk) artifact.
+    assert "did not parse" not in kickoff
+    assert "topic-design/topic-taxonomy.yaml" not in kickoff.split("PRECOMPUTED CHECKS")[-1] \
+        or "blocking] schema-sanity @ topic-design/topic-taxonomy.yaml" not in kickoff
+
+
+def test_blueprint_inlines_small_in_full_and_routes_large_to_read():
+    eid = "bp-mix"
+    small = "rpo: 0\nrto: 5\nha: active/standby\n"
+    big = _big_valid_yaml("topology_pattern", 12)
+    assert len(big) > 8000
+    write_text(eid, "ha-dr/ha-dr-design.yaml", small)
+    write_text(eid, "mesh-design/dmr-topology.yaml", big)
+    kickoff = _build_blueprint_kickoff(eid)
+    # Small artifact inlined IN FULL (its content present, under the full list).
+    assert "PROVIDED IN FULL" in kickoff
+    assert "active/standby" in kickoff
+    # Large artifact is NOT inlined (no truncation marker), routed to read in full.
+    assert "TOO LARGE TO INLINE" in kickoff
+    assert "mesh-design/dmr-topology.yaml" in kickoff.split("TOO LARGE TO INLINE")[-1]
+    assert "<truncated>" not in kickoff   # never present a truncated body as input
+
+
+def test_design_advance_serialized_per_engagement():
+    # The lock helper returns the SAME lock per engagement (atomic-claim guard)
+    # and distinct locks for distinct engagements.
+    from solace_architect_webui_entrypoint.routes.api import _design_advance_lock
+    import asyncio as _aio
+    a1 = _design_advance_lock("eng-A")
+    a2 = _design_advance_lock("eng-A")
+    b = _design_advance_lock("eng-B")
+    assert a1 is a2 and a1 is not b
+    assert isinstance(a1, _aio.Lock)

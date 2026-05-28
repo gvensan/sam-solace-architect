@@ -149,14 +149,11 @@ def test_styles_centers_progress_label():
     assert "text-align: center" in css
 
 
-def test_ep_prov_tile_maps_not_requested_to_na():
-    """The EP Prov dashboard tile must render 'N/A' instead of the raw
-    'not-requested' enum value (which reads as opaque dashboard noise)."""
-    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
-    assert '"not-requested"' in js
-    assert '"N/A"' in js
-    # And the EP Prov tile uses the mapped variable, not the raw one.
-    assert "epProvDisplay" in js, "EP Prov display mapping not wired"
+    # NOTE: the former test_ep_prov_tile_maps_not_requested_to_na was removed
+    # 2026-05-28 — the standalone EP Prov stats tile it asserted was deliberately
+    # deleted (the top lifecycle banner's EVENT PORTAL tile now conveys that
+    # state; see app.js "EP Prov tile removed"). The "not-requested"→"N/A"
+    # display mapping went away with it, so the test asserted dead implementation.
 
 
 def test_form_card_submits_capture_task_id_for_stop():
@@ -339,3 +336,47 @@ def test_tool_call_pill_supports_3_line_clamp_and_expand():
     assert 'pill.classList.toggle("expanded")' in js
     # Selection-in-progress guard so text-selection isn't interrupted
     assert "sel.toString().length" in js
+
+
+def test_design_orchestrator_executor_wired():
+    """The thin FE executor for the deterministic Design engine is present and
+    wired at the finalize hook + Start-Design entry."""
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    # Executor functions + engine flag + the server endpoint call.
+    assert "_orchestratedAdvance" in js
+    assert "_startOrchestratedDesign" in js
+    assert "function _orchActive" in js
+    assert "/design/advance" in js
+    # Finalize hook routes through the orchestrator, gated to Design
+    # (SADomainAgent) turns. (The classic engine was removed 2026-05-28, so the
+    # orchestrator is the only design path — no engine flag to check at the gate.)
+    assert '_orchRunning && _lastRespondingAgent === "SADomainAgent"' in js
+    # Start Design branches to the orchestrated path (default engine).
+    assert "_startOrchestratedDesign(eid," in js
+    # Mid-design "Continue" resumes via the orchestrator on an orchestrated engagement.
+    assert "_startOrchestratedDesign(_ceid," in js
+    # Start/resume recovers a scope stuck in any non-progress state.
+    assert 'action.action !== "dispatch" && action.action !== "complete"' in js
+
+
+def test_phase_start_selects_owning_agent_in_dropdown():
+    """Starting a phase must point the agent dropdown (and persistent pick) at
+    that phase's owning agent, so the user's follow-up messages route correctly."""
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    assert "function _selectChatAgent" in js
+    # openChatWith (classic phase starts) selects the kickoff agent.
+    assert "_selectChatAgent(agent)" in js
+    # Orchestrated Design start/dispatch selects SADomainAgent.
+    assert '_selectChatAgent(action.agent || "SADomainAgent")' in js
+
+
+def test_worker_answer_context_and_chat_persistence_wired():
+    """Two resilience fixes: (1) user answers during an orchestrated Design run
+    re-assert WORKER MODE context on the sent text; (2) navigating away/back
+    preserves the live chat when the session still belongs to the same project."""
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    # (1) worker-context wrap on the dispatched answer (3 call sites + helper).
+    assert "function _wrapWorkerAnswer" in js
+    assert js.count("_wrapWorkerAnswer(") >= 3
+    # (2) syncChatProjectContext preserves same-project sessions (incl. fresh-session ids).
+    assert "chatSessionId.startsWith(`chat-${proj}-`)" in js

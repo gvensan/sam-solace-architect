@@ -832,6 +832,10 @@
           ${renderHeroTiles(stats, { statusValue, includeActivities: false })}
         `;
         wireProgressCtaActions(root, eid, activeStepId);
+        // Keep the running scope visible in the (scrollable) design checklist.
+        // rAF so layout is settled before we measure rects. Re-runs on every
+        // auto-refresh below, so the view tracks the scope as it advances.
+        requestAnimationFrame(() => _scrollChecklistToActive(root));
         // Self-refresh every PROGRESS_REFRESH_MS so the banner / CTA /
         // tiles update without a manual reload while the user watches
         // discovery / design / etc complete in chat.
@@ -1566,12 +1570,14 @@
   };
   const _CHECKLIST_STATUS_ICON = {
     done:    "●",
+    running: "◑",
     next:    "◐",
     pending: "◯",
     skipped: "⊘",
   };
   const _CHECKLIST_STATUS_LABEL = {
     done:    "Done",
+    running: "Running",
     next:    "Next",
     pending: "Pending",
     skipped: "Skipped",
@@ -1607,6 +1613,34 @@
         <ul class="phase-checklist" role="list">${rows}</ul>
         ${hint}
       </div>`;
+  }
+
+  // After the progress card is in the DOM, surface the scope that's actually
+  // running. The checklist is a fixed-height scroller (CSS max-height:180px);
+  // once several scopes are done the running one drops below the fold (the
+  // "↓ N pending — scroll for more" hint). Scroll it into view so a glance at
+  // the card always shows the live step — but ONLY when it's off-screen, so we
+  // never yank a row the user already has in view. Cosmetic; never throws.
+  function _scrollChecklistToActive(root) {
+    try {
+      const list = (root || document).querySelector("ul.phase-checklist");
+      if (!list) return;
+      // Preference: the running row; else the next/pending one about to run.
+      // Done/skipped rows never need surfacing.
+      const active = list.querySelector(".phase-checklist-running")
+                  || list.querySelector(".phase-checklist-next")
+                  || list.querySelector(".phase-checklist-pending");
+      if (!active) return;
+      const lr = list.getBoundingClientRect();
+      const ar = active.getBoundingClientRect();
+      const above = ar.top < lr.top;
+      const below = ar.bottom > lr.bottom;
+      if (!above && !below) return;  // already visible — leave the scroll alone
+      // Row's offset within the (scroll-independent) list content, then center
+      // it in the viewport. getBoundingClientRect avoids offsetParent ambiguity.
+      const offsetWithinList = (ar.top - lr.top) + list.scrollTop;
+      list.scrollTop = Math.max(0, offsetWithinList - (list.clientHeight - ar.height) / 2);
+    } catch (_) { /* cosmetic — must never break the render */ }
   }
 
   function _phaseExecHint({ phase, lifecycle, stats }) {
@@ -1943,15 +1977,17 @@
       return `
         <div class="progress-cta in-progress" role="region" aria-label="Design in progress">
           <div class="progress-cta-body">
-            <div class="progress-cta-eyebrow">Design in progress</div>
-            <h2>Continue Design in chat</h2>
+            <div class="progress-cta-eyebrow">Design in progress${prefersAuto ? " · auto ⚡" : ""}</div>
+            <h2>${prefersAuto ? "Design is advancing automatically" : "Continue Design in chat"}</h2>
             <p>SADomainAgent is working through the design scopes.
+            ${prefersAuto ? "Each scope and file dispatches on its own — open the chat to watch, or take over any time." : ""}
             ${designNote ? `<em>${escapeHtml(designNote)}</em>` : ""}</p>
             ${scopeListHtml}
             ${_phaseExecHint({ phase: "design", lifecycle, stats })}
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
-            <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
+            <button id="continue-in-chat-btn" class="cta-btn"
+                    title="Resume from the first pending scope. Keeps the artifacts of completed scopes — does NOT wipe anything.">Continue Design →</button>
           </div>
           ${restartDesignRow}
         </div>`;
@@ -2044,15 +2080,14 @@
   function wireProgressCtaActions(root, eid, activeStepId) {
     const openChatWith = (text, agent) => {
       applyChat("open");
-      // Per-turn dispatch override: instead of mutating the dropdown
-      // (which used to auto-flip to the target agent and override the
-      // user's persistent pick), we set a one-shot variable the submit
-      // handler reads. The dropdown stays put — user keeps their chosen
-      // agent (default SAOrchestratorAgent), and only THIS kickoff
-      // dispatches to the named target. Subsequent user-typed messages
-      // resume using the dropdown value.
-      if (agent && text) {
-        _pendingDispatchAgent = agent;
+      // Phase start: point the agent dropdown AT the phase's owning agent so the
+      // dropdown reflects the phase the user just started, and their follow-up
+      // messages (e.g. answering a worker's question) route to that agent rather
+      // than the previous dropdown value. Also set the one-shot dispatch pin so
+      // THIS kickoff goes to the target even before the dropdown re-renders.
+      if (agent) {
+        _selectChatAgent(agent);
+        if (text) _pendingDispatchAgent = agent;
       }
       const ci = document.getElementById("chat-input");
       if (ci) {
@@ -2105,7 +2140,6 @@
 
     // Shared kickoff body for Design; the click handlers prefix
     // "Mode: <mode>" so the Domain agent's prompt branches accordingly.
-    const DESIGN_KICKOFF = "Discovery is complete. Read the discovery brief, then begin with topic-design (scope 1) and walk through the design scopes in their canonical order. Skip scopes the brief opts out of. Inside each scope, ask me only when there is a blocking decision to make.";
     // When EITHER design button is clicked, lock both so a fast double-tap
     // can't dispatch both interactive and auto for the same transition.
     const lockBothDesignButtons = () => {
@@ -2118,6 +2152,15 @@
         "Let's start discovery — please review the intake and ask your first follow-up.",
         "SADiscoveryAgent"));
     continueBtn?.addEventListener("click", () => {
+      // Orchestrated Design resume: if this is an in-progress Design on the
+      // orchestrated engine (e.g. after a page reload paused the in-memory
+      // run), re-enter via the server orchestrator — it loads the saved
+      // design-state and dispatches the next pending scope. No classic kickoff.
+      const _ceid = currentProjectId?.();
+      if (activeStepId === "design" && _ceid && _orchActive(_ceid)) {
+        _startOrchestratedDesign(_ceid, recallExecutionMode(_ceid));
+        return;
+      }
       // Point the dropdown at the agent that OWNS the active phase so the
       // user's next typed message reaches it — not whatever sticky agent
       // the dropdown landed on after the previous phase finished.
@@ -2157,12 +2200,14 @@
     });
     startDesignBtn?.addEventListener("click", () => {
       lockBothDesignButtons();
-      openChatWith(primeKickoff("design", "interactive", DESIGN_KICKOFF), "SADomainAgent");
+      // The server-side orchestrator is the only design engine — it drives scope
+      // order, retries and per-scope WORKER-MODE kickoffs.
+      _startOrchestratedDesign(eid, "interactive");
     });
     startDesignAutoBtn?.addEventListener("click", () => {
       lockBothDesignButtons();
       setAutoMode(eid, true);
-      openChatWith(primeKickoff("design", "auto", DESIGN_KICKOFF), "SADomainAgent");
+      _startOrchestratedDesign(eid, "auto");
     });
     // Start Review — same kickoff body as the chat-pane phase-handoff card
     // (PHASE_NEXT.design.kickoff). Routes to SAOrchestratorAgent which
@@ -2178,8 +2223,10 @@
     // dispatch to the phase agent. Routed through primeKickoff so both
     // entry points (Progress CTA + chat phase-handoff card) produce the
     // exact same kickoff string for each transition.
-    startValidationBtn?.addEventListener("click", () =>
-      openChatWith(primeKickoff("validation", "interactive", PHASE_NEXT.review.kickoff), "SAValidationAgent"));
+    startValidationBtn?.addEventListener("click", async () => {
+      const body = await resolveKickoffBody(PHASE_NEXT.review, eid);
+      openChatWith(primeKickoff("validation", "interactive", body), "SAValidationAgent");
+    });
 
     // Event Portal (MCP-backed) — Validation's CTA. Auto vs Interactive
     // matters here because each create_* call touches a live tenant;
@@ -2191,8 +2238,10 @@
       openChatWith(primeKickoff("event-portal", "auto", EP_KICKOFF_BODY), "SAEventPortalAgent"));
 
     // Blueprint is now the terminal lifecycle step — kickoff lives in PHASE_NEXT["event-portal"].
-    startBlueprintBtn?.addEventListener("click", () =>
-      openChatWith(primeKickoff("blueprint", "interactive", PHASE_NEXT["event-portal"].kickoff), "SABlueprintAgent"));
+    startBlueprintBtn?.addEventListener("click", async () => {
+      const body = await resolveKickoffBody(PHASE_NEXT["event-portal"], eid);
+      openChatWith(primeKickoff("blueprint", "interactive", body), "SABlueprintAgent");
+    });
 
     root.querySelector("#restart-discovery-btn")?.addEventListener("click", () =>
       openRestartDiscoveryModal(eid));
@@ -3238,7 +3287,15 @@
   let chatProjectContext = null;
   function syncChatProjectContext() {
     const nextSid = deriveChatSessionId();
-    if (chatSessionId === nextSid) {
+    const proj = currentProjectId() || "global";
+    // Preserve the live chat + SSE when the active session already belongs to
+    // THIS project — including a timestamped fresh-session id (chat-<proj>-<ts>)
+    // from an orchestrated scope boundary or stream-drop recovery. Only reset on
+    // a genuine PROJECT switch. Without this, navigating away from Overview and
+    // back wiped the in-flight transcript and closed the live stream (the
+    // "bland screen" — the chat/progress no longer reflected current state).
+    if (chatSessionId === nextSid
+        || (chatSessionId && chatSessionId.startsWith(`chat-${proj}-`))) {
       updateLoadHistoryButton();
       return;
     }
@@ -3408,7 +3465,9 @@
       // (default) and Resume Auto (continue auto-advance loop).
       const next = designScopeProgress.next;
       const done = designScopeProgress.done || [];
-      const resumePrime = _buildAutoAdvanceKickoff(next, done);
+      // Prime is unused for design — the click handler routes SADomainAgent
+      // through _startOrchestratedDesign (orchestrator rebuilds the real kickoff).
+      const resumePrime = "";
       const nicelyNamedNext = String(next).replace(/-/g, " ");
       action = {
         label: `Resume Design — scope ${done.length + 1} (${nicelyNamedNext}) →`,
@@ -3424,21 +3483,19 @@
         },
       };
     } else if (discoveryDone) {
-      // Discovery done → next step is Design. Two buttons surface here:
-      // Start Design (interactive — confirm every decision) and Start
-      // Auto ⚡ (take all recommended options, run to completion). The
-      // click handler picks up data-mode and prefixes the kickoff with
-      // "Mode: <mode>" so the Domain agent branches on first turn.
-      const designKickoff = "Discovery is complete. Read the discovery brief, then begin with topic-design (scope 1) and walk through the design scopes in their canonical order. Skip scopes the brief opts out of. Inside each scope, ask me only when there is a blocking decision to make.";
+      // Discovery done → next step is Design. Two buttons (interactive / auto).
+      // The click handler intercepts agent === "SADomainAgent" and routes to
+      // _startOrchestratedDesign, so `prime` is intentionally empty — the
+      // orchestrator builds the real per-scope WORKER-MODE kickoff server-side.
       action = {
         label: "Start Design →",
         agent: "SADomainAgent",
-        prime: designKickoff,
+        prime: "",
         mode: "interactive",
         autoVariant: {
           label: "Start Auto ⚡",
           agent: "SADomainAgent",
-          prime: designKickoff,
+          prime: "",
           mode: "auto",
           title: "Take all recommended options; every decision still appears live in chat as it's made.",
         },
@@ -3563,6 +3620,16 @@
         // read Mode (Discovery, Review, Validation, Blueprint).
         const prime = primeKickoff(firstUnfinished?.id, mode, rawPrime);
         const agent = btn.getAttribute("data-agent") || "";
+        // Design dispatch is owned by the orchestrator (the only design engine).
+        // Route BOTH start and resume-from-checkpoint through it so the worker
+        // always gets WORKER MODE + the computed map — never a client-side classic
+        // kickoff (the prime is ignored for design).
+        if (agent === "SADomainAgent") {
+          if (mode === "auto") setAutoMode(currentProjectId?.(), true);
+          applyChat("open");
+          _startOrchestratedDesign(currentProjectId?.(), mode);
+          return;
+        }
         // Auto mode arms the per-scope dispatch loop so finalizeAgentBubble
         // chains scope-N+1 once scope-N marks done.
         if (mode === "auto") setAutoMode(currentProjectId?.(), true);
@@ -3570,17 +3637,10 @@
         // Switch the chat agent dropdown before priming so the message
         // is dispatched to the right agent (e.g. Discovery → Domain
         // handoff when Discovery is DONE).
-        if (agent) {
-          const sel = document.getElementById("chat-agent-select");
-          if (sel) {
-            const opt = Array.from(sel.options).find(o => o.value === agent);
-            if (opt) sel.value = agent;
-            // If the option doesn't exist yet (agent discovery still
-            // catching up), fall back: the chat POST handler accepts
-            // an agent name even if the dropdown doesn't list it yet,
-            // so we still send the agent param via the form body.
-          }
-        }
+        // Auto-select the target agent (dropdown value + persistent pick + re-
+        // render) so it reflects the phase being entered AND survives the 15s
+        // agent re-poll, routing the user's follow-ups to the right agent.
+        if (agent) _selectChatAgent(agent);
         if (chatInput) {
           chatInput.value = prime;
           chatInput.focus();
@@ -3764,7 +3824,7 @@
   // error-card recovery flows. The new session id encodes the timestamp
   // so the next /api/chat/message POST hits a clean ADK session — SAM's
   // PERSISTENT session_service keys off this id.
-  function startFreshChatSession() {
+  function startFreshChatSession(opts = {}) {
     chatSessionId = `chat-${currentProjectId() || "x"}-${Date.now()}`;
     // Tear down the live SSE stream so the next dispatch opens a fresh one
     // bound to the new session id. Without this, an EventSource left open
@@ -3779,18 +3839,21 @@
     // button stays armed on a task we'll never hear back from.
     if (typeof _setChatInflight === "function") _setChatInflight("");
     if (typeof _cancelPendingAutoResume === "function") _cancelPendingAutoResume();
-    if (typeof _cancelPendingAutoAdvance === "function") _cancelPendingAutoAdvance();
     // Reset stream-drop retry counter — fresh session = fresh budget.
     // Also clear the auto-jump-to-fresh-session flag: a MANUAL fresh-session
     // click is a user-driven recovery, so the next error burst should get
     // the full two-step budget again rather than going straight to give-up.
     const _eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
     if (_eid && typeof _setAutoResumeRetries === "function") _setAutoResumeRetries(_eid, 0);
-    if (_eid && typeof _setFreshEscalated === "function") _setFreshEscalated(_eid, false);
+    if (_eid && typeof _resetFreshEscalations === "function") _resetFreshEscalations(_eid);
+    if (_eid && typeof _clearDropFingerprint === "function") _clearDropFingerprint(_eid);
     chatLog.innerHTML = "";
+    // opts.message may be undefined when invoked as a DOM click handler (the
+    // event object lacks .message) — falls back to the default copy.
     appendChatMessage(
       "agent",
-      "Started a fresh chat session. On-disk artifacts, decisions, and scope progress are preserved — pick up wherever you left off.",
+      (opts && typeof opts.message === "string" && opts.message) ||
+        "Started a fresh chat session. On-disk artifacts, decisions, and scope progress are preserved — pick up wherever you left off.",
     );
   }
   document.getElementById("chat-new-session")?.addEventListener("click", startFreshChatSession);
@@ -4141,6 +4204,9 @@
       ctaLabel: "Start Validation →",
       agent: "SAValidationAgent",
       kickoff: "Phase: validation\n\nRun the Validation phase. Apply your 6-criterion rubric (requirement coverage, antipattern scan, consistency, deferred findings, terminology compliance, schema sanity). Record blocking open-items with affecting_step=\"blueprint\" so the lifecycle gates correctly. Write validation/validation-report.md and the machine YAML. Call set_step_status(step=\"validation\", ...) per the rule.",
+      // Server computes the kickoff with deterministic PRECOMPUTED CHECKS injected
+      // (the validation rules engine); `kickoff` above is the offline fallback.
+      kickoffUrl: eid => `/api/engagements/${encodeURIComponent(eid)}/validation/kickoff`,
       singleAction: true,
     },
     validation: {
@@ -4161,9 +4227,30 @@
       ctaLabel: "Start Blueprint →",
       agent: "SABlueprintAgent",
       kickoff: "Phase: blueprint\n\nAssemble the final blueprint package. Read all design/review/validation/event-portal artifacts. Compose blueprint/architecture.md + blueprint/runbook.md, write available Mermaid diagrams, render 5 audience packs (blueprint/executive/admin-ops/security/developers, both md+pdf), then assemble_zip to produce exports/engagement-package.zip. Call set_step_status(step=\"blueprint\", ...) per the rule.",
+      // Server bundles the design artifacts inline + the deterministic section
+      // outline so the agent composes without ~20 reads; `kickoff` is the fallback.
+      kickoffUrl: eid => `/api/engagements/${encodeURIComponent(eid)}/blueprint/kickoff`,
       singleAction: true,
     },
   };
+
+  // Resolve a transition's kickoff body. When the entry declares a `kickoffUrl`,
+  // the server computes the kickoff (e.g. Validation injects deterministic
+  // PRECOMPUTED CHECKS from the validation rules engine). Falls back to the
+  // static `kickoff` if the call fails — e.g. a server that predates the
+  // endpoint (404) or a transient error — so a handoff never dead-ends.
+  async function resolveKickoffBody(cfg, eid) {
+    if (cfg && cfg.kickoffUrl && eid) {
+      try {
+        const res = await fetch(cfg.kickoffUrl(eid));
+        if (res.ok) {
+          const j = await res.json();
+          if (j && j.kickoff) return j.kickoff;
+        }
+      } catch (_) { /* fall through to the static fallback */ }
+    }
+    return cfg ? cfg.kickoff : "";
+  }
 
   // localStorage dedup so the in-chat handoff card fires only once per
   // (engagement, phase) transition into DONE. Cleared when the phase status
@@ -4330,11 +4417,7 @@
           // Dispatch via the existing chat path; SAOrchestratorAgent is
           // already the current agent post-Review.
           applyChat("open");
-          const sel = document.getElementById("chat-agent-select");
-          if (sel) {
-            const opt = Array.from(sel.options).find(o => o.value === "SAOrchestratorAgent");
-            if (opt) sel.value = "SAOrchestratorAgent";
-          }
+          _selectChatAgent("SAOrchestratorAgent");
           const ci = document.getElementById("chat-input");
           if (ci) {
             ci.value = kickoff;
@@ -4407,22 +4490,30 @@
     // shapes so a fast double-tap can't fire interactive AND auto for
     // the same phase transition.
     card.querySelectorAll(".phase-handoff-cta, .cta-mode-override").forEach(btn => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         card.querySelectorAll(".phase-handoff-cta, .cta-mode-override").forEach(b => b.disabled = true);
         const mode = btn.dataset.mode || "interactive";
         btn.textContent = mode === "auto" ? "Starting Auto…" : `${cfg.ctaLabel.replace(/→$/,"").trim()}…`;
         applyChat("open");
-        if (cfg.agent) {
-          const sel = document.getElementById("chat-agent-select");
-          if (sel) {
-            const opt = Array.from(sel.options).find(o => o.value === cfg.agent);
-            if (opt) sel.value = cfg.agent;
-          }
-        }
+        // Auto-select the next phase's agent (dropdown + persistent pick) so it
+        // sticks across the agent re-poll and follow-ups route correctly.
+        if (cfg.agent) _selectChatAgent(cfg.agent);
         // Auto mode arms the per-scope dispatch loop for the current
         // engagement; the loop chains scope-N+1 once scope-N marks done.
         if (mode === "auto") setAutoMode(currentProjectId?.(), true);
+        // Design dispatch is owned by the orchestrator (the only design engine).
+        // The Discovery→Design handoff MUST route through it — otherwise it would
+        // send the static "begin with topic-design and walk the scopes" kickoff,
+        // bypassing WORKER MODE + the orchestrator (the classic self-orchestration
+        // that this whole engine replaced).
+        if (cfg.agent === "SADomainAgent") {
+          _startOrchestratedDesign(currentProjectId?.(), mode);
+          return;
+        }
         if (cfg.kickoff) {
+          // Server-computed kickoff when the entry declares a kickoffUrl
+          // (Validation injects deterministic PRECOMPUTED CHECKS); static fallback.
+          const body = await resolveKickoffBody(cfg, currentProjectId?.());
           const ci = document.getElementById("chat-input");
           if (ci) {
             // Prepend "Mode: …" only when the target agent actually branches
@@ -4431,7 +4522,7 @@
             // would misdetect their phase if Mode: were prepended.
             // `step` here is the SOURCE phase that just completed; the
             // helper keys on TARGET, so convert via PHASE_NEXT_STEP.
-            ci.value = primeKickoff(PHASE_NEXT_STEP[step] || step, mode, cfg.kickoff);
+            ci.value = primeKickoff(PHASE_NEXT_STEP[step] || step, mode, body);
             ci.focus();
             chatForm.requestSubmit?.();
           }
@@ -4870,6 +4961,32 @@
   let _lastFinalAgentText = "";
   let _lastFinalAgentTs = 0;
 
+  // Strip internal "still working" status mirror from an agent's chat text.
+  // Agents mirror their lifecycle status into prose ("Completion Status:
+  // NEEDS_CONTEXT — <scope> in progress") and narrate interim chunk writes —
+  // but NEEDS_CONTEXT is an internal "I'll continue next turn" signal that
+  // already drives the UI via the lifecycle API. Surfacing it in chat leaks
+  // orchestration and breaks the seamless feel. We only strip the interim
+  // (NEEDS_CONTEXT) status + obvious "continuing next turn" chatter; terminal
+  // statuses (DONE / DONE_WITH_CONCERNS / BLOCKED) are user-meaningful and stay.
+  function _stripInterimStatusNoise(text) {
+    if (!text) return text;
+    let out = text;
+    // "Completion Status: NEEDS_CONTEXT — …" (with optional heading/bold/em).
+    out = out.replace(
+      /^[ \t]*#{0,6}[ \t]*\*{0,2}[ \t]*Completion Status:?[ \t]*\*{0,2}[ \t]*[—:\-]?[ \t]*NEEDS_CONTEXT\b.*$/gim,
+      "",
+    );
+    // "<file>.md: first chunk written, continuing next turn." / "section N
+    // appended, continuing…" — pure interim progress chatter.
+    out = out.replace(
+      /^[ \t]*\*{0,2}[^\n]*\b(?:chunk|section|file|part)\b[^\n]*\b(?:written|appended|saved)\b[^\n]*\bcontinu(?:e|ing)\b[^\n]*$/gim,
+      "",
+    );
+    // Collapse blank lines left behind by the removals.
+    return out.replace(/\n{3,}/g, "\n\n").trim();
+  }
+
   function finalizeAgentBubble(finalText) {
     const text = (finalText || pendingAgentMsg?.lastText || "").trim();
     if (text) { _lastFinalAgentText = text; _lastFinalAgentTs = Date.now(); }
@@ -4919,6 +5036,14 @@
         cleanText = m[1].trim();
       }
     }
+    // Drop internal "still working" status chatter so interim chunk turns read
+    // as seamless activity (the lifecycle API, not this prose, drives the UI).
+    // Track when stripping emptied an otherwise status-only turn so we don't
+    // mistake a mid-deliverable pause for an "agent finished, nothing to show"
+    // dead-end and render the empty/Continue card over it.
+    const _preStripText = cleanText;
+    cleanText = _stripInterimStatusNoise(cleanText);
+    const _strippedInterimOnly = !!_preStripText && !cleanText;
     // Filter out suggestions the user has already dismissed this session.
     const dismissed = _getDismissedSwitchTargets();
     const switchSuggestions = sResult.suggestions.filter(s =>
@@ -5015,7 +5140,11 @@
     // recorded the user's decision then stopped emitting tool calls,
     // leaving the chat in apparent limbo.
     const producedActionable = cleanText || blocks.length || renderedChips || switchSuggestions.length || _pendingPhaseHandoffs.length;
-    if (!producedActionable) {
+    // _strippedInterimOnly: the turn's only text was the internal "still working"
+    // status mirror we just removed — the agent is mid-deliverable and will
+    // continue (auto-advance dispatches; the activity pills show work happened),
+    // so it's NOT a stuck dead-end. Suppress the empty/Continue card.
+    if (!producedActionable && !_strippedInterimOnly) {
       renderAgentEmptyCard();
     }
 
@@ -5069,11 +5198,14 @@
       }
     } catch { /* swallow — re-render is best-effort */ }
 
-    // Auto-mode dispatch: if the turn we just finished closed a Design
-    // scope (record_scope_progress with next_scope set) and Auto mode is
-    // still armed for this engagement, render the advancing card and
-    // schedule the next-scope kickoff. No-op when off / not applicable.
-    _maybeAutoAdvance().catch(() => { /* best-effort */ });
+    // Design dispatch after a turn: the server-side orchestrator decides the
+    // next scope and the FE just executes — gated by _orchRunning + the
+    // SADomainAgent responder so this only fires during an active Design run.
+    // (The classic auto-advance state machine was removed 2026-05-28.)
+    const _advEid = currentProjectId?.();
+    if (_advEid && _orchRunning && _lastRespondingAgent === "SADomainAgent") {
+      _orchestratedAdvance().catch(() => { /* best-effort */ });
+    }
   }
 
   // Normalize the question-card counter. The agent sometimes emits
@@ -5479,7 +5611,7 @@
     const data = { kind: "quick_reply", source_kind: kind, answer: value };
     if (note) data.note = note;
     const body = {
-      text: displayText,
+      text: _wrapWorkerAnswer(displayText, agent),
       data,
       session_id: chatSessionId,
     };
@@ -5569,7 +5701,7 @@
     const data = { question_id: schema.id, kind: schema.kind, answer: rawAnswer };
     if (note) data.note = note;
     const body = {
-      text: displayText,
+      text: _wrapWorkerAnswer(displayText, agent),
       data,
       session_id: chatSessionId,
     };
@@ -5662,10 +5794,11 @@
           const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
           if (finalText && typeof _isTransientLLMError === "function"
               && _isTransientLLMError(finalText)) {
-            _handleStreamDropError(agentName);
+            _handleStreamDropError(agentName, finalText);
             if (finId && finId === _lastCancelTaskId) _clearStopSafetyTimer();
             _clearChatInflightIfMatches(finId);
           } else {
+            _lastRespondingAgent = agentName;
             finalizeAgentBubble(finalText);
             // C1 fix: only restore SEND if THIS task is the one currently
             // tracked. A delayed FinalResponse for an older task must not
@@ -5686,7 +5819,8 @@
               // state too — the engagement is healthy again, so future error
               // bursts get the full two-step budget (same-session, then fresh)
               // rather than skipping straight to give-up.
-              _setFreshEscalated(_eid, false);
+              _resetFreshEscalations(_eid);
+              _clearDropFingerprint(_eid);    // healthy turn resets the repeat-drop guard
             }
           }
         } else if (ev.type === "Error") {
@@ -5699,7 +5833,7 @@
           // Pass the full data object so the helper can consume the
           // backend-emitted category / auto_retryable fields when present.
           if (_isStreamDropError(ev.data || msg)) {
-            _handleStreamDropError(agentName);
+            _handleStreamDropError(agentName, ev.data || msg);
           } else {
             // Build a rich error card instead of a one-line "[error] …"
             // The user needs (a) what failed, (b) a concrete next step,
@@ -5906,10 +6040,11 @@
         const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
         if (finalText && typeof _isTransientLLMError === "function"
             && _isTransientLLMError(finalText)) {
-          _handleStreamDropError(agentName);
+          _handleStreamDropError(agentName, finalText);
           if (finId && finId === _lastCancelTaskId) _clearStopSafetyTimer();
           _clearChatInflightIfMatches(finId);
         } else {
+          _lastRespondingAgent = agentName;
           finalizeAgentBubble(finalText);
           // Mirror of live-SSE: only clear if this task matches the in-flight one.
           if (finId && finId === _lastCancelTaskId) _clearStopSafetyTimer();
@@ -5918,7 +6053,8 @@
           const _eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
           if (_eid) {
             _setAutoResumeRetries(_eid, 0);
-            _setFreshEscalated(_eid, false);
+            _resetFreshEscalations(_eid);
+            _clearDropFingerprint(_eid);    // healthy turn resets the repeat-drop guard
           }
         }
       } else if (ev.type === "Error") {
@@ -5927,7 +6063,7 @@
         // Mirror of the live-SSE stream-drop fast-path (passes full data
         // so the helper can prefer the backend-classified category).
         if (_isStreamDropError(ev.data || msg)) {
-          _handleStreamDropError(agentName);
+          _handleStreamDropError(agentName, ev.data || msg);
         } else {
           const errorCard = _buildErrorCard(msg, agentName, ev.data || {});
           const wrap = document.createElement("div");
@@ -6164,27 +6300,6 @@
     } catch {}
   }
 
-  // Per-scope kickoff for Auto-mode advance. Includes the prior scopes_done
-  // list so the agent can skip already-finished work even if the agent's
-  // session was reset (cold restart between scopes).
-  function _buildAutoAdvanceKickoff(nextScope, scopesDone) {
-    const done = (scopesDone || []).join(", ") || "(none)";
-    return `Mode: auto\nScope: ${nextScope}\n\n` +
-      `Continue Design — next scope is \`${nextScope}\`. Scopes already ` +
-      `completed: ${done}. Read prior scope artifacts as needed for ` +
-      `context, then walk this scope's decisions. Call ` +
-      `record_scope_progress at end of scope (with next_scope = the ` +
-      `next applicable scope, or null if this is the final one).`;
-  }
-
-  // Tracks an in-flight auto-advance countdown so "Pause Auto" can cancel it.
-  let _pendingAutoAdvanceTimer = null;
-  function _cancelPendingAutoAdvance() {
-    if (_pendingAutoAdvanceTimer) {
-      clearTimeout(_pendingAutoAdvanceTimer);
-      _pendingAutoAdvanceTimer = null;
-    }
-  }
 
   // Returns true when at least one question card is still awaiting the
   // user's answer. Used as a hard gate on every auto-dispatch path
@@ -6214,6 +6329,13 @@
   // brief countdown. Retries are capped to prevent flapping loops.
 
   const MAX_AUTO_RESUMES = 3;
+  // Bounded fresh-session auto-recovery for repeated/persistent drops: jump to
+  // a fresh session and resume up to MAX_FRESH_RETRIES times, then stop and let
+  // the user decide. The first jump is near-immediate (a brief blip); each
+  // later jump waits FRESH_COOLDOWN_SECONDS first, to let an intermittent
+  // gateway bad-window pass before spending another call against it.
+  const MAX_FRESH_RETRIES = 3;
+  const FRESH_COOLDOWN_SECONDS = 150;
   const RESUME_KICKOFF_TEXT = (
     "Continue — the prior turn ended with an upstream LLM stream drop or " +
     "transient unavailability.\n\n" +
@@ -6222,6 +6344,57 @@
     "record_scope_progress). Don't redo decisions or rewrite artifacts that " +
     "are already there."
   );
+
+  // Per-agent server endpoint that rebuilds the phase's deterministic kickoff
+  // (idempotent, no state mutation) for drop-recovery — pattern A, generalised
+  // across phases. On a stream-drop we re-send THIS instead of the generic
+  // RESUME_KICKOFF_TEXT, so the agent keeps its deterministic context (Design:
+  // WORKER MODE + computed map; Validation: PRECOMPUTED CHECKS; Blueprint:
+  // bundled artifacts + outline) rather than re-deriving from scratch. Agents
+  // not listed (reviewers, EP) fall back to the generic resume — reviewers
+  // re-fetch their pack via get_review_pack on their own first step.
+  const _RESUME_KICKOFF_URL = {
+    SADomainAgent:    eid => `/api/engagements/${encodeURIComponent(eid)}/design/scope-kickoff`,
+    SAValidationAgent: eid => `/api/engagements/${encodeURIComponent(eid)}/validation/kickoff`,
+    SABlueprintAgent: eid => `/api/engagements/${encodeURIComponent(eid)}/blueprint/kickoff`,
+  };
+
+  // Stream-drop resume dispatcher. Re-sends the phase's deterministic kickoff
+  // (via _RESUME_KICKOFF_URL) so the agent keeps its context; the generic resume
+  // bypasses that (the worker re-derives from scratch — what made the heavy
+  // integration scope never complete). Falls back to generic resume for
+  // unlisted agents or if the fetch fails.
+  async function _submitResumeKickoff(agentName) {
+    let text = RESUME_KICKOFF_TEXT;
+    const who = agentName || _lastRespondingAgent || "";
+    const urlFn = _RESUME_KICKOFF_URL[who];
+    try {
+      const eid = currentProjectId?.();
+      if (eid && urlFn) {
+        const res = await fetch(urlFn(eid));
+        if (res.ok) {
+          const j = await res.json();
+          if (j && j.kickoff) {
+            text = j.kickoff;
+            console.log(`[design-orchestrator] drop-resume via ${who} kickoff endpoint${j.scope ? ` (scope=${j.scope})` : ""}`);
+          } else {
+            console.log(`[design-orchestrator] ${who} kickoff: nothing to resume; using generic resume`);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[design-orchestrator] resume kickoff fetch failed; generic resume:", e);
+    }
+    const ci = document.getElementById("chat-input");
+    if (ci) {
+      // A stream-drop resume is a SYSTEM action, not a user message — suppress
+      // the user bubble so the (often large, map-carrying) kickoff payload
+      // doesn't dump into the chat. Mirrors _dispatchOrchestratorScope.
+      _suppressNextUserBubble = true;
+      ci.value = text;
+      chatForm?.requestSubmit?.();
+    }
+  }
 
   // Detect any transient LLM-side failure mode where the agent's task
   // crashed mid-work but partial progress (decisions, artifacts) is on
@@ -6280,23 +6453,26 @@
   // the don't-auto-retry case.)
 
   function _autoResumeKey(eid) { return `sa.resume_retries.${eid}`; }
-  // Per-engagement "we already auto-jumped to a fresh session for this
-  // run of consecutive failures" flag. Set the first time we escalate;
-  // cleared on the next successful FinalResponse (and when the user
-  // manually clicks "Start fresh session"). Used to cap the auto-jump
-  // at ONE — beyond that we show a give-up card instead of looping.
-  function _freshEscalatedKey(eid) { return `sa.fresh_escalated.${eid}`; }
-  function _getFreshEscalated(eid) {
-    if (!eid) return false;
-    try { return localStorage.getItem(_freshEscalatedKey(eid)) === "1"; }
-    catch { return false; }
+  // Per-engagement COUNT of consecutive fresh-session auto-jumps for the
+  // current run of failures. Incremented on each auto-jump; reset to 0 on the
+  // next successful FinalResponse, a manual "Start fresh session", or a manual
+  // "Retry once". Caps the auto-recovery at MAX_FRESH_RETRIES — beyond that we
+  // stop and hand it to the user (a genuinely degraded upstream).
+  function _freshCountKey(eid) { return `sa.fresh_escalations.${eid}`; }
+  function _getFreshEscalations(eid) {
+    if (!eid) return 0;
+    try { return parseInt(localStorage.getItem(_freshCountKey(eid)) || "0", 10) || 0; }
+    catch { return 0; }
   }
-  function _setFreshEscalated(eid, val) {
+  function _bumpFreshEscalations(eid) {   // returns the new count
+    if (!eid) return 0;
+    const n = _getFreshEscalations(eid) + 1;
+    try { localStorage.setItem(_freshCountKey(eid), String(n)); } catch {}
+    return n;
+  }
+  function _resetFreshEscalations(eid) {
     if (!eid) return;
-    try {
-      if (val) localStorage.setItem(_freshEscalatedKey(eid), "1");
-      else localStorage.removeItem(_freshEscalatedKey(eid));
-    } catch {}
+    try { localStorage.removeItem(_freshCountKey(eid)); } catch {}
   }
   function _getAutoResumeRetries(eid) {
     if (!eid) return 0;
@@ -6388,17 +6564,18 @@
   // for this engagement. Counts down then fires startFreshChatSession()
   // + resubmits the RESUME_KICKOFF_TEXT. Cancellable via the Cancel
   // button, which falls through to the normal same-session-cap UI.
-  function _renderFreshEscalationCard(agentName) {
+  function _renderFreshEscalationCard(agentName, detailHtml) {
     const card = document.createElement("div");
     card.className = "chat-msg agent stream-drop-card";
+    const detail = detailHtml || `${escapeHtml(agentName)} hit ${MAX_AUTO_RESUMES} consecutive transient failures in this chat session. Jumping to a fresh session — the in-memory agent state may be saturated; on-disk artifacts and decisions are preserved.`;
     card.innerHTML = `
       <div class="stream-drop-header">
         <span class="stream-drop-icon">⚡</span>
-        <span class="stream-drop-title">Same-session retries exhausted</span>
+        <span class="stream-drop-title">Recovering automatically — fresh session</span>
       </div>
       <div class="stream-drop-body">
-        <p>${escapeHtml(agentName)} hit ${MAX_AUTO_RESUMES} consecutive transient failures in this chat session. Auto mode is jumping to a fresh session — the in-memory agent state may be saturated; on-disk artifacts and decisions are preserved.</p>
-        <p class="stream-drop-countdown">Starting fresh session in <span class="stream-drop-secs">5</span>s…</p>
+        <p>${detail}</p>
+        <p class="stream-drop-countdown">Starting fresh session in <span class="stream-drop-secs">5s</span>…</p>
       </div>
       <div class="stream-drop-actions">
         <button type="button" class="cta-btn cta-btn-secondary stream-drop-pause">Cancel</button>
@@ -6429,8 +6606,127 @@
     return card;
   }
 
-  function _handleStreamDropError(agentName) {
+  // ── Stop-the-loop guard: stop auto-retrying IDENTICAL drops ──────────────
+  // A transient blip is worth retrying; the SAME failure repeating is
+  // deterministic (e.g. a turn that always exceeds the upstream's ~60s
+  // streaming limit) and retrying the identical work just spins the user in
+  // circles. After REPEAT_STOP_THRESHOLD identical drops in a row we stop and
+  // surface the real cause instead of running the full retry ladder.
+  const REPEAT_STOP_THRESHOLD = 2;
+
+  function _dropFingerprint(errDataOrText) {
+    let s = errDataOrText;
+    if (s && typeof s === "object") {
+      if (s.category) return String(s.category);     // backend-classified — most stable
+      s = s.message || s.error || "";
+    }
+    // Normalize free text so the same failure shape fingerprints identically
+    // across attempts (strip task ids / hex / numbers / collapse whitespace).
+    return String(s || "transient")
+      .toLowerCase()
+      .replace(/[0-9a-f]{6,}/g, "")
+      .replace(/\d+/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80);
+  }
+  function _recordDropFingerprint(eid, fp) {
+    // Returns how many times this fingerprint has fired in a row (1 = new/changed).
+    if (!eid) return 1;
+    try {
+      const prev = JSON.parse(localStorage.getItem(`sa.drop_fp.${eid}`) || "null");
+      const count = (prev && prev.fp === fp) ? (prev.count || 0) + 1 : 1;
+      localStorage.setItem(`sa.drop_fp.${eid}`, JSON.stringify({ fp, count }));
+      return count;
+    } catch { return 1; }
+  }
+  function _clearDropFingerprint(eid) {
+    if (!eid) return;
+    try { localStorage.removeItem(`sa.drop_fp.${eid}`); } catch {}
+  }
+
+  function _renderRepeatedDropCard(agentName, count) {
+    const card = document.createElement("div");
+    card.className = "chat-msg agent stream-drop-card";
+    card.innerHTML = `
+      <div class="stream-drop-header">
+        <span class="stream-drop-icon">⛔</span>
+        <span class="stream-drop-title">Still failing after an automatic fresh session — your call</span>
+      </div>
+      <div class="stream-drop-body">
+        <p>${escapeHtml(agentName)} kept hitting the <strong>same</strong> error even after auto-recovery already started a fresh session for you. That's not a passing blip — auto-retrying further would just loop, so it's paused for you to decide.</p>
+        <p class="muted">Most likely the upstream LLM is genuinely degraded right now, or this turn is too large for it. Wait a moment and <strong>Retry once</strong> if you think the upstream has recovered, break the request into a smaller step, or <strong>Start fresh session</strong> to try one more clean session.</p>
+      </div>
+      <div class="stream-drop-actions">
+        <button type="button" class="cta-btn cta-btn-secondary stream-drop-fresh-session">Start fresh session</button>
+        <button type="button" class="cta-btn stream-drop-now">Retry once</button>
+      </div>`;
+    return card;
+  }
+  function _showRepeatedDropCard(agentName, count) {
+    const card = _renderRepeatedDropCard(agentName, count);
+    if (pendingAgentMsg) {
+      pendingAgentMsg.el.classList.remove("agent-thinking");
+      pendingAgentMsg.el.innerHTML = "";
+      pendingAgentMsg.el.appendChild(card);
+      pendingAgentMsg = null;
+    } else {
+      chatLog.appendChild(card);
+    }
+    chatLog.scrollTop = chatLog.scrollHeight;
+    setActivityBar(null);
+    _setChatInflight("");
+    card.querySelector(".stream-drop-fresh-session")?.addEventListener("click", () => {
+      _cancelPendingAutoResume();
+      startFreshChatSession();
+    });
+    card.querySelector(".stream-drop-now")?.addEventListener("click", () => {
+      // Manual retry = explicit reset of the loop guard + escalation state.
+      const eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
+      if (eid) {
+        _clearDropFingerprint(eid);
+        _setAutoResumeRetries(eid, 0);
+        _resetFreshEscalations(eid);
+      }
+      _submitResumeKickoff(agentName);
+      card.remove();
+    });
+  }
+
+  function _handleStreamDropError(agentName, errData) {
     const eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
+    // Stop-the-loop guard: bail to a clear "deterministic failure" card once the
+    // SAME error repeats, instead of running the full retry ladder in circles.
+    const repeat = _recordDropFingerprint(eid, _dropFingerprint(errData));
+    if (repeat >= REPEAT_STOP_THRESHOLD) {
+      _cancelPendingAutoResume();
+      // Same error twice running = same-session retry won't help (it would
+      // just loop). But a FRESH session is the known-good recovery — clean
+      // agent state, same on-disk work resumed. So auto-jump to a fresh
+      // session ONCE (5s countdown, cancellable) instead of stopping for a
+      // manual click. Runs in BOTH auto and interactive mode: it's pure
+      // housekeeping — no decision is made on the user's behalf, the same
+      // work resumes, artifacts/decisions are preserved. Only fall back to
+      // the manual stop card if a fresh session was ALREADY tried this run
+      // and the error STILL repeats — that's genuinely deterministic /
+      // upstream-down and a human should judge it.
+      const freshCount = eid ? _getFreshEscalations(eid) : MAX_FRESH_RETRIES;
+      if (freshCount < MAX_FRESH_RETRIES) {
+        // First jump is near-immediate (a brief blip); later jumps wait a
+        // cooldown so an intermittent gateway bad-window can pass before we
+        // spend another call on it. Runs in BOTH auto and interactive mode —
+        // pure housekeeping (same on-disk work resumes; nothing decided for
+        // the user). After MAX_FRESH_RETRIES consecutive jumps all fail we
+        // stop (below) and hand it to the user.
+        const countdownSecs = freshCount === 0 ? 5 : FRESH_COOLDOWN_SECONDS;
+        const attemptNo = freshCount + 1;
+        const detail = freshCount === 0
+          ? `${escapeHtml(agentName)} hit the same stream drop twice in a row — retrying the identical turn in this session would just loop. Starting a fresh session automatically and picking up exactly where we left off; on-disk artifacts and decisions are preserved.`
+          : `${escapeHtml(agentName)} is still hitting the same upstream stream drop — the LLM gateway looks degraded right now. Letting it recover, then trying another fresh session (attempt ${attemptNo} of ${MAX_FRESH_RETRIES}). On-disk artifacts and decisions are preserved.`;
+        return _doFreshEscalation(agentName, eid, detail, countdownSecs);
+      }
+      return _showRepeatedDropCard(agentName, repeat);
+    }
     const retries = _getAutoResumeRetries(eid);
     // Auto-mode applies if EITHER:
     //   (a) the ephemeral auto-mode flag is set (user clicked a "Start … Auto"
@@ -6443,20 +6739,20 @@
     const ephemeralAuto = (typeof isAutoModeActive === "function") && isAutoModeActive(eid);
     const intakeAuto = (typeof recallExecutionMode === "function") && recallExecutionMode(eid) === "auto";
     const autoMode = ephemeralAuto || intakeAuto;
-    const escalated = _getFreshEscalated(eid);
+    const freshCount = _getFreshEscalations(eid);
 
     // AUTO-MODE ESCALATION LADDER:
     //   - Same-session retries 1..MAX_AUTO_RESUMES → existing card (auto
     //     countdown for resume in this session).
-    //   - Same-session retries exhausted AND we haven't yet escalated →
-    //     auto-jump to fresh session ONCE, with a countdown.
-    //   - Same-session retries exhausted AND we already escalated →
-    //     give up (upstream is genuinely down; manual retry only).
+    //   - Same-session retries exhausted AND fresh-jumps < MAX_FRESH_RETRIES →
+    //     auto-jump to a fresh session (immediate first, cooldown after).
+    //   - Fresh-jump budget spent → give up (upstream genuinely down; manual).
     // Interactive mode skips this ladder entirely — falls through to
     // the existing manual-button card.
     if (autoMode && retries >= MAX_AUTO_RESUMES) {
-      if (!escalated) {
-        return _doFreshEscalation(agentName, eid);
+      if (freshCount < MAX_FRESH_RETRIES) {
+        const countdownSecs = freshCount === 0 ? 5 : FRESH_COOLDOWN_SECONDS;
+        return _doFreshEscalation(agentName, eid, undefined, countdownSecs);
       }
       return _showGiveUpCard(agentName);
     }
@@ -6494,11 +6790,7 @@
       if (agentName && _PINNABLE_AGENTS.has(agentName) && window.__setPendingDispatchAgent) {
         window.__setPendingDispatchAgent(agentName);
       }
-      const ci = document.getElementById("chat-input");
-      if (ci) {
-        ci.value = RESUME_KICKOFF_TEXT;
-        chatForm?.requestSubmit?.();
-      }
+      _submitResumeKickoff(agentName);
       card.remove();
     };
 
@@ -6531,11 +6823,12 @@
     }
   }
 
-  // Auto-jump to a fresh session after MAX_AUTO_RESUMES same-session retries.
-  // Renders the escalation card, marks the engagement as escalated (so we
-  // don't loop), counts down 5s, then runs the jump. Cancellable.
-  function _doFreshEscalation(agentName, eid) {
-    const card = _renderFreshEscalationCard(agentName);
+  // Auto-jump to a fresh session and resume. Renders the escalation card,
+  // counts down `countdownSecs` (default 5; longer for cooldown retries),
+  // bumps the per-engagement fresh-jump counter, then runs the jump.
+  // Cancellable. Capped by MAX_FRESH_RETRIES at the call sites.
+  function _doFreshEscalation(agentName, eid, detailHtml, countdownSecs) {
+    const card = _renderFreshEscalationCard(agentName, detailHtml);
     if (pendingAgentMsg) {
       pendingAgentMsg.el.classList.remove("agent-thinking");
       pendingAgentMsg.el.innerHTML = "";
@@ -6566,18 +6859,14 @@
       if (agentName && _PINNABLE_AGENTS.has(agentName) && window.__setPendingDispatchAgent) {
         window.__setPendingDispatchAgent(agentName);
       }
-      startFreshChatSession();    // clears chatLog, _autoResumeRetries, AND the escalation flag
-      // Re-set the escalation flag AFTER startFreshChatSession (which clears
-      // it as part of the manual "fresh start" semantics). We want the flag
-      // STICKY across the auto-jump so that the next budget exhaustion hits
-      // give-up rather than triggering a second auto-jump and looping
-      // forever against a genuinely down upstream provider.
-      _setFreshEscalated(eid, true);
-      const ci = document.getElementById("chat-input");
-      if (ci) {
-        ci.value = RESUME_KICKOFF_TEXT;
-        chatForm?.requestSubmit?.();
-      }
+      startFreshChatSession();    // clears chatLog, _autoResumeRetries, AND the fresh-jump counter
+      // Bump the counter AFTER startFreshChatSession (which resets it to 0 as
+      // part of the manual "fresh start" semantics). The count must PERSIST
+      // across the auto-jump so consecutive jumps accumulate toward
+      // MAX_FRESH_RETRIES — beyond that the call sites stop auto-jumping and
+      // hand it to the user instead of looping against a down upstream.
+      _bumpFreshEscalations(eid);
+      _submitResumeKickoff(agentName);
     };
 
     card.querySelector(".stream-drop-now")?.addEventListener("click", fire);
@@ -6591,12 +6880,15 @@
       card.querySelector(".stream-drop-pause")?.remove();
     });
 
-    let secs = 5;
+    let secs = (countdownSecs && countdownSecs > 0) ? countdownSecs : 5;
     const secsEl = card.querySelector(".stream-drop-secs");
+    // Friendly "Mm SSs" for the long cooldown waits; bare seconds otherwise.
+    const fmtSecs = (s) => s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+    if (secsEl) secsEl.textContent = fmtSecs(secs);
     _cancelPendingAutoResume();
     const tick = () => {
       secs--;
-      if (secsEl) secsEl.textContent = String(secs);
+      if (secsEl) secsEl.textContent = fmtSecs(secs);
       if (secs <= 0) fire();
       else _pendingAutoResumeTimer = setTimeout(tick, 1000);
     };
@@ -6626,13 +6918,9 @@
       const eid = (typeof currentProjectId === "function") ? currentProjectId() : "";
       if (eid) {
         _setAutoResumeRetries(eid, 0);
-        _setFreshEscalated(eid, false);
+        _resetFreshEscalations(eid);
       }
-      const ci = document.getElementById("chat-input");
-      if (ci) {
-        ci.value = RESUME_KICKOFF_TEXT;
-        chatForm?.requestSubmit?.();
-      }
+      _submitResumeKickoff(agentName);
       card.remove();
     });
   }
@@ -6641,121 +6929,215 @@
   // so the caller can update / remove it. The card has a "Pause Auto" button
   // that cancels the pending dispatch AND clears the Auto-mode flag so the
   // remaining scopes stay manual.
-  function renderAutoAdvanceCard(nextScope, scopesDone) {
-    const card = document.createElement("div");
-    card.className = "chat-msg agent auto-advance-card";
-    const doneList = (scopesDone || []).join(", ") || "(none yet)";
-    card.innerHTML = `
-      <div class="auto-advance-header">
-        <span class="auto-advance-icon">⚡</span>
-        <span class="auto-advance-title">Auto mode — advancing</span>
-      </div>
-      <div class="auto-advance-body">
-        <p>Next scope: <strong><code>${escapeHtml(nextScope)}</code></strong></p>
-        <p class="muted">Completed: ${escapeHtml(doneList)}</p>
-        <p class="auto-advance-countdown">Dispatching in <span class="auto-advance-secs">3</span>s…</p>
-      </div>
-      <div class="auto-advance-actions">
-        <button type="button" class="cta-btn cta-btn-secondary auto-advance-pause">Pause Auto</button>
-        <button type="button" class="cta-btn auto-advance-now">Dispatch now</button>
-      </div>`;
-    return card;
+  // One-shot: set true right before an auto-dispatch requestSubmit so the chat
+  // submit handler skips rendering/persisting the kickoff as a user bubble.
+  // Reset by the handler after it reads it. Keeps auto-continue invisible.
+  let _suppressNextUserBubble = false;
+
+  // True when `text` is one of our machine-generated kickoffs (auto-advance,
+  // scope-continue, or stream-drop/fresh-session resume) rather than something
+  // the user typed. Matched by distinctive prefixes so every dispatch site is
+  // covered without per-site flags. These read as internal orchestration, so
+  // the submit handler suppresses their user bubble for a seamless transcript.
+  function _isInternalKickoff(text) {
+    if (!text) return false;
+    const t = String(text).trimStart();
+    return t.startsWith("Continue — the prior turn ended")   // RESUME_KICKOFF_TEXT
+        || t.startsWith("Mode: auto")                         // primed phase kickoff (primeKickoff prefix)
+        || t.includes("WORKER MODE");                         // orchestrated worker kickoff (incl. drop-resume scope-kickoff)
   }
 
-  // Look at the current engagement's lifecycle and, if Auto mode is active
-  // and the just-completed turn marked a scope DONE / DONE_WITH_CONCERNS
-  // with a `next_scope`, schedule a delayed dispatch of the next scope.
-  // Called from finalizeAgentBubble after the turn renders.
-  async function _maybeAutoAdvance() {
+  // ── Design orchestrator executor (the ONLY design engine) ─────────────────
+  // The server-side orchestrator (POST /api/engagements/{id}/design/advance)
+  // owns scope order, retries, completion, and what runs next. The frontend is
+  // a THIN EXECUTOR: after a Design (SADomainAgent) turn finishes, it reports
+  // the outcome and dispatches whatever scope the server names. The classic
+  // self-orchestration engine (_maybeAutoAdvance + client-built kickoffs) was
+  // removed 2026-05-28 — it was unreachable AND its kickoffs bypassed the
+  // orchestrator (no WORKER MODE / no computed map). `_orchActive` is retained
+  // as a constant `true` so existing call sites read clearly.
+  function _orchActive(_eid) { return true; }
+
+  // True only while an orchestrated Design run is live for the current
+  // engagement — so the finalize hook only advances Design after a Design turn,
+  // never after a Discovery/Review/etc. turn. Set on start, cleared on
+  // complete / blocked / retry_exhausted / user pause.
+  let _orchRunning = false;
+  // The scope the orchestrator last told us to dispatch; reported back as
+  // last_scope so the server can record its outcome from the artifact on disk.
+  let _orchLastScope = "";
+  // Responding agent of the most recently finished turn. Gates the orchestrated
+  // advance to Design (SADomainAgent) turns ONLY — so a mid-run interjection to
+  // another agent (e.g. the Orchestrator) can't trigger a spurious scope dispatch.
+  let _lastRespondingAgent = "";
+
+  async function _orchAdvanceRequest(eid, mode, outcome, extra) {
+    const body = Object.assign(
+      { mode, last_scope: _orchLastScope || null, outcome: outcome || null },
+      extra || {},
+    );
+    const res = await fetch(`/api/engagements/${encodeURIComponent(eid)}/design/advance`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    // A missing route (HTTP 404) means the server wasn't restarted with the
+    // orchestrator endpoints; a 5xx is a server error. Surface it rather than
+    // letting res.json() throw an opaque parse error that callers swallow.
+    if (!res.ok) throw new Error(`HTTP ${res.status} from /design/advance`);
+    return res.json();
+  }
+
+  // Called from finalizeAgentBubble after a Design turn. Reports the outcome
+  // and executes the next action the orchestrator returns.
+  async function _orchestratedAdvance() {
     const eid = currentProjectId?.();
+    if (!eid || !_orchActive(eid) || !_orchRunning) return;
+    // A pending question card means the worker asked the user something —
+    // report it so the orchestrator parks the scope; don't dispatch over it.
+    const outcome = _hasPendingQuestionCard() ? "question" : null;
+    const mode = recallExecutionMode(eid);
+    let action;
+    try { action = await _orchAdvanceRequest(eid, mode, outcome); }
+    catch (e) { console.warn("[design-orchestrator] advance failed:", e); return; }
+    _applyOrchestratorAction(eid, action, mode);
+  }
+
+  function _applyOrchestratorAction(eid, action, mode) {
+    const act = action && action.action;
+    if (act === "dispatch") {
+      _orchLastScope = action.scope || "";
+      if (mode === "auto") _dispatchOrchestratorScope(action);
+      else _renderOrchestratorContinueCard(action);   // interactive: user steps between scopes
+    } else if (act === "await_user") {
+      // Worker asked a question (already rendered as a question card). Nothing
+      // to dispatch; answering it finalizes a turn → _orchestratedAdvance again.
+      _orchLastScope = action.scope || _orchLastScope;
+    } else if (act === "complete") {
+      _orchRunning = false;
+      _orchLastScope = "";
+      appendChatMessage("agent", "✅ Design complete — every applicable scope is done. Review is next.");
+      try { if (typeof render === "function") render(); } catch {}
+    } else if (act === "retry_exhausted" || act === "blocked") {
+      _orchRunning = false;
+      _renderOrchestratorStuckCard(action);
+    }
+    // "in_flight" → no-op (a dispatch is already running)
+  }
+
+  // Send the worker kickoff the orchestrator built. Fresh session per scope
+  // boundary keeps each scope's context ~constant (the round-12 stall
+  // mitigation) — every scope rebuilds state from disk anyway.
+  function _dispatchOrchestratorScope(action) {
+    const k = action.kickoff || "";
+    console.log(`[design-orchestrator] dispatch scope=${action.scope} kickoffLen=${k.length} `
+      + `workerMode=${k.includes("WORKER MODE")} computed=${k.includes("COMPUTED (authoritative")}`);
+    startFreshChatSession({
+      message: `Starting design scope: ${action.scope}. Prior decisions and artifacts are saved on disk.`,
+    });
+    const ci = document.getElementById("chat-input");
+    if (!ci) return;
+    if (window.__setPendingDispatchAgent) window.__setPendingDispatchAgent(action.agent || "SADomainAgent");
+    _selectChatAgent(action.agent || "SADomainAgent");
+    _suppressNextUserBubble = true;
+    ci.value = action.kickoff;
+    chatForm?.requestSubmit?.();
+  }
+
+  function _renderOrchestratorContinueCard(action) {
+    const card = document.createElement("div");
+    card.className = "auto-advance-card";
+    card.innerHTML =
+      `<p>Scope <code>${escapeHtml(action.scope)}</code> is ready.</p>` +
+      `<button class="orch-continue">Continue → ${escapeHtml(action.scope)}</button>`;
+    card.querySelector(".orch-continue")?.addEventListener("click", () => {
+      card.remove();
+      _dispatchOrchestratorScope(action);
+    });
+    chatLog.appendChild(card);
+  }
+
+  function _renderOrchestratorStuckCard(action) {
+    const card = document.createElement("div");
+    card.className = "stream-drop-card";
+    const why = action.action === "blocked"
+      ? `Scope <code>${escapeHtml(action.scope)}</code> is blocked: ${escapeHtml(action.note || "needs input")}.`
+      : `Scope <code>${escapeHtml(action.scope)}</code> failed ${action.attempts || ""} attempts.`;
+    card.innerHTML =
+      `<p>${why}</p>` +
+      `<button class="orch-retry">Retry scope</button>`;
+    card.querySelector(".orch-retry")?.addEventListener("click", async () => {
+      card.remove();
+      _orchRunning = true;
+      const eid = currentProjectId?.();
+      if (!eid) return;
+      // Reset the scope's retry budget server-side, else decide_next would
+      // immediately re-surface the same exhausted/blocked state.
+      try {
+        const res = await fetch(`/api/engagements/${encodeURIComponent(eid)}/design/advance`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reset_scope: action.scope }),
+        });
+        _applyOrchestratorAction(eid, await res.json(), recallExecutionMode(eid));
+      } catch { /* best-effort */ }
+    });
+    chatLog.appendChild(card);
+  }
+
+  // Entry point: start (or resume) an orchestrated Design run. Fetches the
+  // first scope from the orchestrator and opens the chat with its kickoff.
+  async function _startOrchestratedDesign(eid, mode) {
     if (!eid) return;
-    if (!isAutoModeActive(eid)) return;
-    // Block on unanswered questions — don't auto-dispatch the next scope
-    // while the agent is still expecting an explicit user answer.
-    if (_hasPendingQuestionCard()) return;
-    let lifecycle;
+    rememberExecutionMode(eid, mode);
+    _orchRunning = true;
+    _orchLastScope = "";
+    // Open the chat pane FIRST so the dispatch — or any error message — is
+    // visible. (openChatWith is local to the CTA wiring; replicate it with
+    // module-scope primitives.)
+    applyChat?.("open");
+    let action;
     try {
-      lifecycle = await fetch(`/api/engagements/${encodeURIComponent(eid)}/lifecycle`)
-        .then(r => r.json());
-    } catch { return; }
-    const sp = lifecycle?.steps?.design?.scope_progress;
-    if (!sp) return;
-    // Final scope done — clear the flag, let the normal phase-handoff card render.
-    if (!sp.next) {
-      setAutoMode(eid, false);
+      action = await _orchAdvanceRequest(eid, mode, null);
+    } catch (e) {
+      _orchRunning = false;
+      // VISIBLE failure (was a silent return). The most common cause is the
+      // server not being restarted with the /design endpoints yet.
+      appendChatMessage(
+        "agent",
+        `⚠️ Couldn't start the design orchestrator: ${e && e.message ? e.message : "request failed"}. ` +
+        `If you just deployed, restart SAM so the /design endpoints are live (a 404 means the ` +
+        `running server predates them), then click Start Design again.`,
+      );
+      console.warn("[design-orchestrator] start failed:", e);
       return;
     }
-    // Pause auto-loop on non-clean exits — user takes over.
-    if (sp.status !== "DONE" && sp.status !== "DONE_WITH_CONCERNS") return;
-
-    // Dedup: if we already dispatched this exact scope_progress (same
-    // current+status+updated_at), don't re-fire. Guards against the agent
-    // crashing without writing a fresh scope_progress on the next attempt
-    // — without this, the loop would re-dispatch the SAME next-scope.
-    const fingerprint = `${sp.current}|${sp.status}|${sp.updated_at}`;
-    const dedupKey = `sa.auto_last_dispatched.${eid}`;
-    let lastDispatched = null;
-    try { lastDispatched = localStorage.getItem(dedupKey); } catch {}
-    if (lastDispatched === fingerprint) return;
-
-    // Don't double-render if a prior auto-advance card already on screen.
-    if (chatLog.querySelector(".auto-advance-card")) return;
-
-    const card = renderAutoAdvanceCard(sp.next, sp.done || []);
-    chatLog.appendChild(card);
-    chatLog.scrollTop = chatLog.scrollHeight;
-
-    const dispatch = () => {
-      _cancelPendingAutoAdvance();
-      // Late gate — a question card may have appeared during the 3s
-      // countdown (or tab was hidden through it). Don't auto-dispatch
-      // over a pending answer.
-      if (_hasPendingQuestionCard()) {
-        card.querySelector(".auto-advance-body").innerHTML =
-          `<p class="muted">A question is waiting for your answer. Auto-advance paused — answer the question and the next scope will dispatch on the agent's next turn.</p>`;
-        card.querySelector(".auto-advance-actions").innerHTML = "";
+    // On Start/resume, a scope parked in ANY non-progress state from a prior
+    // session — await_user (question not on this screen), in_flight (a dispatch
+    // that never finished), retry_exhausted or blocked — must be re-dispatched
+    // so the worker actually runs it HERE, rather than dead-ending. Reset its
+    // budget and re-advance to get a fresh dispatch. (complete/dispatch fall
+    // through unchanged.)
+    if (action && action.scope
+        && action.action !== "dispatch" && action.action !== "complete") {
+      _orchLastScope = action.scope || "";
+      try {
+        action = await _orchAdvanceRequest(eid, mode, null, { reset_scope: action.scope });
+      } catch (e) {
+        _orchRunning = false;
+        appendChatMessage("agent", `⚠️ Couldn't resume the design scope: ${e && e.message ? e.message : "request failed"}.`);
         return;
       }
-      card.remove();
-      try { localStorage.setItem(dedupKey, fingerprint); } catch {}
+    }
+    if (action && action.action === "dispatch") {
+      _orchLastScope = action.scope || "";
+      if (window.__setPendingDispatchAgent) window.__setPendingDispatchAgent(action.agent || "SADomainAgent");
+      _selectChatAgent(action.agent || "SADomainAgent");
+      _suppressNextUserBubble = true;
       const ci = document.getElementById("chat-input");
-      if (ci) {
-        // Pin the per-scope kickoff to SADomainAgent. Without this, a
-        // sticky-agent drift (e.g. the user — or the orchestrator — set
-        // SADiscoveryAgent as the chat agent during an earlier turn)
-        // would silently route this Design-scope kickoff to the wrong
-        // agent. That agent would do the work but couldn't call
-        // record_scope_progress (Domain-only tool), so the lifecycle
-        // would never advance and this auto-advance card would never
-        // render again. Observed 2026-05-22.
-        if (window.__setPendingDispatchAgent) {
-          window.__setPendingDispatchAgent("SADomainAgent");
-        }
-        ci.value = _buildAutoAdvanceKickoff(sp.next, sp.done || []);
-        chatForm?.requestSubmit?.();
-      }
-    };
-
-    card.querySelector(".auto-advance-pause")?.addEventListener("click", () => {
-      _cancelPendingAutoAdvance();
-      setAutoMode(eid, false);
-      card.querySelector(".auto-advance-body").innerHTML =
-        `<p class="muted">Auto mode paused. Remaining scopes will not dispatch automatically.</p>`;
-      card.querySelector(".auto-advance-actions").innerHTML = "";
-    });
-    card.querySelector(".auto-advance-now")?.addEventListener("click", dispatch);
-
-    // 3s countdown — gives the user a moment to read the prior scope's
-    // summary and decide whether to pause.
-    let secs = 3;
-    const tick = () => {
-      const el = card.querySelector(".auto-advance-secs");
-      if (el) el.textContent = String(secs);
-      if (secs <= 0) { dispatch(); return; }
-      secs -= 1;
-      _pendingAutoAdvanceTimer = setTimeout(tick, 1000);
-    };
-    tick();
+      if (ci) { ci.value = action.kickoff; ci.focus(); chatForm?.requestSubmit?.(); }
+    } else {
+      _applyOrchestratorAction(eid, action, mode);
+    }
   }
 
   // Pull the responding agent's name from a FinalResponse event payload.
@@ -6872,6 +7254,39 @@
       if (name) localStorage.setItem(_USER_PICK_KEY, name);
       else localStorage.removeItem(_USER_PICK_KEY);
     } catch { /* ignore — localStorage may be unavailable in private mode */ }
+  }
+
+  // Point the chat agent dropdown (and the persistent user pick, so the 15s
+  // re-poll doesn't snap it back) AT a specific agent. Called on phase start so
+  // the dropdown auto-reflects the phase being started, and the user's
+  // follow-up messages route to that agent rather than the previous value.
+  function _selectChatAgent(agent) {
+    if (!agent) return;
+    try {
+      const sel = document.getElementById("chat-agent-select");
+      if (sel && Array.from(sel.options).some(o => o.value === agent)) {
+        sel.value = agent;
+      }
+      _setUserPickedAgent(agent);
+      if (typeof loadAgents === "function") loadAgents();
+    } catch { /* best-effort */ }
+  }
+
+  // During an active orchestrated Design run, a user message to SADomainAgent is
+  // a continuation of the current scope (typically the answer to the worker's
+  // blocking question). Re-assert WORKER MODE + scope on the SENT text so the
+  // agent stays in worker context even if a stream-drop / fresh-session dropped
+  // the prior turns (otherwise it falls back to classic mode, re-reads the
+  // checkpoint, and misfires its lane-guard — the "switch to SADomainAgent"
+  // confusion). Only the dispatched text is wrapped; the chat bubble still shows
+  // the user's original words.
+  function _wrapWorkerAnswer(text, agent) {
+    const eid = currentProjectId?.();
+    if (eid && agent === "SADomainAgent" && _orchActive(eid) && _orchRunning && _orchLastScope
+        && !/^\s*(WORKER MODE|Mode:\s*auto)/.test(text || "")) {
+      return `WORKER MODE\nScope: ${_orchLastScope}\n\n${text}`;
+    }
+    return text;
   }
 
   async function loadAgents() {
@@ -7151,17 +7566,19 @@
       }
       setTimeout(() => {
         startFreshChatSession();
-        const ci = document.getElementById("chat-input");
-        if (ci) {
-          ci.value = RESUME_KICKOFF_TEXT;
-          chatForm?.requestSubmit?.();
-        }
+        _submitResumeKickoff();
       }, 1500);
     });
   }
 
   function _setChatInflight(taskId) {
     _currentInflightTaskId = taskId || "";
+    // Hard-disable the composer + agent picker while a task is in flight, so the
+    // user can't submit a second turn or retarget the agent mid-flight. The
+    // `disabled` attribute (not just pointer-events/dimming) is required —
+    // pointer-events:none doesn't block keyboard input on a focused textarea.
+    if (chatInput) chatInput.disabled = !!_currentInflightTaskId;
+    if (chatAgentSelect) chatAgentSelect.disabled = !!_currentInflightTaskId;
     // Watchdog: start when a task arms inflight, stop when it clears.
     if (_currentInflightTaskId) {
       _startStuckWatchdog();
@@ -7468,11 +7885,20 @@
     if (!chatSessionId) chatSessionId = deriveChatSessionId();
     if (!chatEventSource) openSseStream(chatSessionId);
 
-    appendChatMessage("user", text, { routedToSam: sendToSam });
+    // Auto-continue / resume kickoffs are internal orchestration — render a
+    // user bubble only when the user actually typed/clicked. The thinking
+    // bubble, activity pills, and recovery cards still convey what's underway.
+    if (_suppressNextUserBubble || _isInternalKickoff(text)) {
+      _suppressNextUserBubble = false;
+    } else {
+      appendChatMessage("user", text, { routedToSam: sendToSam });
+    }
     chatInput.value = "";
     openThinkingBubble();
 
-    const body = { text, session_id: chatSessionId };
+    // Wrap with worker context for SADomainAgent during an active Design run
+    // (keeps the bubble showing the user's original words above).
+    const body = { text: _wrapWorkerAnswer(text, agent), session_id: chatSessionId };
     if (agent) body.agent = agent;
     // Engagement context only flows to SA agents. The stock SAM
     // orchestrator has no SA knowledge / engagement-aware tools; sending
