@@ -63,6 +63,48 @@ async def test_design_prefix_rejected():
 
 
 @pytest.mark.asyncio
+async def test_append_artifact_builds_file_in_chunks():
+    """append_artifact lets the agent build a large prose file across several
+    small calls (chunked write) so no single LLM turn has to emit the whole
+    file — the mechanism that keeps generations under the upstream's streaming
+    timeout. First chunk via write_artifact, rest via append_artifact."""
+    eid = "eng-append"
+    assert (await artifact_tools.write_artifact(eid, "topic-design/topic-design.md", "# Topic Design\n\n")).ok
+    r = await artifact_tools.append_artifact(eid, "topic-design/topic-design.md", "chunk-two ")
+    assert r.ok and r.data["appended_bytes"] == len("chunk-two ")
+    assert (await artifact_tools.append_artifact(eid, "topic-design/topic-design.md", "chunk-three")).ok
+    rd = await artifact_tools.read_artifact(eid, "topic-design/topic-design.md")
+    assert rd.ok and rd.data == "# Topic Design\n\nchunk-two chunk-three"
+
+
+@pytest.mark.asyncio
+async def test_append_artifact_enforces_same_guards():
+    # design/ prefix and forbidden terms must be rejected on append too.
+    assert not (await artifact_tools.append_artifact("eng-append-2", "design/x.md", "y")).ok
+    bad = await artifact_tools.append_artifact("eng-append-2", "topic-design/x.md", "use a connector")
+    assert not bad.ok and bad.error_detail["terminology_check"]["violations"]
+
+
+@pytest.mark.asyncio
+async def test_append_artifact_accepts_content_alias():
+    """The LLM often reuses write_artifact's `content=` on append_artifact; we
+    accept it as an alias for `content_chunk` so the call doesn't error and burn
+    a recovery round-trip. Either name works; neither = a clean error, not a crash."""
+    eid = "eng-append-alias"
+    assert (await artifact_tools.write_artifact(eid, "topic-design/topic-design.md", "# T\n")).ok
+    # write_artifact-style `content=` must succeed on append_artifact
+    r_alias = await artifact_tools.append_artifact(eid, "topic-design/topic-design.md", content="A ")
+    assert r_alias.ok and r_alias.data["appended_bytes"] == len("A ")
+    # canonical `content_chunk=` still works
+    assert (await artifact_tools.append_artifact(eid, "topic-design/topic-design.md", content_chunk="B")).ok
+    # neither provided → graceful error
+    none_given = await artifact_tools.append_artifact(eid, "topic-design/topic-design.md")
+    assert not none_given.ok and "content_chunk" in (none_given.error or "")
+    rd = await artifact_tools.read_artifact(eid, "topic-design/topic-design.md")
+    assert rd.ok and rd.data == "# T\nA B"
+
+
+@pytest.mark.asyncio
 async def test_read_missing_artifact():
     r = await artifact_tools.read_artifact("eng-4", "missing/file.yaml")
     assert not r.ok
@@ -79,6 +121,40 @@ async def test_decision_id_sequencing():
                                               selected="s2", rationale="rt2", source_agent="SADomainAgent")
     assert r1.data["id"] == "D1"
     assert r2.data["id"] == "D2"
+
+
+@pytest.mark.asyncio
+async def test_record_decision_is_idempotent_on_identity():
+    """Re-asserting the same (source_agent, context, selected) — e.g. a scope the
+    orchestrator re-dispatched after a stall — returns the existing decision
+    instead of duplicating it. Rationale/recommendation rewording doesn't matter."""
+    eid = "eng-dedup-1"
+    r1 = await decision_tools.record_decision(
+        eid, context="broker tier", recommendation="Enterprise", selected="Enterprise",
+        rationale="fits throughput", source_agent="SADomainAgent")
+    # Same identity, reworded rationale + recommendation → no new entry.
+    r2 = await decision_tools.record_decision(
+        eid, context="broker tier", recommendation="Enterprise tier",
+        selected="Enterprise", rationale="reworded on retry", source_agent="SADomainAgent")
+    assert r2.data["id"] == r1.data["id"]
+    assert r2.data.get("duplicate") is True
+    assert len((await decision_tools.read_decisions(eid)).data) == 1
+
+
+@pytest.mark.asyncio
+async def test_record_decision_distinct_selection_is_new():
+    """A genuinely different choice (selected) for the same context is a NEW
+    decision — dedup must not collapse a revised decision."""
+    eid = "eng-dedup-2"
+    await decision_tools.record_decision(
+        eid, context="broker tier", recommendation="Enterprise", selected="Enterprise",
+        rationale="x", source_agent="SADomainAgent")
+    r2 = await decision_tools.record_decision(
+        eid, context="broker tier", recommendation="Developer", selected="Developer",
+        rationale="y", source_agent="SADomainAgent")
+    assert r2.data["id"] == "D2"
+    assert not r2.data.get("duplicate")
+    assert len((await decision_tools.read_decisions(eid)).data) == 2
 
 
 @pytest.mark.asyncio
@@ -714,6 +790,36 @@ async def test_record_scope_progress_preserves_step_status():
 
 
 @pytest.mark.asyncio
+async def test_set_step_status_preserves_scope_progress():
+    """set_step_status must NOT clobber scope_progress written earlier the same
+    turn. The agent records scope progress, then calls set_step_status at
+    end-of-turn (Completion-status rule); if the latter replaced the whole step
+    entry, scope_progress.next was lost and Auto-mode advance re-ran completed
+    scopes. This is the real-world order (the reverse of the test above)."""
+    eid = "scope-eng-step-preserve"
+    # Record scope progress FIRST (mid-turn, after a scope completes).
+    await lifecycle_tools.record_scope_progress(
+        engagement_id=eid, step="design",
+        current_scope="broker-select", status="DONE",
+        next_scope="protocol-select",
+        scopes_done=["topic-design", "broker-select"],
+    )
+    # THEN the end-of-turn Completion-status write.
+    await lifecycle_tools.set_step_status(
+        engagement_id=eid, step="design", status="NEEDS_CONTEXT",
+        note="broker-select complete; protocol-select next", agent="SADomainAgent",
+    )
+    status = await lifecycle_tools.get_engagement_status(engagement_id=eid)
+    entry = status.data["steps"]["design"]
+    assert entry["status"] == "NEEDS_CONTEXT"
+    assert entry["note"] == "broker-select complete; protocol-select next"
+    # The scope pointer must survive the status write.
+    assert entry["scope_progress"]["current"] == "broker-select"
+    assert entry["scope_progress"]["next"] == "protocol-select"
+    assert entry["scope_progress"]["done"] == ["topic-design", "broker-select"]
+
+
+@pytest.mark.asyncio
 async def test_record_scope_progress_rejects_bad_status():
     r = await lifecycle_tools.record_scope_progress(
         engagement_id="scope-eng-4", step="design",
@@ -1033,3 +1139,36 @@ async def test_reset_discovery_clears_checkpoint():
     # Restart wiped the checkpoint.
     r = await session_tools.read_checkpoint(eid, step="discovery")
     assert r.data["state"] == {}, "Restart Discovery must clear the checkpoint"
+
+
+@pytest.mark.asyncio
+async def test_telemetry_records_activity_without_payloads(tmp_path, monkeypatch):
+    """LLM telemetry now records the agent's activity (tool calls + status text,
+    the chat-pill content) alongside tokens — but NEVER bulk payloads like a
+    write_artifact body."""
+    monkeypatch.setenv("SA_STORAGE_ROOT", str(tmp_path))
+    from types import SimpleNamespace as NS
+    from solace_architect_core import agent_callbacks as ac
+    from solace_architect_core._storage import read_jsonl
+    resp = NS(
+        usage_metadata=NS(prompt_token_count=2100, candidates_token_count=80,
+                          prompt_tokens_details=None),
+        content=NS(parts=[
+            NS(function_call=NS(name="read_artifact",
+                                args={"artifact_name": "protocol-select/protocol-map.yaml"}), text=None),
+            NS(function_call=None, text="Reading prior decisions"),
+            NS(function_call=NS(name="write_artifact",
+                                args={"artifact_name": "topic-design/topic-taxonomy.yaml",
+                                      "content": "Z" * 5000}), text=None),
+        ]),
+    )
+    await ac.record_llm_call_telemetry(llm_response=resp, agent="SADomainAgent",
+                                       engagement_id="act-eng", model="m")
+    rows = read_jsonl("act-eng", "meta/telemetry/llm-calls.jsonl")
+    act = rows[-1]["activity"]
+    assert {"tool": "read_artifact", "args": "artifact_name=protocol-select/protocol-map.yaml"} in act
+    assert {"text": "Reading prior decisions"} in act
+    # write_artifact captured by name only — the 5000-char body is NOT stored.
+    blob = __import__("json").dumps(rows[-1])
+    assert "topic-design/topic-taxonomy.yaml" in blob
+    assert "ZZZZ" not in blob

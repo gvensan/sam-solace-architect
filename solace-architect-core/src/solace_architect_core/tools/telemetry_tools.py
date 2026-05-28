@@ -51,6 +51,7 @@ async def record_token_usage(
     source: str = "agent",
     ts: Optional[str] = None,
     user_id: Optional[str] = None,
+    activity: Optional[list] = None,
 ) -> ToolResult:
     """Append one LLM round-trip's token bill to the engagement's telemetry ledger.
 
@@ -94,6 +95,11 @@ async def record_token_usage(
         "total_tokens": int(input_tokens) + int(output_tokens),
         "source": source,
     }
+    # The agent's activity for this round-trip — the tool calls + status text
+    # that render as chat pills ("Reading …", "Writing …"). Recorded only when
+    # present so token-only rows stay lean. Size-capped by the caller.
+    if activity:
+        row["activity"] = activity
     try:
         with _scoped_user(user_id):
             append_jsonl(engagement_id, LEDGER_PATH, row)

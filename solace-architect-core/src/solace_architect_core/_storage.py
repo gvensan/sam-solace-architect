@@ -108,6 +108,21 @@ def write_text(engagement_id: str, artifact_name: str, content: str) -> Path:
     return path
 
 
+def append_text(engagement_id: str, artifact_name: str, content: str) -> Path:
+    """Append text to an artifact, creating it (and parent dirs) if absent.
+
+    Concurrency-safe under the module ``_LOCK``. Backs ``append_artifact`` so a
+    large prose artifact can be built incrementally across several small tool
+    calls — no single LLM turn has to emit a whole large file (which can exceed
+    an upstream proxy's streaming timeout and drop mid-stream)."""
+    path = safe_artifact_path(engagement_id, artifact_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _LOCK:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(content)
+    return path
+
+
 def append_jsonl(engagement_id: str, artifact_name: str, row: dict) -> Path:
     """Append a single JSON object as a line to a JSONL artifact (creates parent dirs).
 

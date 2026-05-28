@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -150,6 +151,10 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                         self.log_identifier)
         ttl_hours = max(1.0, ttl_hours)   # floor at 1h so we never lock users out instantly
         session_ttl_seconds = int(ttl_hours * 3600)
+        # In-memory per-session SSE state is pruned after the auth session TTL:
+        # by then the browser session is invalid, so the state is definitely
+        # garbage and no active/recent stream is affected.
+        self._sse_prune_ttl_seconds = session_ttl_seconds
 
         self._auth_state: AuthState = ensure_initialized(
             db_path,
@@ -175,18 +180,20 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         # card — a 5-second disconnect costs the user a full state reload.
         #
         # ``WEBUI_REPLAY_BUFFER_SIZE`` env var lets ops tune the per-session
-        # cap (default 100). Bumping to e.g. 1000 helps under high-rate
-        # streaming agents at the cost of memory; lowering to 20 trims
-        # memory for stable, low-throughput deployments.
+        # cap (default 500). Auto-mode design sessions emit hundreds of events
+        # (chunked writes + decisions + tool traces) — logs showed 300+ events
+        # evicted at the old default of 100, so a reconnect lost most of the
+        # turn. 500 covers a typical busy scope; the idle-session prune bounds
+        # the total memory. Lower to ~20 for stable low-throughput deployments.
         from collections import deque as _deque
         self._sse_replay: Dict[str, "_deque"] = {}
         self._sse_next_id: Dict[str, int] = {}
         try:
-            self._replay_buffer_size = int(os.environ.get("WEBUI_REPLAY_BUFFER_SIZE", "100"))
+            self._replay_buffer_size = int(os.environ.get("WEBUI_REPLAY_BUFFER_SIZE", "500"))
         except ValueError:
-            self._replay_buffer_size = 100
+            self._replay_buffer_size = 500
         if self._replay_buffer_size < 1:
-            self._replay_buffer_size = 100
+            self._replay_buffer_size = 500
         log.info(
             "%s SSE replay buffer size: %d events per session (WEBUI_REPLAY_BUFFER_SIZE)",
             self.log_identifier, self._replay_buffer_size,
@@ -199,6 +206,27 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         # doesn't spam logs but the issue stays visible.
         self._sse_drop_counts: Dict[str, int] = {}
         self._SSE_DROP_LOG_EVERY = 25      # log on 1st, 25th, 50th… drop per session
+
+        # Live SSE delivery-queue cap. Distinct from the replay buffer (which is
+        # reconnect HISTORY): this bounds the IN-FLIGHT queue so a vanished or
+        # wedged consumer can't make the producer grow memory without limit —
+        # SAM's native gateway bounds the same queue at 1000. On overflow we drop
+        # the live event for that session (reconnect replay + snapshot still cover
+        # a returning client) rather than blocking the producer.
+        try:
+            self._sse_max_queue_size = int(os.environ.get("WEBUI_SSE_MAX_QUEUE_SIZE", "1000"))
+        except ValueError:
+            self._sse_max_queue_size = 1000
+        if self._sse_max_queue_size < 1:
+            self._sse_max_queue_size = 1000
+        self._sse_overflow_counts: Dict[str, int] = {}
+
+        # Last-activity (wall-clock) per session, stamped on connect and on every
+        # enqueued event. Drives _prune_idle_sse_sessions so the per-session maps
+        # above don't grow unbounded over server uptime (one entry per session_id
+        # ever seen). Pruned only after _sse_prune_ttl_seconds of inactivity.
+        self._sse_last_activity: Dict[str, float] = {}
+        self._sse_prune_task: Optional[asyncio.Task] = None
 
         # Snapshot rotation knobs. TTL defaults to 48h of replayable history;
         # cleanup runs once on startup and every interval thereafter. Tuned
@@ -393,6 +421,14 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                         interval_seconds=self._sse_cleanup_interval,
                     ),
                 )
+                # Companion sweep: prune idle in-memory per-session SSE state on
+                # the same cadence (snapshot rotation only touches disk files).
+                self._sse_prune_task = loop.create_task(
+                    self._run_inmemory_session_prune(
+                        max_idle_seconds=self._sse_prune_ttl_seconds,
+                        interval_seconds=self._sse_cleanup_interval,
+                    ),
+                )
                 self._http_ready.set()
 
                 loop.run_forever()    # serve requests until _stop_listener triggers loop.stop
@@ -420,15 +456,19 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
             # Cancel the snapshot-rotation task FIRST so the asyncio.sleep
             # in run_periodic_cleanup doesn't keep the loop alive past
             # site/runner teardown. CancelledError is expected and swallowed.
-            if self._sse_rotation_task and not self._sse_rotation_task.done():
-                self._sse_rotation_task.cancel()
-                try:
-                    await self._sse_rotation_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:    # noqa: BLE001 — never let cleanup mask shutdown
-                    log.exception("%s Error during SSE rotation task shutdown",
-                                  self.log_identifier)
+            for _task, _label in (
+                (self._sse_rotation_task, "SSE rotation"),
+                (self._sse_prune_task, "SSE prune"),
+            ):
+                if _task and not _task.done():
+                    _task.cancel()
+                    try:
+                        await _task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:    # noqa: BLE001 — never let cleanup mask shutdown
+                        log.exception("%s Error during %s task shutdown",
+                                      self.log_identifier, _label)
             if self._site:
                 await self._site.stop()
             if self._runner:
@@ -603,6 +643,36 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                      "auto_retryable": classification["auto_retryable"]},
         })
 
+    async def _handle_task_timeout(self, task_id: str) -> None:
+        """Surface an idle task-timeout to the user instead of leaving it spinning.
+
+        ``BaseGatewayComponent`` no-ops this hook, so without an override a stalled
+        agent task (no events for ``task_timeout_seconds``) leaves the engagement
+        frozen in NEEDS_CONTEXT / IN_PROGRESS behind a "Continue in chat →" that does
+        nothing — the exact dead-end users hit when an upstream LLM call hangs. We
+        recover the task's SSE context and route it through the same
+        ``_send_error_to_external`` path used for real errors, so the error is
+        classified, the in-flight step is marked BLOCKED, and the frontend gets a
+        structured Error event it can recover from (and auto-resume, capped by the
+        stop-the-loop guard).
+        """
+        context = self.task_context_manager.get_context(task_id)
+        if not context:
+            log.warning(
+                "%s task %s timed out but no SSE context found (already finalized?)",
+                self.log_identifier, task_id,
+            )
+            return
+        error = JSONRPCError(
+            code=-32001,
+            message=(
+                f"The agent task timed out after {self.task_timeout_seconds}s with no "
+                "response — the upstream LLM likely stalled or dropped the connection."
+            ),
+            data={"task_id": task_id, "reason": "task_timeout"},
+        )
+        await self._send_error_to_external(context, error)
+
     # ---------- HTTP handlers ----------
 
     async def _serve_index(self, request: web.Request) -> web.Response:
@@ -681,7 +751,7 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         body["session_token"] = request.cookies.get(SESSION_COOKIE)
 
         # Lazy-create the SSE queue for this session.
-        self._sse_queues.setdefault(session_id, asyncio.Queue())
+        self._sse_queue(session_id)
 
         # Resolve identity + translate browser body → (target_agent, A2A parts, ctx).
         try:
@@ -984,7 +1054,7 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         """
         from collections import deque
         session_id = request.match_info["session_id"]
-        queue = self._sse_queues.setdefault(session_id, asyncio.Queue())
+        queue = self._sse_queue(session_id)
         replay = self._sse_replay.setdefault(
             session_id, deque(maxlen=self._replay_buffer_size),
         )
@@ -1135,6 +1205,12 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
              The frontend attaches a ``"heartbeat"`` listener that bumps the
              last-event timestamp, gating the 30s force-reconnect logic on
              actual liveness rather than agent activity.
+
+        NB: heartbeat does NOT poison-pill the stream queue on write failure —
+        the queue is keyed per-session and shared with any reconnecting
+        connection, so injecting a sentinel here could break the new stream.
+        The generator exits on its own next write-failure; the bounded queue
+        caps memory in the meantime.
         """
         try:
             while True:
@@ -1149,6 +1225,55 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
 
     # ---------- helpers ----------
 
+    def _sse_queue(self, session_id: str) -> asyncio.Queue:
+        """Get/create the per-session live SSE queue, bounded by
+        ``_sse_max_queue_size`` so a gone/wedged consumer can't grow memory
+        without limit. Single creation point — keep all call sites using it.
+        Also stamps last-activity (connect + every event flow through here) for
+        the idle-session prune."""
+        self._sse_last_activity[session_id] = time.time()
+        q = self._sse_queues.get(session_id)
+        if q is None:
+            q = asyncio.Queue(maxsize=self._sse_max_queue_size)
+            self._sse_queues[session_id] = q
+        return q
+
+    def _prune_idle_sse_sessions(self, max_idle_seconds: float) -> int:
+        """Drop in-memory per-session SSE state for sessions idle beyond
+        ``max_idle_seconds``. Without this the per-session maps grow unbounded
+        over server uptime (one set of entries per session_id ever seen). Only
+        idle sessions are pruned — an active or recently-active stream stamps
+        ``_sse_last_activity`` on every event, so it is never touched; a client
+        returning past the TTL re-creates its state (and re-hydrates from the
+        on-disk snapshot if still within snapshot TTL)."""
+        now = time.time()
+        stale = [sid for sid, ts in list(self._sse_last_activity.items())
+                 if now - ts > max_idle_seconds]
+        for sid in stale:
+            self._sse_queues.pop(sid, None)
+            self._sse_replay.pop(sid, None)
+            self._sse_next_id.pop(sid, None)
+            self._sse_drop_counts.pop(sid, None)
+            self._sse_overflow_counts.pop(sid, None)
+            self._sse_last_activity.pop(sid, None)
+        if stale:
+            log.info("%s pruned in-memory SSE state for %d idle session(s) (idle > %.1fh)",
+                     self.log_identifier, len(stale), max_idle_seconds / 3600)
+        return len(stale)
+
+    async def _run_inmemory_session_prune(self, max_idle_seconds: float, interval_seconds: int) -> None:
+        """Periodic companion to the on-disk snapshot rotation (which does not
+        touch the in-memory maps). Cancelled cleanly in _stop_listener."""
+        try:
+            while True:
+                await asyncio.sleep(interval_seconds)
+                try:
+                    self._prune_idle_sse_sessions(max_idle_seconds)
+                except Exception:    # noqa: BLE001 — never let a prune error kill the loop
+                    log.debug("%s in-memory SSE prune raised", self.log_identifier, exc_info=True)
+        except asyncio.CancelledError:
+            return
+
     async def _enqueue_sse(self, ctx: Dict[str, Any], payload: Dict[str, Any]) -> None:
         """Bridge an SSE event from SAM's loop thread to the HTTP loop thread."""
         session_id = ctx.get("session_id")
@@ -1160,8 +1285,21 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
             return
 
         async def _put_on_http_loop() -> None:
-            q = self._sse_queues.setdefault(session_id, asyncio.Queue())
-            await q.put(payload)
+            q = self._sse_queue(session_id)
+            try:
+                q.put_nowait(payload)
+            except asyncio.QueueFull:
+                # Consumer is gone or hopelessly behind. Drop this live event
+                # (reconnect replay buffer + on-disk snapshot still cover a
+                # returning client) rather than blocking/growing without bound.
+                n = self._sse_overflow_counts.get(session_id, 0) + 1
+                self._sse_overflow_counts[session_id] = n
+                if n == 1 or n % self._SSE_DROP_LOG_EVERY == 0:
+                    log.warning(
+                        "%s SSE live queue full for session=%s (cap=%d): dropped %d live "
+                        "event(s). Consumer likely disconnected; reconnect replays from buffer.",
+                        self.log_identifier, session_id, self._sse_max_queue_size, n,
+                    )
 
         # Schedule the put on the HTTP loop's thread; don't block SAM's loop on completion.
         asyncio.run_coroutine_threadsafe(_put_on_http_loop(), self._http_loop)

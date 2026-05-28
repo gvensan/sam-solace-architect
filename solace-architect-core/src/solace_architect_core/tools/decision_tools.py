@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict
 from typing import Any, Optional
 
@@ -18,6 +19,17 @@ from .artifact_tools import ToolResult
 
 # ---------- Decisions ----------
 
+
+def _decision_fingerprint(source_agent: str, context: str, selected: str) -> str:
+    """Identity of a decision: who decided, what was being decided, what was
+    chosen. Recommendation/rationale are deliberately excluded — they're
+    supporting detail an LLM may reword on a re-run, which must NOT create a
+    duplicate. Computed on the fly (no stored field) so it also dedups against
+    decisions written before idempotency existed."""
+    raw = "\x1f".join((source_agent or "", context or "", selected or "")).strip().lower()
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
 async def record_decision(
     engagement_id: str, *, context: str, recommendation: str, selected: str,
     rationale: str, source_agent: str,
@@ -26,10 +38,19 @@ async def record_decision(
 ) -> ToolResult:
     """Append a D-numbered decision to meta/decisions.yaml.
 
-    ``user_id`` auto-resolves from ``tool_context``.
+    Idempotent: if a decision with the same (source_agent, context, selected)
+    fingerprint already exists, the existing entry is returned (tagged
+    ``duplicate``) instead of inserting a copy. The Design orchestrator owns
+    retries — a re-dispatched scope re-asserting its decisions must not grow a
+    duplicate ledger. ``user_id`` auto-resolves from ``tool_context``.
     """
     with _scoped_user(_resolve_user_id(user_id, tool_context)):
         data = read_yaml(engagement_id, "meta/decisions.yaml", default={"decisions": []})
+        fp = _decision_fingerprint(source_agent, context, selected)
+        for d in data["decisions"]:
+            if _decision_fingerprint(d.get("source_agent", ""), d.get("context", ""),
+                                     d.get("selected", "")) == fp:
+                return ToolResult(ok=True, data={**d, "duplicate": True})
         existing_ids = [d["id"] for d in data["decisions"]]
         entry = DecisionEntry(
             id=next_id(existing_ids, "D"),

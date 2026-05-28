@@ -59,6 +59,53 @@ def _extract_usage(llm_response: Any) -> tuple[int, int, int]:
     return (input_tokens, output_tokens, cached_tokens)
 
 
+# Args whose VALUE is a short identifier worth recording (an artifact path, a
+# url, a scope). We never store bulk bodies (e.g. write_artifact `content`).
+_SALIENT_ARG_KEYS = (
+    "artifact_name", "name", "url", "topic", "scope", "current_scope",
+    "step", "category", "question", "question_id", "kind",
+)
+
+
+def _summarize_args(args: Any) -> str:
+    """A short, log-safe hint of a tool call's args — the salient identifier
+    (artifact path, scope, …), never a large payload like file content."""
+    if not isinstance(args, dict):
+        return str(args)[:120]
+    for k in _SALIENT_ARG_KEYS:
+        v = args.get(k)
+        if v:
+            return f"{k}={str(v)[:120]}"
+    # Fall back to just the arg NAMES (values may be large/sensitive).
+    return ", ".join(sorted(str(k) for k in args.keys()))[:120]
+
+
+def _extract_activity(llm_response: Any) -> list:
+    """Capture the agent's per-round-trip activity — the tool calls + status
+    text that render as the chat pills ("Reading protocol-map.yaml", "Reading
+    prior decisions", …) — from an ``LlmResponse``. Summarized + size-capped so
+    the ledger stays lightweight. Never raises (telemetry must not break a turn).
+    """
+    out: list = []
+    try:
+        content = getattr(llm_response, "content", None)
+        parts = getattr(content, "parts", None) if content else None
+        for p in (parts or []):
+            fc = getattr(p, "function_call", None)
+            if fc is not None:
+                out.append({"tool": getattr(fc, "name", "") or "",
+                            "args": _summarize_args(getattr(fc, "args", None) or {})})
+                continue
+            txt = getattr(p, "text", None)
+            if txt and isinstance(txt, str) and txt.strip():
+                out.append({"text": txt.strip()[:500]})
+            if len(out) >= 30:
+                break
+    except Exception:
+        return []
+    return out
+
+
 async def record_llm_call_telemetry(
     *,
     llm_response: Any,
@@ -100,4 +147,7 @@ async def record_llm_call_telemetry(
         sam_task_id=sam_task_id,
         source=source,
         user_id=user_id,
+        # The tool calls + status text this turn produced (chat-pill content),
+        # recorded alongside the token bill. Best-effort; never blocks the row.
+        activity=_extract_activity(llm_response),
     )

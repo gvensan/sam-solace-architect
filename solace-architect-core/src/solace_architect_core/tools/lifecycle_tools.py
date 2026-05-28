@@ -179,13 +179,25 @@ async def set_step_status(
         now_iso = _now_iso()
         prev = data["steps"].get(step) or {}
         started_at = prev.get("started_at") or now_iso
-        data["steps"][step] = {
+        # Merge onto the existing entry rather than replacing it: a step can
+        # carry sub-state this tool does NOT own — notably `scope_progress`,
+        # written by record_scope_progress. The agent calls set_step_status at
+        # the end of EVERY turn (Completion-status rule), which previously
+        # clobbered the scope_progress that record_scope_progress had just
+        # written in the same turn — leaving only a free-text note on disk. The
+        # frontend's Auto-mode advance reads scope_progress.next, so wiping it
+        # stranded Design: completed scopes (topic-design, broker-select) got
+        # re-executed instead of advancing. Preserve unknown fields here; the
+        # hard-reset path (clear_step_status) still drops the whole step.
+        step_entry = dict(prev)
+        step_entry.update({
             "status": status,
             "started_at": started_at,
             "updated_at": now_iso,
             "agent": agent or "",
             "note": note or "",
-        }
+        })
+        data["steps"][step] = step_entry
         write_yaml(engagement_id, _STATUS_FILE, data)
 
         # Maintain timing_data on EVERY transition (not just finalize),

@@ -27,6 +27,14 @@ shared_config:
         model: ${LLM_SERVICE_GENERAL_MODEL_NAME}
         api_base: ${LLM_SERVICE_ENDPOINT}
         api_key: ${LLM_SERVICE_API_KEY}
+        # Per-chunk READ/idle timeout (verified 2026-05-26): a stall (silence ≫ 30s)
+        # trips a clean, retryable ReadTimeout at 30s instead of the 65s gateway
+        # peer-close (un-retryable). Healthy streams (chunks ~2s apart) are untouched.
+        timeout: 30
+        num_retries: 3
+        # Per-turn output ceiling. ~4x headroom over a ~4 KB chunk so an
+        # artifact chunk can never truncate mid-emission.
+        max_tokens: 8192
 
   - services:
       session_service: &default_session_service
@@ -48,6 +56,21 @@ apps:
     app_config:
       namespace: ${NAMESPACE}
       supports_streaming: true
+      # Reactive context-compaction. SAM's app.py Field default is enabled:False,
+      # so this is OFF unless set explicitly. Enabled here because this is a
+      # long-session agent: on a context-limit BadRequestError SAM summarizes the
+      # oldest turns and retries instead of failing. Safety net — rarely fires on a
+      # ~200K-context model, costs nothing idle. Deliberately NOT set on the
+      # SADomainAgent worker (one scope per fresh A2A task → bounded history).
+      auto_summarization:
+        enabled: true
+        compaction_percentage: ${SAM_COMPACTION_PERCENTAGE, 0.25}
+      # Reviewers/blueprint run the whole job in ONE peer task (read ~20 artifacts +
+      # findings + chunked writes) and chunked-rich writing means more, smaller calls —
+      # the default ceiling (20-30) cuts them off mid-task. Loop protection now lives in
+      # the orchestrator re-dispatch guard + the FE stop-the-loop guard, so this can be
+      # generous.
+      max_llm_calls_per_task: 100
       agent_name: "SADiscoveryAgent"
       display_name: "Solace Architect — Discovery"
       # Opt out of the framework's artifact_management builtin group so the
@@ -55,8 +78,9 @@ apps:
       # The framework builtin lists artifacts by ADK session-id, not by
       # engagement/user — useless for our per-user-per-engagement layout.
       auto_inject_artifact_tools: false
-      model_provider:
-        - "planning"
+      # Static model block (not model_provider) so the timeout/num_retries above
+      # reach LiteLLM. Env-configured; no UI model hot-swap needed.
+      model: *general_model
 
       # Role-specific prompt. Shared discipline (accuracy, grounding, voice,
       # naming) is fetched at runtime via load_preamble() per Decision 83.
@@ -389,6 +413,9 @@ apps:
         - tool_type: python
           component_module: "solace_architect_core.tools.artifact_tools"
           function_name: "write_artifact"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "append_artifact"
         - tool_type: python
           component_module: "solace_architect_core.tools.artifact_tools"
           function_name: "list_artifacts"

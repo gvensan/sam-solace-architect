@@ -24,6 +24,14 @@ shared_config:
         model: ${LLM_SERVICE_GENERAL_MODEL_NAME}
         api_base: ${LLM_SERVICE_ENDPOINT}
         api_key: ${LLM_SERVICE_API_KEY}
+        # Per-chunk READ/idle timeout (verified 2026-05-26): a stall (silence ≫ 30s)
+        # trips a clean, retryable ReadTimeout at 30s instead of the 65s gateway
+        # peer-close (un-retryable). Healthy streams (chunks ~2s apart) are untouched.
+        timeout: 30
+        num_retries: 3
+        # Per-turn output ceiling. ~4x headroom over a ~4 KB chunk so an
+        # artifact chunk can never truncate mid-emission.
+        max_tokens: 8192
 
   - services:
       session_service: &default_session_service
@@ -45,13 +53,20 @@ apps:
     app_config:
       namespace: ${NAMESPACE}
       supports_streaming: true
+      # Reviewers/blueprint run the whole job in ONE peer task (read ~20 artifacts +
+      # findings + chunked writes) and chunked-rich writing means more, smaller calls —
+      # the default ceiling (20-30) cuts them off mid-task. Loop protection now lives in
+      # the orchestrator re-dispatch guard + the FE stop-the-loop guard, so this can be
+      # generous.
+      max_llm_calls_per_task: 100
       agent_name: "SABlueprintAgent"
       display_name: "SABlueprintAgent"
       # Opt out of the framework's artifact_management builtin group so the
       # core's engagement-scoped list_artifacts wins under the same name.
       auto_inject_artifact_tools: false
-      model_provider:
-        - "planning"
+      # Static model block (not model_provider) so the timeout/num_retries above
+      # reach LiteLLM. Env-configured; no UI model hot-swap needed.
+      model: *general_model
 
       agent_card_publishing:
         interval_seconds: 10
@@ -105,6 +120,18 @@ apps:
         # Workflow (one task = one full assembly)
         Pull engagement_id from `[Active engagement: …]` header; use on every storage call.
 
+        BUNDLED INPUTS: the kickoff may carry a "--- DESIGN ARTIFACTS ---" block with a
+        fixed section outline + two artifact lists. Compose from those and follow the
+        outline. Two rules on the lists:
+        - "PROVIDED IN FULL" — these artifact bodies are inlined complete; use them
+          directly, do NOT `read_artifact` them again.
+        - "TOO LARGE TO INLINE" — these were NOT inlined; you MUST `read_artifact`
+          each one and use its FULL content. NEVER compose from a partial/elided copy.
+        With the block present you can skip the blanket `list_artifacts` (step 1) but
+        still `read_artifact` every "TOO LARGE TO INLINE" file. Still do step 2
+        (decisions/applied findings). (No block — e.g. older server — run the full
+        workflow below.)
+
         0. `set_step_status(engagement_id, step="blueprint", status="IN_PROGRESS",
            note="Blueprint assembly in progress…", agent="SABlueprintAgent",
            user_id=<from header>)` BEFORE reading any artifact (assembly takes 60+s and
@@ -114,20 +141,19 @@ apps:
            status="applied")` (status: "Reading decisions and applied findings…").
         3. `read_artifact(...)` for each design/review/validation md/yaml needed (status:
            "Reading <name>…").
-        4. Compose architecture narrative — ONE SECTION PER TURN. Why: tool-call JSON is
-           atomic; `write_artifact` content >~1500 words/8KB gets truncated by LiteLLM,
-           failing with a JSON-decode error that burns the 30-turn budget. Also, status
-           updates only fire between turns; chaining 4 writes silently = 2-3 min of dead
-           air. Pattern (one status, one write, one turn):
-             Turn N:   status "Writing architecture-overview.md…" → `write_artifact(...,
-                       "blueprint/architecture-overview.md", <≤500 words>)`.
-             Turn N+1: status → `write_artifact(..., "blueprint/architecture-decisions.md",
-                       <D-id rationale table>)`.
-             Turn N+2: status → `write_artifact(..., "blueprint/architecture-components.md",
-                       <per-component>)`.
-             Turn N+3: status → `write_artifact(..., "blueprint/architecture.md",
-                       <≤300-word TOC>)`. Master TOC LAST.
-           NEVER batch section writes — one section per turn, even if short.
+        4. Compose architecture narrative — DETAILED and customer-grade, built in small
+           chunks so no single call is large (large prose generations are what the
+           upstream gateway stalls on). Write each document as a first `write_artifact`
+           chunk (≤ ~4 KB) then `append_artifact` ≤ ~4 KB sections — ONE write/append per
+           turn — until it's thorough. Include rationale, trade-offs, alternatives, and
+           cited grounding; the structured YAMLs carry the raw data, the narrative makes
+           it understandable. Files, in order:
+             `blueprint/architecture-overview.md` → `architecture-decisions.md`
+             (D-id rationale table) → `architecture-components.md` (per-component) →
+             `architecture.md` (TOC, LAST).
+           NEVER batch writes — one write/append per turn. Safety valve: if a section
+           keeps stalling after retries, append a compact note and move on rather than
+           looping — but aim for a complete, informative document.
         5. Compose ops runbook — same one-per-turn pattern:
            `blueprint/runbook-deploy.md` (deploy/upgrade), `runbook-failures.md`,
            `runbook-dr.md`, then `runbook.md` (TOC, LAST). Status before each: "Writing
@@ -187,6 +213,9 @@ apps:
         - tool_type: python
           component_module: "solace_architect_core.tools.artifact_tools"
           function_name: "write_artifact"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "append_artifact"
         - tool_type: python
           component_module: "solace_architect_core.tools.artifact_tools"
           function_name: "list_artifacts"

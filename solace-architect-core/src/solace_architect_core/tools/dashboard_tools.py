@@ -130,9 +130,31 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
     #   - pending — included by intake but not yet started
     #   - skipped — intake-gated out (skip_reason from the plan entry)
     status_doc = read_yaml(engagement_id, "meta/engagement-status.yaml", default={"steps": {}}) or {"steps": {}}
-    sp = ((status_doc.get("steps") or {}).get("design") or {}).get("scope_progress") or {}
+    _design_step = ((status_doc.get("steps") or {}).get("design") or {})
+    sp = _design_step.get("scope_progress") or {}
     sp_done = set(sp.get("done") or [])
     sp_next = sp.get("next")
+    # A scope is "done" when scope_progress says so OR its artifact(s) exist on
+    # disk. Artifact presence is the ground-truth signal (the review/blueprint
+    # checklists below already rely on it) and is robust when the agent updated
+    # the step note but never called record_scope_progress — the common case
+    # that left completed scopes stuck showing "pending". Matches both the
+    # `design/<scope>/…` and legacy `<scope>/…` artifact layouts.
+    _scope_artifacts = set(_list_artifacts(engagement_id))
+
+    def _scope_has_artifact(scope_id: str) -> bool:
+        return any(a.startswith(f"{scope_id}/") or f"/{scope_id}/" in a
+                   for a in _scope_artifacts)
+
+    # Current (in-progress) scope: prefer scope_progress.next, else the
+    # "<scope>: …" prefix the agent writes into the step note. Shown as
+    # in-progress so it doesn't flip to "done" off a partial artifact.
+    _note_head = str(_design_step.get("note") or "").split(":", 1)[0].strip()
+    current_scope = sp_next or _note_head
+    # Per-scope status map written by the orchestrator (design-state mirror).
+    # Lets us show the active scope as "running" (a task is in flight) rather
+    # than just "next" (queued).
+    sp_states = sp.get("scope_states") or {}
     design_scopes = []
     for s in plan:
         # Domain-owned design steps are the multi-scope rows in skill-routing;
@@ -149,10 +171,13 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
                 "status": "skipped",
                 "skip_reason": s.get("skip_reason") or "",
             })
-        elif scope_id in sp_done:
+        elif current_scope and scope_id == current_scope:
+            # "running" when a worker task is in flight for this scope; else
+            # "next" (queued to dispatch).
+            _st = "running" if sp_states.get(scope_id) == "running" else "next"
+            design_scopes.append({"scope": scope_id, "status": _st})
+        elif scope_id in sp_done or _scope_has_artifact(scope_id):
             design_scopes.append({"scope": scope_id, "status": "done"})
-        elif sp_next and scope_id == sp_next:
-            design_scopes.append({"scope": scope_id, "status": "next"})
         else:
             design_scopes.append({"scope": scope_id, "status": "pending"})
 

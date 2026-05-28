@@ -24,6 +24,14 @@ shared_config:
         model: ${LLM_SERVICE_GENERAL_MODEL_NAME}
         api_base: ${LLM_SERVICE_ENDPOINT}
         api_key: ${LLM_SERVICE_API_KEY}
+        # Per-chunk READ/idle timeout (verified 2026-05-26): a stall (silence ≫ 30s)
+        # trips a clean, retryable ReadTimeout at 30s instead of the 65s gateway
+        # peer-close (un-retryable). Healthy streams (chunks ~2s apart) are untouched.
+        timeout: 30
+        num_retries: 3
+        # Per-turn output ceiling. ~4x headroom over a ~4 KB chunk so an
+        # artifact chunk can never truncate mid-emission.
+        max_tokens: 8192
 
   - services:
       session_service: &default_session_service
@@ -45,13 +53,29 @@ apps:
     app_config:
       namespace: ${NAMESPACE}
       supports_streaming: true
+      # Reactive context-compaction. SAM's app.py Field default is enabled:False,
+      # so this is OFF unless set explicitly. Enabled here because this is a
+      # long-session agent: on a context-limit BadRequestError SAM summarizes the
+      # oldest turns and retries instead of failing. Safety net — rarely fires on a
+      # ~200K-context model, costs nothing idle. Deliberately NOT set on the
+      # SADomainAgent worker (one scope per fresh A2A task → bounded history).
+      auto_summarization:
+        enabled: true
+        compaction_percentage: ${SAM_COMPACTION_PERCENTAGE, 0.25}
+      # Reviewers/blueprint run the whole job in ONE peer task (read ~20 artifacts +
+      # findings + chunked writes) and chunked-rich writing means more, smaller calls —
+      # the default ceiling (20-30) cuts them off mid-task. Loop protection now lives in
+      # the orchestrator re-dispatch guard + the FE stop-the-loop guard, so this can be
+      # generous.
+      max_llm_calls_per_task: 100
       agent_name: "SAOrchestratorAgent"
       display_name: "SAOrchestratorAgent"
       # Opt out of the framework's artifact_management builtin group so the
       # core's engagement-scoped list_artifacts wins under the same name.
       auto_inject_artifact_tools: false
-      model_provider:
-        - "planning"
+      # Static model block (not model_provider) so the timeout/num_retries above
+      # reach LiteLLM. Env-configured; no UI model hot-swap needed.
+      model: *general_model
 
       agent_card_publishing:
         interval_seconds: 10
@@ -222,10 +246,22 @@ apps:
              design md/yaml, apply your 5-criterion rubric,
              record_finding(engagement_id="<engagement-id>", severity=...,
              description=..., affected_artifact=..., recommendation=...,
-             source_agent="<your_agent_name>"). write_artifact(
-             engagement_id="<engagement-id>", filename="reviews/<your-domain>-review.md",
-             content=...). End with a Completion Status block.
-        4. After all 4 return: `read_findings(engagement_id="<engagement-id>")`.
+             source_agent="<your_agent_name>"). Then write
+             reviews/<your-domain>-review.md in SMALL CHUNKS — write_artifact the first
+             section (≤~4 KB), then append_artifact further sections — to build a
+             DETAILED review (do not emit it as one large write; that stalls). End with a
+             Completion Status block.
+        RE-DISPATCH GUARD — never loop on a reviewer. Before dispatching (or
+        re-dispatching) any reviewer, call `read_findings(engagement_id="<engagement-id>")`:
+        if that reviewer's `source_agent` ALREADY has findings recorded, it already ran —
+        treat it as complete (its final status was likely lost to a transient stall), do
+        NOT dispatch it again, and move to the next reviewer. Dispatch each reviewer AT
+        MOST twice total; if it still hasn't returned DONE after a 2nd attempt, record an
+        OPERATIONAL open-item (per below) and move on. NEVER dispatch the same reviewer a
+        3rd time — re-running a reviewer just duplicates findings and burns the budget.
+
+        4. After all 4 return (or were guarded as already-complete):
+           `read_findings(engagement_id="<engagement-id>")`.
         5. `write_artifact(engagement_id="<engagement-id>",
            filename="reviews/review-summary.md", content=...)`. Include severity
            counts, per-source-agent counts, top 5-7 concerns, pointers to per-reviewer

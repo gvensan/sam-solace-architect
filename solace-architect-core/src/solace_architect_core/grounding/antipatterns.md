@@ -33,6 +33,11 @@ skill and technical domain skill should check output against these patterns.
 3. **Use `*` for middle levels** — `*` matches a single level anywhere in the subscription: `airport/*/passengerUpdate/v1/>` works, `airport/>/v1/>` does not.
 **Source:** docs.solace.com → `Messaging/Wildcard-Charaters-Topic-Subs.htm` (verified 2026-05-22).
 
+### MQTT wildcards (`+`, `#`) used in Solace subscriptions
+**What's wrong:** Writing Solace subscriptions with MQTT wildcard syntax — `+` for single-level or `#` for multi-level — e.g. `usEast/supplyChain/shipment/+/v1/>` or `usEast/supplyChain/#`. `+` and `#` are **MQTT** topic-filter wildcards, NOT Solace SMF wildcards. Solace uses `*` (single-level) and `>` (multi-level). A Solace broker does **not** treat `+` or `#` as wildcards: `+` is not a reserved character, so it is accepted as a **literal** `+` in that level and the subscription silently matches (almost) nothing; `#` collides with Solace reserved prefixes (`#share`, `#noexport`, `#P2P`). The hybrid form (`+` together with a Solace `>`) is a tell-tale sign of MQTT/SMF confusion. This is especially dangerous in interactive question cards and recommendations, which are generated free-form and bypass the artifact antipattern check.
+**What to do instead:** Use Solace syntax everywhere — `*` for a single level, `>` (last position only) for multi-level. `usEast/supplyChain/shipment/*/v1/>` (not `…/+/v1/>`); `usEast/supplyChain/>` (not `usEast/supplyChain/#`). MQTT clients still publish/subscribe over MQTT, but the broker's internal topic strings and any SMF subscription you document use `*`/`>`.
+**Source:** docs.solace.com → `Messaging/Wildcard-Charaters-Topic-Subs.htm` and `Messaging/SMF-Topics.htm` (verified 2026-05-22); MQTT wildcard syntax per the OASIS MQTT spec.
+
 ### Topic exceeds broker hard limits
 **What's wrong:** Generating topics that exceed Solace's hard limits — more than **250 characters** total, or more than **128 levels**. These are broker-enforced, not advisory.
 **What to do instead:** Keep topics compact. Long property tails should be shortened (use IDs, not human-readable names) or moved out of the topic and into the payload. Reviewers should flag any generated example or schema that approaches the limits.

@@ -17,10 +17,42 @@ from solace_architect_core.tools import (
     artifact_tools, decision_tools, project_tools,
     dashboard_tools, intake_tools, blueprint_tools,
     telemetry_tools, lifecycle_tools, session_tools,
+    workflow_tools, grounding_tools,
 )
 from solace_architect_core._storage import (
     read_jsonl, read_yaml, safe_artifact_path, write_text, write_yaml,
 )
+from solace_architect_core._user_context import get_current_user
+from solace_architect_core.orchestrator import design_state as _design_state
+from solace_architect_core.orchestrator import prose as _prose
+from solace_architect_core.orchestrator import rules as _rules
+from solace_architect_core.orchestrator import validation_rules as _validation_rules
+from solace_architect_core.orchestrator import context_pack as _context_pack
+from solace_architect_core.orchestrator import event_portal_model as _event_portal_model
+from solace_architect_core.orchestrator import blueprint_render as _blueprint_render
+
+import asyncio
+import logging as _logging
+
+# Module logger for Design-orchestration diagnostics (which kickoff was built /
+# what action was decided). Lands in sa_logs/solace_architect_webui_entrypoint.log.
+_log = _logging.getLogger(__name__)
+
+# Per-engagement lock serialising /design/advance. The orchestrator's
+# single-writer invariant is otherwise only by convention: a plain
+# load→modify→save has no atomic claim, so two overlapping calls (multiple tabs,
+# a drop-resume racing a finalize, a double-click) could both load the same
+# state, both decide "dispatch", and double-dispatch a scope. One entrypoint
+# process handles all HTTP, so an asyncio.Lock is sufficient; a multi-process
+# deployment would additionally need a compare-and-swap on design-state's version.
+_DESIGN_ADVANCE_LOCKS: dict = {}
+
+
+def _design_advance_lock(engagement_id: str) -> "asyncio.Lock":
+    lk = _DESIGN_ADVANCE_LOCKS.get(engagement_id)
+    if lk is None:
+        lk = _DESIGN_ADVANCE_LOCKS[engagement_id] = asyncio.Lock()
+    return lk
 
 
 async def _clear_step_telemetry(engagement_id: str, step: str) -> dict:
@@ -498,16 +530,15 @@ async def reset_discovery(engagement_id: str) -> Any:
     }
 
 
-# Folders SADomainAgent writes into. The CURRENT layout is a single top-level
-# ``design/`` directory whose files are named per scope (design/topic-taxonomy.yaml,
-# design/broker-recommendation.yaml, design/integration/integration-map.yaml,
-# etc.). The LEGACY layout used a top-level folder per scope (topic-design/...,
-# broker-select/..., integration/...). Both are listed so that engagements
-# created at any point in the project's history get fully wiped on Restart.
-# _unlink_category() is recursive (rglob) so subdirectories under design/ are
-# also cleaned. Empty legacy folders are no-ops; missing folders are no-ops.
+# Folders SADomainAgent writes into. The ACTUAL on-disk layout is FLAT, one
+# top-level folder per scope (topic-design/topic-taxonomy.yaml,
+# broker-select/broker-recommendation.yaml, integration/integration-map.yaml,
+# etc.) — verified on disk. The leading "design" entry is a defensive sweep for
+# any historical ``design/``-prefixed data; it's a harmless no-op when absent.
+# _unlink_category() is recursive (rglob) so subdirectories are also cleaned;
+# missing folders are no-ops.
 _DESIGN_FOLDERS = (
-    "design",                  # current single-folder layout (rglob handles subdirs)
+    "design",                  # defensive: sweep any legacy design/-prefixed data
     "topic-design", "broker-select", "protocol-select", "integration",
     "mesh-design", "ha-dr", "sam-design", "event-portal", "migration",
 )
@@ -559,9 +590,21 @@ async def reset_design(engagement_id: str) -> Any:
         except Exception:
             pass
 
-    # Clear the design step status + telemetry. (Domain-sourced open-items
-    # are superseded inside _reset_downstream's cascade below — keeping the
-    # logic in one place.)
+    # Also delete the orchestrator's design-state (the deterministic engine's
+    # source of truth). Without this it survives the wipe and the next Start
+    # would SKIP the (now artifact-less) completed scopes instead of starting
+    # fresh — so Restart wouldn't reliably mean "from scratch".
+    try:
+        _dsp = safe_artifact_path(engagement_id, "meta/design-state.yaml")
+        if _dsp.exists():
+            _dsp.unlink()
+            removed.append("meta/design-state.yaml")
+    except Exception:
+        pass
+
+    # Clear the design step status + telemetry. (clear_step_status removes the
+    # whole design step entry, incl. scope_progress. Domain-sourced open-items
+    # are superseded inside _reset_downstream's cascade below.)
     await lifecycle_tools.clear_step_status(engagement_id, "design")
     await session_tools.clear_checkpoint(engagement_id, "design")
     telemetry_cleared = await _clear_step_telemetry(engagement_id, "design")
@@ -1532,6 +1575,594 @@ async def submit_feedback(engagement_id: str, scope: str, rating: int,
         engagement_id, scope=scope, rating=rating, category=category, note=note)).data
 
 
+# ----- Design orchestrator (deterministic Design engine) -----
+#
+# The server-side "brain" for the rebuilt Design phase. It owns design_state
+# (the single writer), decides what runs next, and hands the frontend a thin
+# action to execute. The frontend is a dumb executor: it dispatches the scope
+# the orchestrator names, reports the outcome, and asks again. This collapses
+# the old auto-advance / dedup / fresh-session / escalation machinery into one
+# deterministic, testable place — and the orchestrator NEVER trusts a self-
+# report for "done": it checks the scope's structured artifact on disk.
+
+# Per-scope structured artifact whose existence === "scope complete". FLAT
+# per-scope layout (verified on disk; the `design/`-prefixed layout in some
+# older comments was never the real shape).
+_SCOPE_PRIMARY_ARTIFACT = {
+    "topic-design": "topic-design/topic-taxonomy.yaml",
+    "broker-select": "broker-select/broker-recommendation.yaml",
+    "protocol-select": "protocol-select/protocol-map.yaml",
+    "integration": "integration/integration-map.yaml",
+    "mesh-design": "mesh-design/dmr-topology.yaml",
+    "ha-dr": "ha-dr/ha-dr-design.yaml",
+    "sam-design": "sam-design/sam-topology.yaml",
+    "event-portal": "event-portal/event-portal-model.yaml",
+    "migration": "migration/migration-plan.yaml",
+}
+
+
+async def _applicable_design_scopes(engagement_id: str) -> list:
+    """Ordered design scopes that apply to this engagement.
+
+    Derived from the routing plan (``get_engagement_plan``) filtered to
+    SADomainAgent scopes that are ``included`` — so it respects the exact
+    when-clause applicability already used everywhere else, rather than
+    re-deriving it.
+    """
+    brief = workflow_tools.effective_brief(engagement_id)
+    plan = (await workflow_tools.get_engagement_plan(brief)).data or []
+    return [
+        p["scope"] for p in plan
+        if p.get("agent") == "SADomainAgent" and p.get("scope") and p.get("included")
+    ]
+
+
+def _scope_artifact_exists(engagement_id: str, scope: str) -> bool:
+    rel = _SCOPE_PRIMARY_ARTIFACT.get(scope)
+    if not rel:
+        return False
+    try:
+        return safe_artifact_path(engagement_id, rel).exists()
+    except Exception:
+        return False
+
+
+# Per-scope human-readable companion (rendered deterministically from the YAML).
+_SCOPE_PROSE_ARTIFACT = {s: f"{s}/{s}.md" for s in _SCOPE_PRIMARY_ARTIFACT}
+
+# Scopes whose COMPUTED block is the COMPLETE structured output (not just inputs):
+# the worker can write the artifact straight from it with no grounding/derivation.
+# This collapses the scope to ONE tool call in ONE turn — the minimum exposure to
+# a flaky gateway (these are the heaviest/most-failure-prone scopes). broker-select
+# / mesh-design / ha-dr are NOT here: their COMPUTED block carries inputs, and the
+# worker still does design + grounding on top.
+_FULLY_DECIDED_SCOPES = frozenset({"integration", "event-portal"})
+
+
+def _ensure_scope_prose(engagement_id: str, scope: str) -> None:
+    """Phase C: render the scope's .md companion from its structured YAML when
+    the YAML exists and the .md does not. Deterministic, no LLM. Never clobbers
+    an existing .md (e.g. one a worker authored under the classic engine), and
+    never raises — missing prose must not block advancement."""
+    struct_rel = _SCOPE_PRIMARY_ARTIFACT.get(scope)
+    prose_rel = _SCOPE_PROSE_ARTIFACT.get(scope)
+    if not struct_rel or not prose_rel:
+        return
+    try:
+        if safe_artifact_path(engagement_id, prose_rel).exists():
+            return
+        data = read_yaml(engagement_id, struct_rel, default=None)
+        if not data:
+            return
+        write_text(engagement_id, prose_rel, _prose.render_scope_markdown(scope, data))
+    except Exception:
+        return
+
+
+def _build_scope_context(engagement_id: str) -> str:
+    """Pre-gather the context a worker would otherwise spend round-trips reading
+    every session — the discovery brief + a COMPACT decisions list — and embed
+    it in the kickoff. This removes the read_artifact(brief)/read_decisions
+    round-trips (3-4 LLM calls before any real work), which both wastes tokens
+    (re-prefilled each call on an uncached gateway) AND adds stall exposure. Read
+    deterministically/synchronously (no LLM, no tool round-trip); size-capped.
+    """
+    import yaml as _yaml
+    blocks = []
+    try:
+        brief = workflow_tools.effective_brief(engagement_id) or {}
+        if brief:
+            y = _yaml.safe_dump(brief, sort_keys=False, default_flow_style=False)
+            blocks.append(
+                "## Discovery brief (PROVIDED — do NOT read discovery-brief.yaml)\n"
+                "```yaml\n" + y[:6000] + "\n```"
+            )
+    except Exception:
+        pass
+    try:
+        decs = (read_yaml(engagement_id, "meta/decisions.yaml", default={}) or {}).get("decisions") or []
+        if decs:
+            # Compact: id + what was decided + what was chosen. Drop the long
+            # rationale prose (the worker needs consistency, not the full text).
+            lines = [
+                f"- [{d.get('id', '?')}] {str(d.get('context', '')).strip()} → {str(d.get('selected', '')).strip()}"
+                for d in decs
+            ][:80]
+            blocks.append(
+                "## Decisions so far (PROVIDED — do NOT call read_decisions)\n"
+                + "\n".join(lines)[:5000]
+            )
+    except Exception:
+        pass
+    if not blocks:
+        return ""
+    return "\n\n--- CONTEXT (provided so you don't re-read it) ---\n" + "\n\n".join(blocks)
+
+
+def _build_worker_kickoff(engagement_id: str, scope: str, done: list, mode: str) -> str:
+    """The message the frontend sends to SADomainAgent in WORKER MODE.
+
+    Carries the engagement header + the single scope to produce + a pre-gathered
+    context bundle (brief + decisions) so the worker skips the re-read
+    round-trips. Pairs with the WORKER MODE section of the domain prompt, which
+    constrains the agent to one scope and forbids self-orchestration.
+    """
+    uid = (get_current_user() or {}).get("id") or "anonymous"
+    done_str = ", ".join(done) if done else "(none yet)"
+    # Phase B: for decidable scopes, inject the deterministic computed values so
+    # the worker uses them verbatim instead of doing (or hallucinating) the math.
+    rules_block = ""
+    try:
+        computed = _rules.compute_scope_rules(scope, workflow_tools.effective_brief(engagement_id))
+        if computed:
+            rules_block = "\n\n" + _rules.render_rules_block(scope, computed)
+    except Exception:
+        rules_block = ""
+    # Event-portal scope: derive the EP model (domains/apps/events) from the
+    # taxonomy + landscape so the worker writes event-portal-model.yaml in one
+    # turn. Done here (not in compute_scope_rules, which is brief-only) because
+    # it needs the topic-taxonomy artifact.
+    if scope == "event-portal":
+        try:
+            tax = read_yaml(engagement_id, "topic-design/topic-taxonomy.yaml", default=None)
+            model = _event_portal_model.derive_event_portal_model(
+                tax, workflow_tools.effective_brief(engagement_id) or {})
+            rules_block += "\n\n" + _rules.render_rules_block(
+                "event-portal", {"event_portal_model": model})
+        except Exception:
+            pass
+    context_block = ""
+    try:
+        context_block = _build_scope_context(engagement_id)
+    except Exception:
+        context_block = ""
+
+    # Pre-injection (token lever): for non-fast-path scopes, embed a compact
+    # grounding excerpt so the worker usually skips the load_grounding round-trips
+    # (the request turn + the consuming turn — the slow, stall-prone part). It's
+    # REFERENCE only and the worker may still load/fetch the full text, so this
+    # never presents partial content as complete-authoritative. Fast-path scopes
+    # already say "no grounding" (the COMPUTED block is the whole answer).
+    grounding_block = ""
+    if scope not in _FULLY_DECIDED_SCOPES:
+        try:
+            gp = grounding_tools.grounding_pack_for_scope(scope)
+            if gp:
+                grounding_block = (
+                    "\n\n--- GROUNDING (reference for this scope, PROVIDED so you "
+                    "usually don't need load_grounding; call it only if a topic you "
+                    "need isn't covered here) ---\n" + gp
+                )
+        except Exception:
+            grounding_block = ""
+
+    header = (
+        f"[Active engagement: engagement_id={engagement_id}, user_id={uid}]\n"
+        f"WORKER MODE\n"
+        f"Scope: {scope}\n"
+        f"Scopes already complete: {done_str}\n"
+        f"Mode: {mode}\n\n"
+    )
+    # FAST PATH — a fully-decided scope (integration / event-portal) whose COMPUTED
+    # block IS the complete output: collapse to ONE write_artifact, no grounding /
+    # lookups. Fewer tool calls = fewer turns = the least exposure to a flaky
+    # gateway (these are the heaviest, most drop-prone scopes).
+    if scope in _FULLY_DECIDED_SCOPES and rules_block:
+        artifact = _SCOPE_PRIMARY_ARTIFACT.get(scope, f"{scope}/{scope}.yaml")
+        body = (
+            f"FAST PATH — this scope is FULLY DECIDED by the COMPUTED block below. "
+            f"Do NOT call load_grounding, fetch_canonical_source, read_decisions, or "
+            f"any other tool first. In ONE turn make a SINGLE write_artifact call to "
+            f"`{artifact}`, transcribing the COMPUTED values into YAML (you may add "
+            f"brief rationale fields, but do NOT re-derive, re-decide, or look "
+            f"anything up). Then END the turn. Do NOT call record_scope_progress or "
+            f"set_step_status — the orchestrator owns progress. Do NOT pick or start "
+            f"the next scope."
+        )
+    else:
+        body = (
+            f"Produce ONLY the `{scope}` scope: its structured YAML artifact. The "
+            f"discovery brief and prior decisions are PROVIDED below — do NOT read "
+            f"discovery-brief.yaml or call read_decisions, and do NOT resume-check "
+            f"your scope's artifact (the orchestrator manages that). Go straight to "
+            f"the work, using grounding (load_grounding) only for the scope topic. If "
+            f"a blocking decision needs the user, ask exactly ONE question via "
+            f"ask_user_question and stop. Do NOT pick, mention, or start the next "
+            f"scope. Do NOT call record_scope_progress or set_step_status — the "
+            f"orchestrator owns progress. End the turn once the artifact is written "
+            f"or you have asked your one question."
+        )
+    kickoff = header + body + f"{rules_block}{context_block}{grounding_block}"
+    # Diagnostic: confirm the worker kickoff carries WORKER MODE + the computed
+    # rules/EP block (the integration_map / event_portal_model fix). If a scope
+    # keeps failing, this line proves whether the map actually reached the worker.
+    _log.info(
+        "[design-orchestrator] built WORKER kickoff scope=%s mode=%s len=%d "
+        "rules_block=%s context_block=%s grounding=%s fast_path=%s",
+        scope, mode, len(kickoff), bool(rules_block), bool(context_block),
+        bool(grounding_block), bool(scope in _FULLY_DECIDED_SCOPES and rules_block),
+    )
+    return kickoff
+
+
+# Base Validation kickoff — kept identical to the FE's prior static string so the
+# only behavioural change is the appended PRECOMPUTED CHECKS block.
+_VALIDATION_KICKOFF_BASE = (
+    "Phase: validation\n\n"
+    "Run the Validation phase. Apply your rubric (requirement coverage, antipattern "
+    "scan, consistency, deferred findings, terminology compliance, schema sanity, "
+    "subscription syntax). Record blocking open-items with affecting_step=\"blueprint\" "
+    "so the lifecycle gates correctly. Write validation/validation-report.md and the "
+    "machine YAML. Call set_step_status(step=\"validation\", ...) per the rule."
+)
+
+
+def _render_validation_findings_block(result: dict) -> str:
+    """Render the deterministic validation findings as an authoritative kickoff
+    block the agent records verbatim (the inject side of the lever)."""
+    findings = result.get("findings") or []
+    counts = result.get("counts") or {}
+    if not findings:
+        return (
+            "\n\n--- PRECOMPUTED CHECKS (authoritative) ---\n"
+            "All deterministic lenses PASSED — no subscription-syntax, schema-sanity, "
+            "terminology, integration-coverage, or mesh-consistency issues. Do NOT re-run "
+            "these lenses. Spend your turns ONLY on: antipattern interpretation, "
+            "deferred-finding triage, full requirement tracing (trace_requirements), and "
+            "the report narrative."
+        )
+    lines = [
+        "\n\n--- PRECOMPUTED CHECKS (authoritative — record these as open-items "
+        "VERBATIM; do NOT re-derive these lenses) ---",
+        f"({counts.get('blocking', 0)} blocking, {counts.get('advisory', 0)} advisory)",
+    ]
+    for f in findings:
+        lines.append(
+            f"- [{f.get('severity')}] {f.get('lens')} @ {f.get('artifact')}: {f.get('detail')}"
+        )
+    lines.append(
+        "Then spend your turns ONLY on the judgment lenses the rules can't compute: "
+        "antipattern interpretation, deferred-finding triage, full requirement tracing "
+        "(trace_requirements), and writing the report narrative."
+    )
+    return "\n".join(lines)
+
+
+def _build_validation_kickoff(engagement_id: str) -> str:
+    """Validation kickoff = the base instruction + a PRECOMPUTED CHECKS block from
+    the deterministic validation engine. Fail-soft to the bare instruction.
+
+    The deterministic checks parse FULL artifact content read straight from
+    storage — NOT the size-capped context bundle. (Truncated YAML mis-parses,
+    which the schema-sanity lens would report as a BLOCKING "did not parse"
+    finding on an artifact that is actually valid on disk — a server-induced
+    false positive that would gate the workflow. Validation is one synchronous
+    pass, so reading full content here costs no LLM round-trips.)"""
+    try:
+        import yaml as _yaml
+        brief = workflow_tools.effective_brief(engagement_id) or {}
+        texts: dict = {}
+        parsed: dict = {}
+        for name in _context_pack.DESIGN_ARTIFACTS:
+            try:
+                raw = read_text(engagement_id, name)
+            except FileNotFoundError:
+                continue  # absent scope — not a schema concern
+            except Exception:
+                continue
+            texts[name] = raw
+            try:
+                parsed[name] = _yaml.safe_load(raw)
+            except Exception:
+                parsed[name] = None  # genuine parse failure on FULL content = real blocker
+        forbidden = [t for t, _sug in artifact_tools._FORBIDDEN_TERMS]
+        result = _validation_rules.run_validation_rules(
+            brief=brief, parsed_artifacts=parsed,
+            artifact_texts=texts, forbidden_terms=forbidden,
+        )
+        return _VALIDATION_KICKOFF_BASE + _render_validation_findings_block(result)
+    except Exception:
+        return _VALIDATION_KICKOFF_BASE
+
+
+_BLUEPRINT_KICKOFF_BASE = (
+    "Phase: blueprint\n\n"
+    "Assemble the final blueprint package. Compose blueprint/architecture.md + "
+    "blueprint/runbook.md, write available Mermaid diagrams, render 5 audience "
+    "packs (blueprint/executive/admin-ops/security/developers, both md+pdf), then "
+    "assemble_zip to produce exports/engagement-package.zip. Call "
+    "set_step_status(step=\"blueprint\", ...) per the rule."
+)
+
+
+def _build_blueprint_kickoff(engagement_id: str) -> str:
+    """Blueprint kickoff = base instruction + the deterministic section outline +
+    the design artifacts that fit inlined IN FULL, with any oversized artifact
+    routed to read_artifact. Fail-soft to the bare base.
+
+    CRITICAL: only artifacts inlined IN FULL are marked authoritative. An
+    artifact larger than the per-artifact cap is NOT inlined (a truncated body
+    presented as authoritative would silently drop content from the final
+    customer-facing blueprint); instead the agent is told to read it in full.
+    This keeps the kickoff bounded AND complete."""
+    try:
+        cap = 8000
+        bundle = _context_pack.build_artifact_bundle(engagement_id, max_chars_each=cap)
+        present = bundle.get("present", [])
+        if not present:
+            return _BLUEPRINT_KICKOFF_BASE
+        truncated = set(bundle.get("truncated", []))
+        artifacts = bundle.get("artifacts", {})
+        full_names = [n for n in present if n not in truncated]
+        outline = _blueprint_render.present_sections({n: True for n in present})
+
+        block = ["\n\n--- DESIGN ARTIFACTS ---"]
+        if outline:
+            block.append("Section order (use exactly this; Executive Summary first, "
+                         "Decisions Register last):")
+            block.append("  " + " → ".join(outline))
+        if full_names:
+            block.append("\nPROVIDED IN FULL below — compose directly from these; do "
+                         "NOT re-read them with read_artifact:")
+            for n in full_names:
+                block.append(f"\n### {n}\n{artifacts.get(n, '')}")
+        if truncated:
+            block.append("\nTOO LARGE TO INLINE — you MUST call read_artifact on EACH "
+                         "of these and use the FULL content (do not skip, do not rely "
+                         "on any partial copy):")
+            for n in sorted(truncated):
+                block.append(f"- {n}")
+        if bundle.get("missing"):
+            block.append(f"\n(not produced: {', '.join(bundle['missing'])})")
+        return _BLUEPRINT_KICKOFF_BASE + "\n".join(block)
+    except Exception:
+        return _BLUEPRINT_KICKOFF_BASE
+
+
+def _sync_dashboard_scope_progress(engagement_id: str, st: dict) -> None:
+    """Mirror the orchestrator's design-state into engagement-status.yaml's
+    ``scope_progress`` so the dashboard strip (which reads scope_progress)
+    reflects the orchestrator's TRUTH: accurate done[], the active scope, and a
+    per-scope status map. The orchestrator is the single authoritative writer —
+    this OVERWRITES any stale scope_progress a worker wrote despite WORKER MODE
+    (the cause of the dashboard/orchestrator divergence). Best-effort; never
+    breaks advancement. Runs AFTER set_step_status (which merges), so the design
+    step status it just wrote is preserved."""
+    try:
+        scopes = st.get("scopes", [])
+        terminal = _design_state._TERMINAL_ADVANCE
+        done = [s["name"] for s in scopes if s.get("status") in terminal]
+        nxt = _design_state.next_scope(st)
+        active = next((s for s in scopes if s.get("name") == nxt), None) if nxt else None
+        sp = {
+            "current": (active["name"] if active else (done[-1] if done else None)),
+            "next": nxt,
+            "done": done,
+            "status": (active.get("status") if active else "done"),
+            # Full per-scope status map so the FE can render in-progress / blocked
+            # distinctly, not just done/next/pending.
+            "scope_states": {s["name"]: s.get("status") for s in scopes},
+            "updated_at": st.get("updated_at"),
+            "note": (active.get("note", "") if active else ""),
+        }
+        data = read_yaml(engagement_id, "meta/engagement-status.yaml", default={"steps": {}}) or {"steps": {}}
+        data.setdefault("steps", {}).setdefault("design", {})
+        data["steps"]["design"]["scope_progress"] = sp
+        write_yaml(engagement_id, "meta/engagement-status.yaml", data)
+    except Exception:
+        pass
+
+
+async def validation_kickoff_view(engagement_id: str) -> Any:
+    """GET — the Validation kickoff with the deterministic PRECOMPUTED CHECKS block
+    injected, so SAValidationAgent records those findings verbatim instead of
+    re-deriving the mechanical lenses. The FE fetches this instead of using a
+    static string (falls back to the static string if this call fails)."""
+    return {"kickoff": _build_validation_kickoff(engagement_id)}
+
+
+async def blueprint_kickoff_view(engagement_id: str) -> Any:
+    """GET — the Blueprint kickoff with the design artifacts bundled inline (one
+    payload vs ~20 reads) + the deterministic section outline, so SABlueprintAgent
+    composes from provided content instead of re-reading everything. FE fetches
+    this; falls back to the static string if it fails."""
+    return {"kickoff": _build_blueprint_kickoff(engagement_id)}
+
+
+async def design_scope_kickoff(engagement_id: str) -> Any:
+    """GET — rebuild the WORKER kickoff for the currently-RUNNING design scope,
+    WITHOUT mutating state (no attempt burned).
+
+    Used by stream-drop recovery: a transient gateway drop should re-send the
+    SAME map-carrying kickoff (WORKER MODE + computed rules / EP model) so the
+    worker keeps the deterministic context, instead of the generic resume that
+    bypasses the orchestrator and makes the worker re-derive from scratch."""
+    st = _design_state.load_state(engagement_id)
+    if st is None:
+        return {"scope": None}
+    running = None
+    done: list = []
+    for s in (st.get("scopes") or []):
+        status = s.get("status")
+        if status == _design_state.RUNNING and running is None:
+            running = s.get("name")
+        if status in _design_state._TERMINAL_ADVANCE:
+            done.append(s.get("name"))
+    if not running:
+        _log.info("[design-orchestrator] scope-kickoff eid=%s — no RUNNING scope", engagement_id)
+        return {"scope": None}
+    kickoff = _build_worker_kickoff(engagement_id, running, done, st.get("mode", "auto"))
+    _log.info("[design-orchestrator] scope-kickoff eid=%s scope=%s (drop-resume; no attempt burned)",
+              engagement_id, running)
+    return {"scope": running, "kickoff": kickoff}
+
+
+async def design_state_view(engagement_id: str) -> Any:
+    """GET — the orchestrator's current design state + the next action, for the
+    frontend to render progress and know what to do."""
+    st = _design_state.load_state(engagement_id)
+    if st is None:
+        return {
+            "exists": False,
+            "applicable": await _applicable_design_scopes(engagement_id),
+        }
+    return {
+        "exists": True,
+        "state": st,
+        "action": _design_state.decide_next(st),
+        "metrics": _design_state.metrics(st),
+    }
+
+
+async def design_advance(
+    engagement_id: str,
+    mode: str = "auto",
+    last_scope: Optional[str] = None,
+    outcome: Optional[str] = None,
+    note: Optional[str] = None,
+    reset_scope: Optional[str] = None,
+) -> Any:
+    """POST — serialized per engagement so the scope-transition claim is atomic
+    (see _design_advance_lock). Delegates to the implementation under the lock."""
+    async with _design_advance_lock(engagement_id):
+        return await _design_advance_impl(
+            engagement_id, mode=mode, last_scope=last_scope,
+            outcome=outcome, note=note, reset_scope=reset_scope,
+        )
+
+
+async def _design_advance_impl(
+    engagement_id: str,
+    mode: str = "auto",
+    last_scope: Optional[str] = None,
+    outcome: Optional[str] = None,
+    note: Optional[str] = None,
+    reset_scope: Optional[str] = None,
+) -> Any:
+    """POST — the orchestration step. Reconcile state with artifacts on disk,
+    record the just-finished scope's outcome, and return the next action.
+
+    Body:
+      mode:        "auto" | "interactive" (only used when state is first created)
+      last_scope:  scope that just ran (omit on the very first call)
+      outcome:     "question" | "failed" | null  (null → infer from artifact)
+      note:        optional human-readable note
+      reset_scope: clear this scope's status + retry budget (the "retry scope"
+                   affordance after retry_exhausted / blocked)
+    """
+    applicable = await _applicable_design_scopes(engagement_id)
+    if not applicable:
+        return {"action": "complete", "reason": "no applicable design scopes"}
+
+    st = _design_state.load_state(engagement_id)
+    if st is None:
+        st = _design_state.init_state(
+            applicable, mode=mode if mode in ("auto", "interactive") else "auto"
+        )
+
+    # Manual retry: clear a previously exhausted/blocked scope's budget so
+    # decide_next will dispatch it again instead of immediately re-surfacing.
+    if reset_scope and _design_state.scope_status(st, reset_scope) is not None:
+        _design_state.reset_scope(st, reset_scope)
+
+    # Reconcile: any scope whose structured artifact already exists is DONE.
+    # This is how the orchestrator learns "done" — from the durable artifact,
+    # never a self-report — and it heals an engagement that ran partway under
+    # the classic engine.
+    for scope in applicable:
+        if (
+            _design_state.scope_status(st, scope) not in _design_state._TERMINAL_ADVANCE
+            and _scope_artifact_exists(engagement_id, scope)
+        ):
+            _design_state.complete_scope(st, scope)
+
+    # Apply the just-finished scope's outcome (only if the artifact reconcile
+    # above didn't already complete it). A pending question parks the scope for
+    # the user; anything else that finished WITHOUT producing the artifact (an
+    # explicit "failed", a stall, or just an empty turn) counts as a failed
+    # attempt so the retry budget governs it — never an infinite in_flight wait.
+    if last_scope and _design_state.scope_status(st, last_scope) is not None:
+        cur = _design_state.scope_status(st, last_scope)
+        if cur not in _design_state._TERMINAL_ADVANCE:
+            if outcome == "question":
+                _design_state.needs_input(st, last_scope, note=note or "awaiting user answer")
+            else:
+                _design_state.fail_scope(st, last_scope, note=note or "scope did not complete")
+
+    _design_state.save_state(engagement_id, st)
+
+    # Phase C: ensure each completed scope has its deterministic prose companion
+    # (workers write only the structured YAML now). Idempotent + best-effort.
+    for scope in applicable:
+        if _design_state.scope_status(st, scope) in _design_state._TERMINAL_ADVANCE:
+            _ensure_scope_prose(engagement_id, scope)
+
+    action = _design_state.decide_next(st)
+    # Diagnostic: what the orchestrator decided this call, and why we got here.
+    _log.info(
+        "[design-orchestrator] advance eid=%s last_scope=%s outcome=%s reset=%s "
+        "→ action=%s scope=%s attempts=%s",
+        engagement_id, last_scope, outcome, reset_scope,
+        action.get("action"), action.get("scope"), action.get("attempts"),
+    )
+
+    if action.get("action") == "dispatch":
+        scope = action["scope"]
+        _design_state.begin_scope(st, scope)          # claim the attempt + RUNNING
+        _design_state.save_state(engagement_id, st)
+        action["agent"] = "SADomainAgent"
+        action["kickoff"] = _build_worker_kickoff(
+            engagement_id, scope, action.get("done", []), st.get("mode", "auto")
+        )
+
+    # Best-effort mirror to the lifecycle banner so the dashboard Design tile is
+    # truthful (design_state stays the source of truth). set_step_status merges,
+    # so this never clobbers scope sub-state.
+    _act = action.get("action")
+    _scope = action.get("scope", "")
+    _sync = {
+        "complete": ("DONE", "All design scopes complete"),
+        "blocked": ("BLOCKED", action.get("note") or f"{_scope} blocked"),
+        "retry_exhausted": ("NEEDS_CONTEXT",
+                            f"{_scope} failed after {action.get('attempts')} attempts"),
+        "dispatch": ("IN_PROGRESS", f"Design scope: {_scope}"),
+        "await_user": ("IN_PROGRESS", f"Design scope: {_scope} — awaiting your answer"),
+        "in_flight": ("IN_PROGRESS", f"Design scope: {_scope}"),
+    }.get(_act)
+    if _sync:
+        await lifecycle_tools.set_step_status(
+            engagement_id, step="design", status=_sync[0], note=_sync[1],
+            agent="DesignOrchestrator",
+        )
+
+    # Mirror design-state → scope_progress so the dashboard reflects the
+    # orchestrator's truth (accurate done[], active scope, per-scope statuses),
+    # overriding any stale worker-written scope_progress.
+    _sync_dashboard_scope_progress(engagement_id, st)
+
+    return action
+
+
 # Route table — consumed by lifecycle.py to register with the SAM HTTP runtime.
 API_ROUTES = [
     # Project lifecycle
@@ -1554,6 +2185,19 @@ API_ROUTES = [
     ("GET",  "/api/engagements/{engagement_id}/artifacts",    list_engagement_artifacts),
     ("GET",  "/api/engagements/{engagement_id}/artifacts/{name}", get_artifact),
     ("GET",  "/api/engagements/{engagement_id}/lifecycle",    get_engagement_lifecycle),
+    # Design orchestrator (deterministic Design engine): the FE reads /design/state
+    # to render progress and POSTs /design/advance after each scope to get the
+    # next action (dispatch/await_user/retry_exhausted/blocked/complete).
+    ("GET",  "/api/engagements/{engagement_id}/design/state",  design_state_view),
+    ("POST", "/api/engagements/{engagement_id}/design/advance", design_advance),
+    # Validation: deterministic PRECOMPUTED CHECKS injected into the kickoff so the
+    # agent records mechanical-lens findings verbatim instead of re-deriving them.
+    ("GET",  "/api/engagements/{engagement_id}/validation/kickoff", validation_kickoff_view),
+    # Blueprint: design artifacts bundled inline + deterministic section outline.
+    ("GET",  "/api/engagements/{engagement_id}/blueprint/kickoff", blueprint_kickoff_view),
+    # Stream-drop recovery: rebuild the running scope's WORKER kickoff (map +
+    # WORKER MODE) without mutating state, so a transient drop re-sends it.
+    ("GET",  "/api/engagements/{engagement_id}/design/scope-kickoff", design_scope_kickoff),
     # Manual override — user-driven mark-done when an agent regressed and
     # didn't call set_step_status itself. Body: {"status": "DONE", "note": "…"}.
     ("POST", "/api/engagements/{engagement_id}/lifecycle/{step}/mark-done", mark_step_done),
