@@ -380,3 +380,17 @@ def test_worker_answer_context_and_chat_persistence_wired():
     assert js.count("_wrapWorkerAnswer(") >= 3
     # (2) syncChatProjectContext preserves same-project sessions (incl. fresh-session ids).
     assert "chatSessionId.startsWith(`chat-${proj}-`)" in js
+
+
+def test_event_portal_design_artifacts_excluded_from_provisioning_cta():
+    """The design-phase EP model (event-portal-model.yaml + its .md companion)
+    lives under event-portal/ but is a Design output, not a provisioning artifact.
+    It must NOT flip the Event Portal provisioning phase to 'in progress' — that
+    would jump the CTA past Review/Validation to a premature provisioning dispatch
+    the moment Design finishes."""
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    assert "EP_DESIGN_ARTIFACTS" in js
+    assert "event-portal/event-portal-model.yaml" in js
+    assert "event-portal/event-portal.md" in js
+    # The in-progress detection filters those out, rather than matching any event-portal/ file.
+    assert "!EP_DESIGN_ARTIFACTS.has(a)" in js

@@ -650,6 +650,37 @@ def test_design_advance_renders_prose_companion():
     assert "## Structure" in md
 
 
+def test_event_portal_scope_completes_via_deterministic_write():
+    """Event-portal is fully decided: the orchestrator materialises the derived
+    model in SA storage itself, so the scope completes even when the worker emits
+    its artifact as a SAM native block that never lands in SA's path (outcome=None,
+    the real failing case). Without this, every attempt is counted a failure →
+    retry_exhausted."""
+    from solace_architect_core._storage import safe_artifact_path, read_yaml
+    eid = "orch-eng-ep"
+    _seed_minimal_brief(eid)
+    # A taxonomy rich enough for derive_event_portal_model to produce a model.
+    write_yaml(eid, "topic-design/topic-taxonomy.yaml", {
+        "structure": {"pattern": "{region}/{domain}/{noun}/{verb}/v{N}/{entityID}"},
+        "levels": {"domain": {"values": ["supplyChain"]}},
+        "example_topics": [
+            {"topic": "usEast/supplyChain/shipment/statusUpdated/v1/SH-1"},
+            {"topic": "euWest/supplyChain/inventory/levelChanged/v1/SKU-9"},
+        ],
+    })
+    # Orchestrator has not written the model yet.
+    assert not safe_artifact_path(eid, "event-portal/event-portal-model.yaml").exists()
+    # Simulate the worker's event-portal turn finishing WITHOUT a SA artifact.
+    a = asyncio.run(design_advance(eid, mode="auto", last_scope="event-portal"))
+    # The model is now on disk and the scope is done, not a failed attempt.
+    assert safe_artifact_path(eid, "event-portal/event-portal-model.yaml").exists()
+    model = read_yaml(eid, "event-portal/event-portal-model.yaml")
+    assert model.get("domains") or model.get("events")
+    view = asyncio.run(design_state_view(eid))
+    assert ds.scope_status(view["state"], "event-portal") == ds.DONE
+    assert a["action"] != "retry_exhausted"
+
+
 def test_broker_select_kickoff_injects_computed_sizing():
     """Phase B: the orchestrator hands the worker the deterministic spool/band
     so it doesn't do the arithmetic itself."""

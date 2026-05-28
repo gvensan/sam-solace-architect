@@ -695,7 +695,18 @@
         const eventPortalDone = eventPortalStatus === "DONE"
           || eventPortalStatus === "DONE_WITH_CONCERNS"
           || eventPortalSkipped;
-        const hasEventPortalArtifact = artifacts.some(a => a.startsWith("event-portal/"));
+        // `event-portal/` ALSO holds the DESIGN-phase model (event-portal-model.yaml
+        // + its rendered .md companion). Those are Design outputs, not provisioning
+        // artifacts — so they must NOT flip the Event Portal PROVISIONING phase to
+        // "in progress". If they did, the CTA would jump straight past Review and
+        // Validation to a premature provisioning dispatch the moment Design finished.
+        // Only genuine provisioning artifacts (plan/provisioned/report/asyncapi) count.
+        const EP_DESIGN_ARTIFACTS = new Set([
+          "event-portal/event-portal-model.yaml",
+          "event-portal/event-portal.md",
+        ]);
+        const hasEventPortalArtifact = artifacts.some(
+          a => a.startsWith("event-portal/") && !EP_DESIGN_ARTIFACTS.has(a));
         const hasEventPortalSourcedItems = Array.isArray(openItems)
           && openItems.some(i => i?.source === "event-portal");
         const eventPortalInProgress = !eventPortalDone && (

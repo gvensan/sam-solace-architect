@@ -1659,6 +1659,34 @@ def _ensure_scope_prose(engagement_id: str, scope: str) -> None:
         return
 
 
+def _ensure_event_portal_artifact(engagement_id: str) -> None:
+    """Event-portal is fully decided: the orchestrator derives the COMPLETE model
+    (domains/applications/events) from the taxonomy + brief. Write it to SA storage
+    deterministically rather than relying on the worker to echo a ~14KB block back
+    out — large models get emitted as a SAM native artifact block, which saves into
+    the ADK artifact-service layout (not SA's ``users/<uid>/<eid>/...`` path), so
+    ``_scope_artifact_exists`` never sees it and the scope retries until exhausted.
+
+    Idempotent (never clobbers an existing model), best-effort (a missing taxonomy
+    or derivation failure must not crash advance — the worker path still exists)."""
+    rel = _SCOPE_PRIMARY_ARTIFACT["event-portal"]
+    try:
+        if safe_artifact_path(engagement_id, rel).exists():
+            return
+        tax = read_yaml(engagement_id, "topic-design/topic-taxonomy.yaml", default=None)
+        if not tax:
+            return
+        model = _event_portal_model.derive_event_portal_model(
+            tax, workflow_tools.effective_brief(engagement_id) or {})
+        if not model or not (
+            model.get("domains") or model.get("events") or model.get("applications")
+        ):
+            return
+        write_yaml(engagement_id, rel, model)
+    except Exception:
+        return
+
+
 def _build_scope_context(engagement_id: str) -> str:
     """Pre-gather the context a worker would otherwise spend round-trips reading
     every session — the discovery brief + a COMPACT decisions list — and embed
@@ -2084,6 +2112,12 @@ async def _design_advance_impl(
     # decide_next will dispatch it again instead of immediately re-surfacing.
     if reset_scope and _design_state.scope_status(st, reset_scope) is not None:
         _design_state.reset_scope(st, reset_scope)
+
+    # Event-portal is fully decided — materialise its derived model in SA storage
+    # so the reconcile below detects it as done (the worker's native artifact-block
+    # save never lands in SA's path; see _ensure_event_portal_artifact).
+    if "event-portal" in applicable:
+        _ensure_event_portal_artifact(engagement_id)
 
     # Reconcile: any scope whose structured artifact already exists is DONE.
     # This is how the orchestrator learns "done" — from the durable artifact,
