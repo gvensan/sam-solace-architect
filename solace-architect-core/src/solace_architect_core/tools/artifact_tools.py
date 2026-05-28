@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .._storage import (
+    append_text as _append_text,
     list_artifacts as _list_artifacts,
     read_text as _read_text,
     safe_artifact_path,
@@ -196,6 +197,56 @@ async def write_artifact(engagement_id: str, artifact_name: str, content: str,
 
         _write_text(engagement_id, artifact_name, content)
     return ToolResult(ok=True, data={"artifact_name": artifact_name, "bytes": len(content)})
+
+
+async def append_artifact(engagement_id: str, artifact_name: str,
+                          content_chunk: str | None = None,
+                          user_id: str | None = None,
+                          content: str | None = None,
+                          tool_context: Any = None) -> ToolResult:
+    """Append a chunk of content to an artifact (creating it if absent).
+
+    Mirrors SAM's builtin ``append_to_artifact``: build a large prose artifact
+    (e.g. a scope's narrative ``.md``) across SEVERAL small tool calls instead of
+    emitting the whole file as one ``write_artifact(content=…)`` argument. One
+    large generation can exceed the upstream LLM proxy's streaming timeout and
+    drop mid-stream; small chunks keep every call short.
+
+    Pass the chunk as ``content_chunk`` (canonical) OR ``content`` (alias). Both are
+    accepted: the LLM frequently reuses ``write_artifact``'s ``content=`` here, and
+    erroring on the unknown parameter just wastes a round-trip (it would self-correct
+    on the next call). Accepting either eliminates that wasted call.
+
+    Contract: write the FIRST chunk with ``write_artifact``, then ``append_artifact``
+    the rest. Keep each chunk at or under ~4 KB (~600 words) per call — a safe maximum
+    that fits in one tool call without truncating (the hard ceiling is ~8 KB) while
+    keeping every call short enough to dodge the proxy's stall window.
+
+    Validation: same path + terminology checks as ``write_artifact``. No YAML
+    well-formedness check — a chunk is a fragment, not a complete document, so use
+    ``write_artifact`` for (small) YAML files and ``append_artifact`` for large prose.
+    """
+    chunk = content_chunk if content_chunk is not None else content
+    with _scoped_user(_resolve_user_id(user_id, tool_context)):
+        if chunk is None:
+            return ToolResult(ok=False, error="append_artifact requires content_chunk (or content)",
+                              error_detail={"missing_parameter": "content_chunk"})
+
+        path_check = _check_path(engagement_id, artifact_name)
+        if not path_check.ok:
+            return ToolResult(ok=False, error=path_check.error or "invalid artifact path",
+                              error_detail={"path_check": {"ok": False, "error": path_check.error}})
+
+        terminology_check = _check_terminology(chunk)
+        if not terminology_check.ok:
+            return ToolResult(
+                ok=False,
+                error="pre-write validation failed",
+                error_detail={"terminology_check": {"ok": False, "violations": terminology_check.violations}},
+            )
+
+        _append_text(engagement_id, artifact_name, chunk)
+    return ToolResult(ok=True, data={"artifact_name": artifact_name, "appended_bytes": len(chunk)})
 
 
 # ---------- list_artifacts ----------

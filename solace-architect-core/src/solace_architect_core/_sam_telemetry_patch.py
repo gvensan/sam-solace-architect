@@ -40,9 +40,17 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+# How close together (seconds) two recordings of the same (engagement, agent,
+# token counts) fingerprint must be to count as the SAME response double-fired
+# rather than two genuine turns. Input-token counts grow turn-over-turn within a
+# session, so two real turns sharing a fingerprint inside this window is
+# implausible — the window only ever collapses an accidental double-invoke.
+_DEDUP_WINDOW_S = 1.5
 
 
 _HEADER_RE = re.compile(r"\[Active engagement:[^\]]*engagement_id=([^\s,\]]+)")
@@ -73,6 +81,56 @@ def _safe_state_set(callback_context: Any, key: str, value: Any) -> None:
         state[key] = value  # type: ignore[index]
     except Exception:
         pass
+
+
+def _already_recorded(callback_context: Any, llm_response: Any,
+                      eid: Any, agent_name: str,
+                      in_tok: int, out_tok: int) -> bool:
+    """Has this exact LLM response already been recorded this turn?
+
+    SAM occasionally invokes ``after_model_callback`` twice for a single
+    ``LlmResponse`` — observed in the ledger as two byte-identical rows whose
+    ``ts`` differ by ~1 ms. Left unguarded that double-bills tokens and
+    double-renders the activity pills. Two independent guards, either of which
+    suppresses the duplicate:
+
+    1. **Object identity** — stamp the response object; if SAM hands us the
+       same object twice (the common case), we see the stamp and skip. Zero
+       risk: a distinct response is a distinct object.
+    2. **Short-window token fingerprint on state** — covers the case where the
+       second invoke carries a *copy* of the response. A duplicate is the same
+       ``(engagement, agent, input_tokens, output_tokens)`` seen again within
+       :data:`_DEDUP_WINDOW_S`. Safe because input-token counts climb every
+       turn, so two genuine turns never share a fingerprint this close together.
+
+    Always returns a bool; never raises (telemetry must not break a turn).
+    """
+    # Guard 1 — object identity.
+    try:
+        if getattr(llm_response, "_sa_tel_recorded", False):
+            return True
+        try:
+            setattr(llm_response, "_sa_tel_recorded", True)
+        except Exception:
+            pass  # immutable/slotted response → fall through to guard 2
+    except Exception:
+        pass
+
+    # Guard 2 — short-window token fingerprint (JSON-safe scalars on state).
+    if not (in_tok or out_tok):
+        return False
+    fp = f"{eid}|{agent_name}|{in_tok}|{out_tok}"
+    now = time.monotonic()
+    prev_fp = _safe_state_get(callback_context, "_sa_tel_last_fp")
+    try:
+        prev_t = float(_safe_state_get(callback_context, "_sa_tel_last_t") or 0.0)
+    except (TypeError, ValueError):
+        prev_t = 0.0
+    if prev_fp == fp and 0.0 <= (now - prev_t) < _DEDUP_WINDOW_S:
+        return True
+    _safe_state_set(callback_context, "_sa_tel_last_fp", fp)
+    _safe_state_set(callback_context, "_sa_tel_last_t", now)
+    return False
 
 
 def _extract_engagement_id(callback_context: Any) -> str | None:
@@ -168,6 +226,46 @@ def _extract_user_id(callback_context: Any) -> str | None:
     return None
 
 
+# Agent → lifecycle phase, so a telemetry row carries a ``step_id`` even when
+# SAM didn't stamp one on state (the common case — these were null before).
+_AGENT_STEP = {
+    "SADiscoveryAgent": "discovery",
+    "SADomainAgent": "design",
+    "SAArchitectReviewerAgent": "review",
+    "SADeveloperReviewerAgent": "review",
+    "SAOpsReviewerAgent": "review",
+    "SASecurityReviewerAgent": "review",
+    "SAValidationAgent": "validation",
+    "SAEventPortalAgent": "event-portal",
+    "SABlueprintAgent": "blueprint",
+    "SAOrchestratorAgent": "orchestrator",
+}
+
+
+def _resolve_step_id(callback_context: Any, agent_name: str) -> Any:
+    """Lifecycle phase for this row. Prefer an explicit state value; else derive
+    deterministically from the agent (these were null before — nothing populates
+    ``state['step_id']``)."""
+    sid = _safe_state_get(callback_context, "step_id")
+    if sid:
+        return sid
+    return _AGENT_STEP.get(agent_name)
+
+
+def _resolve_task_id(callback_context: Any) -> Any:
+    """SAM/A2A task id for this row. Prefer ``state['logical_task_id']``; else
+    fall back to the ADK invocation id off the invocation context (these were
+    null before — SAM doesn't stamp logical_task_id on state)."""
+    tid = _safe_state_get(callback_context, "logical_task_id")
+    if tid:
+        return tid
+    try:
+        ic = getattr(callback_context, "_invocation_context", None)
+        return getattr(ic, "invocation_id", None) or getattr(ic, "id", None) if ic else None
+    except Exception:
+        return None
+
+
 def _resolve_model_name(callback_context: Any, llm_response: Any) -> str:
     """Best-effort model name. Tries multiple sources in order:
       1. callback_context.state["model_name"] — fast path if SAM already
@@ -248,6 +346,16 @@ def install() -> None:
     except Exception as exc:
         log.warning("[SA telemetry] WAF prompt-sanitizer install skipped: %s", exc)
 
+    # Install the LLM input-size probe (separate concern — see _llm_input_probe).
+    # Rides this install() for the same reason as the WAF sanitizer. Installed
+    # AFTER it so the probe wraps outermost and measures the post-sanitize request
+    # that actually goes on the wire. Measurement only — never mutates the request.
+    try:
+        from ._llm_input_probe import install as _install_input_probe
+        _install_input_probe()
+    except Exception as exc:
+        log.warning("[SA telemetry] LLM input-probe install skipped: %s", exc)
+
     try:
         from solace_agent_mesh.agent.adk import setup as _sam_setup
     except Exception as e:  # pragma: no cover — SAM should always be importable
@@ -260,7 +368,7 @@ def install() -> None:
     # Imported here so a missing solace_architect_core install doesn't fail
     # the SAM agent boot — the patch becomes a no-op instead.
     try:
-        from .agent_callbacks import record_llm_call_telemetry
+        from .agent_callbacks import record_llm_call_telemetry, _extract_usage
     except Exception as e:
         log.warning("SA telemetry patch skipped: cannot import recorder (%s)", e)
         return
@@ -298,18 +406,26 @@ def install() -> None:
             try:
                 eid = _extract_engagement_id(callback_context)
                 uid = _extract_user_id(callback_context)
-                step_id = _safe_state_get(callback_context, "step_id")
-                sam_task_id = _safe_state_get(callback_context, "logical_task_id")
+                step_id = _resolve_step_id(callback_context, agent_name)
+                sam_task_id = _resolve_task_id(callback_context)
                 model = _resolve_model_name(callback_context, llm_response)
-                await record_llm_call_telemetry(
-                    llm_response=llm_response,
-                    agent=agent_name,
-                    engagement_id=eid,
-                    step_id=step_id,
-                    sam_task_id=sam_task_id,
-                    model=model,
-                    user_id=uid,
-                )
+                in_tok, out_tok, _ = _extract_usage(llm_response)
+                # Suppress SAM's occasional double-fire of this callback for one
+                # response (else the ledger double-bills tokens + activity).
+                if _already_recorded(callback_context, llm_response, eid,
+                                     agent_name, in_tok, out_tok):
+                    log.debug("[SA telemetry] duplicate after_model fire suppressed "
+                              "(agent=%s in=%s out=%s)", agent_name, in_tok, out_tok)
+                else:
+                    await record_llm_call_telemetry(
+                        llm_response=llm_response,
+                        agent=agent_name,
+                        engagement_id=eid,
+                        step_id=step_id,
+                        sam_task_id=sam_task_id,
+                        model=model,
+                        user_id=uid,
+                    )
             except Exception as e:
                 log.debug("[SA telemetry] capture failed (suppressed): %s", e)
 
