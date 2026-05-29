@@ -101,6 +101,25 @@ def test_integration_coverage_reads_name_or_system_key():
     assert vr.check_integration_coverage(brief, imap) == []
 
 
+def test_confirm_flag_marks_only_judgment_lenses():
+    """Mechanical lenses are authoritative (confirm=False, recorded verbatim);
+    the integration-coverage blocking finding is a candidate (confirm=True, the
+    agent must verify before blocking) so it can't self-block on a false positive."""
+    brief = {"landscape": {"systems": [{"name": "SAP"}, {"name": "WMS"}]}}
+    # integration-coverage blocking → candidate.
+    cov = vr.check_integration_coverage(brief, {"systems": [{"system": "SAP"}]})
+    assert cov and all(f["confirm"] is True for f in cov)
+    # subscription-syntax → authoritative.
+    subs = vr.check_subscription_syntax({"topics": {"x": "a/>/bad"}})
+    assert subs and all(f["confirm"] is False for f in subs)
+    # schema parse-failure → authoritative.
+    sch = vr.check_schema_sanity({"integration/integration-map.yaml": None})
+    assert sch and all(f["confirm"] is False for f in sch)
+    # the "couldn't verify" advisory is informational, not a candidate-blocker.
+    adv = vr.check_integration_coverage(brief, None)
+    assert adv and all(f["confirm"] is False for f in adv)
+
+
 # ── mesh consistency ──────────────────────────────────────────────────────────
 
 def test_mesh_site_consistency_flags_missing_site():

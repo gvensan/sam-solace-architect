@@ -45,8 +45,19 @@ _REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _finding(lens: str, severity: str, artifact: str, detail: str) -> dict:
-    return {"lens": lens, "severity": severity, "artifact": artifact, "detail": detail}
+def _finding(lens: str, severity: str, artifact: str, detail: str,
+             confirm: bool = False) -> dict:
+    """A deterministic validation finding.
+
+    ``confirm`` marks a finding the agent must VERIFY against the artifact before
+    recording it as a blocking open-item — for judgment lenses where the rule can
+    be wrong (e.g. a system covered under an alias the normaliser doesn't catch).
+    Mechanical lenses (subscription-syntax, schema-parse) leave it False: they're
+    deterministic and authoritative, recorded as-is. This stops the agent from
+    self-blocking the pipeline on a deterministic false positive it disagrees with
+    (observed: it recorded findings it had verified as false)."""
+    return {"lens": lens, "severity": severity, "artifact": artifact,
+            "detail": detail, "confirm": confirm}
 
 
 # ── lens 7: subscription syntax (fully rule-based) ───────────────────────────
@@ -187,7 +198,8 @@ def check_integration_coverage(brief: dict, integration_map: Any) -> list[dict]:
         if _norm(name) not in mapped:
             out.append(_finding(
                 "requirement-coverage", "blocking", "integration/integration-map.yaml",
-                f"Backend system {name!r} from the landscape has no integration strategy."))
+                f"Backend system {name!r} from the landscape has no integration strategy.",
+                confirm=True))  # judgment lens: confirm before blocking (alias mismatch?)
     return out
 
 

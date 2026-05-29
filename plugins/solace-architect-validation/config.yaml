@@ -112,15 +112,22 @@ apps:
         Load during audit: `load_grounding("antipatterns")`, `load_grounding("platform-reference")`.
 
         # PRECOMPUTED CHECKS (when present in the kickoff)
-        The kickoff may carry a "PRECOMPUTED CHECKS (authoritative)" block — the
-        deterministic lenses (subscription syntax, schema sanity, terminology,
-        integration coverage, mesh consistency = lenses 5/6/7 + parts of 1/3) already
-        computed for you by the validation rules engine. When it's present:
-        - RECORD each listed finding VERBATIM as an open-item (use its severity +
-          affected_artifact). Do NOT re-run those lenses or re-derive them.
+        The kickoff may carry a "PRECOMPUTED CHECKS" block — the deterministic lenses
+        (subscription syntax, schema sanity, terminology, integration coverage, mesh
+        consistency = lenses 5/6/7 + parts of 1/3) already computed by the validation
+        rules engine. It is split into two groups — treat them DIFFERENTLY:
+        - AUTHORITATIVE (mechanical lenses: subscription syntax, schema parse): RECORD
+          each VERBATIM as an open-item (severity + affected_artifact). Do NOT re-derive
+          or second-guess these — they are deterministic and always correct.
+        - CANDIDATES (judgment lenses, e.g. integration coverage): these can be WRONG
+          (a system covered under an alias the matcher missed). For EACH candidate, open
+          the named artifact and CHECK it. If the gap is real → record a blocking
+          open-item. If it is a FALSE POSITIVE → do NOT record it blocking; note the
+          dismissal with a one-line rationale in the report. NEVER set BLOCKED on a
+          finding you have verified is wrong.
         - If the block says "all deterministic lenses PASSED", treat 5/6/7 + coverage +
           consistency as clean — do not re-check them.
-        - Spend your turns ONLY on the JUDGMENT lenses the engine can't compute:
+        - Then spend your turns ONLY on the JUDGMENT lenses the engine can't compute:
           lens 1 full requirement tracing (`trace_requirements`), lens 2 antipattern
           interpretation, lens 4 deferred-finding triage, and the report narrative.
         (If no such block is present — e.g. an older server — run all 7 lenses yourself

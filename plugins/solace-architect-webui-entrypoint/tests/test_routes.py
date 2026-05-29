@@ -754,7 +754,30 @@ def test_restart_design_clears_orchestrator_state():
 from solace_architect_core._storage import write_text
 from solace_architect_webui_entrypoint.routes.api import (
     _build_validation_kickoff, _build_blueprint_kickoff,
+    _render_validation_findings_block,
 )
+
+
+def test_validation_findings_block_splits_authoritative_from_candidates():
+    """Mechanical findings render under AUTHORITATIVE (record verbatim); judgment
+    findings (confirm=True) render under CANDIDATES with confirm-before-block
+    guidance — so the agent can't self-block on a deterministic false positive."""
+    result = {
+        "findings": [
+            {"lens": "subscription-syntax", "severity": "blocking",
+             "artifact": "topic-design/topic-taxonomy.yaml", "detail": "bad >", "confirm": False},
+            {"lens": "requirement-coverage", "severity": "blocking",
+             "artifact": "integration/integration-map.yaml",
+             "detail": "Backend system 'X' has no integration strategy.", "confirm": True},
+        ],
+        "counts": {"blocking": 2, "advisory": 0},
+    }
+    block = _render_validation_findings_block(result)
+    assert "AUTHORITATIVE" in block and "CANDIDATES" in block
+    before, after = block.split("CANDIDATES", 1)
+    assert "subscription-syntax" in before          # authoritative section
+    assert "requirement-coverage" in after          # candidate section
+    assert "FALSE POSITIVE" in block                # dismiss-with-rationale guidance
 
 
 def _big_valid_yaml(anchor_key: str, kb: int) -> str:

@@ -1846,8 +1846,11 @@ _VALIDATION_KICKOFF_BASE = (
 
 
 def _render_validation_findings_block(result: dict) -> str:
-    """Render the deterministic validation findings as an authoritative kickoff
-    block the agent records verbatim (the inject side of the lever)."""
+    """Render the deterministic validation findings, split into AUTHORITATIVE
+    (mechanical lenses — record verbatim) and CANDIDATE (judgment lenses — confirm
+    against the artifact before recording blocking). The split prevents the agent
+    from self-blocking the pipeline on a deterministic false positive: a candidate
+    it verifies as wrong is dismissed with a rationale, not recorded blocking."""
     findings = result.get("findings") or []
     counts = result.get("counts") or {}
     if not findings:
@@ -1859,15 +1862,30 @@ def _render_validation_findings_block(result: dict) -> str:
             "deferred-finding triage, full requirement tracing (trace_requirements), and "
             "the report narrative."
         )
+    authoritative = [f for f in findings if not f.get("confirm")]
+    candidates = [f for f in findings if f.get("confirm")]
+
+    def _fmt(f: dict) -> str:
+        return f"- [{f.get('severity')}] {f.get('lens')} @ {f.get('artifact')}: {f.get('detail')}"
+
     lines = [
-        "\n\n--- PRECOMPUTED CHECKS (authoritative — record these as open-items "
-        "VERBATIM; do NOT re-derive these lenses) ---",
-        f"({counts.get('blocking', 0)} blocking, {counts.get('advisory', 0)} advisory)",
+        f"\n\n--- PRECOMPUTED CHECKS ({counts.get('blocking', 0)} blocking, "
+        f"{counts.get('advisory', 0)} advisory) ---",
     ]
-    for f in findings:
+    if authoritative:
         lines.append(
-            f"- [{f.get('severity')}] {f.get('lens')} @ {f.get('artifact')}: {f.get('detail')}"
-        )
+            "AUTHORITATIVE (mechanical lenses — record these as open-items VERBATIM; "
+            "do NOT re-derive or second-guess them):")
+        lines += [_fmt(f) for f in authoritative]
+    if candidates:
+        lines.append(
+            "CANDIDATES (confirm before recording — these lenses can be wrong, e.g. a "
+            "system covered under an alias the matcher missed). For EACH: check the named "
+            "artifact. If the gap is real, record it as a blocking open-item. If it is a "
+            "FALSE POSITIVE, do NOT record it blocking — note the dismissal with a "
+            "one-line rationale in the report. NEVER block the pipeline on a finding you "
+            "have verified is wrong.")
+        lines += [_fmt(f) for f in candidates]
     lines.append(
         "Then spend your turns ONLY on the judgment lenses the rules can't compute: "
         "antipattern interpretation, deferred-finding triage, full requirement tracing "
