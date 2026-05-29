@@ -83,11 +83,17 @@ apps:
       agent_discovery:
         enabled: true
       inter_agent_communication:
-        # MCP-backed worker — other agents (e.g. SAOrchestratorAgent) can
-        # dispatch to it; it doesn't peer-dispatch back. ["*"] is safe
-        # because the prompt limits this agent's outbound calls to MCP +
-        # storage tools, no peer calls.
-        allow_list: ["*"]
+        # MCP-backed leaf worker — other agents (e.g. SAOrchestratorAgent)
+        # dispatch TO it; it must not peer-dispatch back. Outbound peer calls
+        # are hard-disabled ([]) rather than relying on the prompt: the LLM was
+        # observed delegating list_* JSON parsing to the BuiltInTools peer, which
+        # runs in its own session and can't see this agent's offloaded artifacts
+        # ("artifacts do not exist in the current session") — that broke reuse
+        # detection and created duplicate EP objects. Its work is MCP + storage
+        # tools only, so an empty allow_list removes the failure mode entirely:
+        # SAM builds peer_* tools only for names matching allow_list, so [] yields
+        # zero peer tools — the LLM can't dispatch to BuiltInTools even if it tries.
+        allow_list: []
         deny_list: []
         request_timeout_seconds: 60
 
@@ -180,9 +186,16 @@ apps:
            validation gate…".
         5. Dry-run plan — per layer [domains → schemas → events → applications]:
              a. Read model's section.
-             b. `list_<layer>()` against tenant.
-             c. Decide create vs reuse: domains/applications by exact name match;
-                schemas by name + content hash; events by name + version + schema_version_id.
+             b. `list_<layer>()` against tenant. ALWAYS pass a SMALL `pageSize`
+                (≤25) and page through results — this keeps each response small
+                enough to stay inline. If a response is large it gets offloaded to
+                a session artifact you'd then have to reload, so prefer paging.
+             c. Decide create vs reuse YOURSELF from the names in those responses:
+                domains/applications by exact name match; schemas by name + content
+                hash; events by name + version + schema_version_id. This is plain
+                name-list comparison — do NOT delegate it to a peer agent. (You have
+                no peer tools; a peer can't see your session's artifacts anyway, so
+                delegating parsing silently fails and creates duplicates.)
              d. Record plan rows.
            `write_artifact(engagement_id, "event-portal/plan.yaml", ...)`. Status:
            "Writing provisioning plan…".
