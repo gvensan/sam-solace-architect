@@ -396,6 +396,17 @@ def test_event_portal_design_artifacts_excluded_from_provisioning_cta():
     assert "!EP_DESIGN_ARTIFACTS.has(a)" in js
 
 
+def test_usage_view_surfaces_per_call_latency():
+    """The latency instrumentation (duration_ms) must be visible in the Usage
+    view — an Avg-latency card + per-row latency — averaged over timed_calls so
+    pre-instrumentation rows don't skew the mean."""
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    assert "Avg latency" in js
+    assert "timed_calls" in js
+    assert "duration_ms" in js
+    assert "fmtLatency" in js
+
+
 def test_phase_dot_strip_uniform_circles_for_all_multistep_phases():
     """Every multi-step lifecycle tile (design / review / event-portal / blueprint)
     renders the same CSS-styled circle strip, driven by the per-phase step lists

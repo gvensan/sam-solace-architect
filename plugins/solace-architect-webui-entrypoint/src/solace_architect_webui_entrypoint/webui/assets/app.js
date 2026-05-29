@@ -2973,6 +2973,16 @@
     // Format $ with sensible precision: tiny (<$0.01) → 4 decimals so it
     // doesn't read as $0.00; otherwise 2 decimals like normal currency.
     const fmtUsd = (n) => n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
+    // Latency: average over only the rows that carry it (timed_calls), so
+    // pre-instrumentation rows don't drag the mean to zero. "—" until the
+    // duration-capture build has run against this range.
+    const timedCalls = Number(totals.timed_calls || 0);
+    const avgMs = timedCalls > 0 ? Math.round(Number(totals.duration_ms || 0) / timedCalls) : null;
+    const fmtLatency = (ms) => ms == null ? "—" : ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : ms + "ms";
+    const rowLatency = (r) => {
+      const tc = Number(r.timed_calls || 0);
+      return tc > 0 ? fmtLatency(Math.round(Number(r.duration_ms || 0) / tc)) : null;
+    };
 
     const summaryHtml = `
       <div class="usage-summary">
@@ -2990,6 +3000,11 @@
           <div class="label">Output</div>
           <div class="value">${_formatTokens(totals.output_tokens)}</div>
           <div class="sub">&nbsp;</div>
+        </div>
+        <div class="usage-card">
+          <div class="label">Avg latency</div>
+          <div class="value">${fmtLatency(avgMs)}</div>
+          <div class="sub">${timedCalls > 0 ? `per call · ${timedCalls.toLocaleString()} timed` : "awaiting instrumented calls"}</div>
         </div>
         <div class="usage-card">
           <div class="label">Est. cost</div>
@@ -3020,7 +3035,7 @@
             <div class="usage-row">
               <div class="key" title="${escapeHtml(r.key)}">${escapeHtml(display)}</div>
               <div class="bar-wrap"><div class="bar" style="width: ${pct}%"></div></div>
-              <div class="total">${_formatTokens(r.total_tokens)}<span class="calls">· ${r.calls}</span></div>
+              <div class="total">${_formatTokens(r.total_tokens)}<span class="calls">· ${r.calls}</span>${rowLatency(r) ? `<span class="calls"> · ${rowLatency(r)}/call</span>` : ""}</div>
             </div>
           `;
         }).join("")}
