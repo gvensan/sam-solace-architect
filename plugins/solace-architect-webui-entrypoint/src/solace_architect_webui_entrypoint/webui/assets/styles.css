@@ -1349,25 +1349,34 @@ body[data-inflight="1"] .progress-cta-actions-row a.cta-btn {
 /* Design tile sub-strip — fine-grained per-scope progress so the user can
  * see "we're 4 of 9 scopes through Design" without opening chat. Dots are
  * per scope, coloured by status (done/current/pending/skipped). */
-.design-scope-strip {
+/* Per-phase progress dots — uniform circles for every multi-step tile
+   (Design scopes, Review reviewers, Event Portal stages, Blueprint sections).
+   State is conveyed by fill/border, not by swapping glyphs:
+     done    = solid accent          active  = solid primary + ring
+     pending = hollow (border only)   skipped = dotted + faded */
+.phase-dot-strip {
   display: flex; align-items: center; gap: 6px; margin-top: 4px;
   font-size: 10px;
 }
-.design-scope-count {
+.phase-dot-count {
   font-family: 'Space Mono', monospace; color: var(--muted, #888);
   font-weight: 600;
 }
-.design-scope-dots { display: inline-flex; gap: 2px; line-height: 1; }
-.scope-dot {
-  display: inline-block; width: 10px; text-align: center;
-  font-size: 11px; line-height: 1; color: var(--border, #ccc);
+.phase-dots { display: inline-flex; align-items: center; gap: 4px; line-height: 1; }
+.phase-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  box-sizing: border-box;
+  border: 1.5px solid var(--border, #ccc);
+  background: transparent;            /* pending = hollow */
   cursor: default;
 }
-.scope-dot.done { color: var(--accent, #00C895); cursor: pointer; }
-.scope-dot.current { color: var(--primary, #093B5F); font-weight: bold; }
-.scope-dot.skipped { color: var(--muted, #ccc); opacity: 0.5; }
-.design-scope-dots a { text-decoration: none; }
-.design-scope-dots a:hover .scope-dot.done { transform: scale(1.2); transition: transform 0.1s; }
+.phase-dot.done   { background: var(--accent, #00C895); border-color: var(--accent, #00C895); }
+.phase-dot.active { background: var(--primary, #093B5F); border-color: var(--primary, #093B5F);
+                    box-shadow: 0 0 0 2px rgba(9, 59, 95, 0.18); }
+.phase-dot.skipped { border-style: dotted; opacity: 0.45; }
+.phase-dots a { display: inline-flex; text-decoration: none; }
+.phase-dots a .phase-dot.done { cursor: pointer; }
+.phase-dots a:hover .phase-dot.done { transform: scale(1.25); transition: transform 0.1s; }
 
 /* Settings page (two-pane: inner sidebar + content) */
 .settings-page { display: grid; grid-template-columns: 220px 1fr; gap: 24px; align-items: start; }

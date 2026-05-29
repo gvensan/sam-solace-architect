@@ -833,8 +833,7 @@
             needsContext: needsContextSteps,
             skipped: skippedSteps,
             blocked: blockedSteps,
-            designScopeProgress: lifecycle?.steps?.design?.scope_progress || null,
-            designApplicableScopes: _deriveApplicableDesignScopes(lifecycle, stats),
+            stats,
           })}
           ${cta}
 
@@ -1339,39 +1338,20 @@
   // Each step gets a hand-rolled inline SVG so we don't depend on any
   // external icon set. State drives the styling: completed = checkmark
   // tint, active = accent border + glow, pending = muted.
-  // Canonical design scope order. The "event-portal" scope here is the
-  // DESIGN-time model (always applicable when Design runs); not to be
-  // confused with the lifecycle-level event-portal PHASE (opt-in
-  // provisioning). Kept aligned with SADomainAgent's own scope list.
-  const DESIGN_SCOPE_ORDER = [
-    "topic-design", "broker-select", "protocol-select", "integration",
-    "mesh-design", "ha-dr", "sam-design", "event-portal", "migration",
-  ];
-
-  // Derive which design scopes are applicable to this engagement from the
-  // routing engine's skip_reasons (the canonical "scope not applicable per
-  // brief" signal — emitted by intake_preview's plan computation). Returns
-  // a Set of applicable scope ids; null when we have no skip signal at all
-  // (in which case the banner falls back to "all 9 applicable" — never
-  // misleadingly hides a scope).
-  function _deriveApplicableDesignScopes(lifecycle, stats) {
-    const skipReasons = stats?.skip_reasons;
-    if (!Array.isArray(skipReasons)) return null;
-    const skipped = new Set(skipReasons.map(sr => sr?.step).filter(Boolean));
-    if (!skipped.size) return new Set(DESIGN_SCOPE_ORDER);    // none skipped → all applicable
-    // The skip_reasons set may include lifecycle-PHASE entries too (e.g.
-    // "event-portal" when the PHASE is opt-out). Filter to design scopes
-    // only — the lifecycle event-portal phase being skipped doesn't mean
-    // the design-time event-portal model scope is skipped.
-    const designSkipped = new Set([...skipped].filter(s => DESIGN_SCOPE_ORDER.includes(s)));
-    return new Set(DESIGN_SCOPE_ORDER.filter(s => !designSkipped.has(s)));
-  }
 
   function renderProgressBanner({ eid, active, completed, needsContext, skipped, blocked,
-                                  designScopeProgress, designApplicableScopes }) {
+                                  stats }) {
     needsContext = needsContext || new Set();
     skipped = skipped || new Set();
     blocked = blocked || new Set();
+    // Per-phase step lists (from compute_overview_stats) drive the per-tile dot
+    // strips for every multi-step phase, not just Design.
+    const phaseStepLists = {
+      design: stats?.design_scopes || [],
+      review: stats?.review_reviewers || [],
+      "event-portal": stats?.event_portal_stages || [],
+      blueprint: stats?.blueprint_sections || [],
+    };
     // Lifecycle steps shown across the top of the Progress view.
     // Order matches PHASE_NEXT: intake → discovery → design → review →
     // validation → event-portal → blueprint.
@@ -1426,8 +1406,8 @@
                 ${isDone ? `<span class="progress-check" aria-hidden="true">✓</span>` : ""}
               </div>
               <div class="progress-label">${s.label}</div>
-              ${s.id === "design" && designScopeProgress && (isActive || isDone)
-                ? _renderDesignScopeStrip(designScopeProgress, designApplicableScopes, eid)
+              ${(isActive || isDone)
+                ? _renderPhaseDotStrip(phaseStepLists[s.id] || [], eid, s.id)
                 : ""}
               ${canRestart
                 ? `<button type="button" class="progress-restart-btn"
@@ -1441,52 +1421,42 @@
       </div>`;
   }
 
-  // Sub-progress strip for the Design tile. Renders a dot per applicable
-  // design scope, coloured by status:
-  //   ●  done (in scope_progress.done[])
-  //   ◐  current (== scope_progress.next)
-  //   ○  pending (applicable but not yet reached)
-  //   —  skipped (not applicable for this engagement per the brief)
-  // The "N/M" count above the dots gives the user a quick "how far along"
-  // signal without parsing the dots. Clicks on done dots navigate to that
-  // scope's artifacts page.
-  function _renderDesignScopeStrip(scopeProgress, applicable, eid) {
-    const done = new Set(scopeProgress?.done || []);
-    const next = scopeProgress?.next || null;
-    // If we have an applicable-set, use it; else assume all are applicable
-    // (conservative — never falsely hide a scope just because we couldn't
-    // confidently derive applicability).
-    const applies = applicable instanceof Set
-      ? (id) => applicable.has(id)
-      : () => true;
-    const dots = DESIGN_SCOPE_ORDER.map(scope => {
-      let cls = "scope-dot";
-      let glyph = "○";
-      let title = `${scope.replace(/-/g, " ")} — pending`;
-      let href = null;
-      if (!applies(scope)) {
-        cls += " skipped"; glyph = "—";
-        title = `${scope.replace(/-/g, " ")} — not applicable for this engagement`;
-      } else if (done.has(scope)) {
-        cls += " done"; glyph = "●";
-        title = `${scope.replace(/-/g, " ")} — done`;
-        if (eid) href = `/projects/${encodeURIComponent(eid)}/artifacts?category=${encodeURIComponent(scope)}`;
-      } else if (scope === next) {
-        cls += " current"; glyph = "◐";
-        title = `${scope.replace(/-/g, " ")} — current scope`;
-      }
-      const inner = `<span class="${cls}" title="${title}" data-scope="${scope}" aria-label="${title}">${glyph}</span>`;
-      return href ? `<a href="${href}" data-route>${inner}</a>` : inner;
+  // status → visual state for the per-phase dot strip. done=solid, active
+  // (running/next/current)=ring, pending=hollow, skipped=faded. All circles —
+  // the state is conveyed by fill/border, not by swapping glyph characters
+  // (which render inconsistently across fonts/platforms).
+  const _DOT_STATE = {
+    done: "done", running: "active", next: "active", current: "active",
+    pending: "pending", skipped: "skipped",
+  };
+
+  // Sub-progress strip for any multi-step lifecycle tile (Design scopes, Review
+  // reviewers, Event Portal stages, Blueprint sections). One CSS-styled circle
+  // per step; the "N/M" count gives a quick "how far along" signal without
+  // parsing the dots. `items` is the stats step list ([{id|scope, status}]).
+  // Returns "" for phases with fewer than two applicable steps so callers can
+  // splice it in unconditionally. Done Design dots deep-link to their artifacts.
+  function _renderPhaseDotStrip(items, eid, phase) {
+    if (!Array.isArray(items)) return "";
+    const applicable = items.filter(it => (it.status || "pending") !== "skipped");
+    if (applicable.length < 2) return "";
+    const total = applicable.length;
+    const doneN = applicable.filter(it => it.status === "done").length;
+    const dots = items.map(it => {
+      const status = it.status || "pending";
+      const state = _DOT_STATE[status] || "pending";
+      const id = it.id || it.scope || "";
+      const title = `${id.replace(/-/g, " ")} — ${_CHECKLIST_STATUS_LABEL[status] || status}`;
+      const href = (phase === "design" && status === "done" && eid && id)
+        ? `/projects/${encodeURIComponent(eid)}/artifacts?category=${encodeURIComponent(id)}`
+        : null;
+      const dot = `<span class="phase-dot ${state}" title="${escapeHtml(title)}" data-step="${escapeHtml(id)}" aria-label="${escapeHtml(title)}"></span>`;
+      return href ? `<a href="${href}" data-route>${dot}</a>` : dot;
     }).join("");
-    const total = applicable instanceof Set
-      ? [...applicable].filter(s => DESIGN_SCOPE_ORDER.includes(s)).length
-      : DESIGN_SCOPE_ORDER.length;
-    const doneApplicable = DESIGN_SCOPE_ORDER
-      .filter(s => done.has(s) && applies(s)).length;
     return `
-      <div class="design-scope-strip">
-        <span class="design-scope-count">${doneApplicable}/${total}</span>
-        <span class="design-scope-dots">${dots}</span>
+      <div class="phase-dot-strip">
+        <span class="phase-dot-count">${doneN}/${total}</span>
+        <span class="phase-dots">${dots}</span>
       </div>`;
   }
 

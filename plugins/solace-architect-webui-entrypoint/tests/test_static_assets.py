@@ -394,3 +394,23 @@ def test_event_portal_design_artifacts_excluded_from_provisioning_cta():
     assert "event-portal/event-portal.md" in js
     # The in-progress detection filters those out, rather than matching any event-portal/ file.
     assert "!EP_DESIGN_ARTIFACTS.has(a)" in js
+
+
+def test_phase_dot_strip_uniform_circles_for_all_multistep_phases():
+    """Every multi-step lifecycle tile (design / review / event-portal / blueprint)
+    renders the same CSS-styled circle strip, driven by the per-phase step lists
+    from stats — not per-state glyph characters."""
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    assert "function _renderPhaseDotStrip" in js
+    for entry in (
+        "design: stats?.design_scopes",
+        "review: stats?.review_reviewers",
+        '"event-portal": stats?.event_portal_stages',
+        "blueprint: stats?.blueprint_sections",
+    ):
+        assert entry in js, f"missing phase step list: {entry!r}"
+    # Dots are CSS-styled spans, not glyph characters.
+    assert 'class="phase-dot ' in js
+    css = (PKG_ROOT / "webui" / "assets" / "styles.css").read_text()
+    for state in (".phase-dot.done", ".phase-dot.active", ".phase-dot.skipped"):
+        assert state in css, f"missing dot state style: {state!r}"
