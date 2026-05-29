@@ -434,6 +434,12 @@ async def test_load_preamble_returns_content_with_load_bearing_sections():
     assert "Micro-Integration" in body
     assert "[doc:" in body and "[inference]" in body and "[user]" in body
 
+    # Native-artifact-block guardrail (#3): every agent must be told to persist
+    # via write_artifact/append_artifact, never a fenced artifact block (which
+    # SAM routes to a store the engagement can't read — the artifact vanishes).
+    low = body.lower()
+    assert "fenced" in low and "write_artifact" in body
+
 
 # ---------- telemetry_tools ----------
 
