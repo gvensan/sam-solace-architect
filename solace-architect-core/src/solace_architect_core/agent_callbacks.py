@@ -56,6 +56,17 @@ def _extract_usage(llm_response: Any) -> tuple[int, int, int]:
     details = getattr(usage, "prompt_tokens_details", None)
     if details is not None:
         cached_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+    # Provider-dialect fallbacks so a prompt-cache hit is captured regardless of
+    # which usage shape the gateway returns once caching is enabled upstream:
+    # OpenAI/Gemini use prompt_tokens_details.cached_tokens (above); Anthropic
+    # reports cache_read_input_tokens; Vertex/Gemini cached_content_token_count.
+    # Without this, caching could be live yet the ledger still shows cached=0.
+    if not cached_tokens:
+        for attr in ("cache_read_input_tokens", "cached_content_token_count", "cached_tokens"):
+            v = int(getattr(usage, attr, 0) or 0)
+            if v:
+                cached_tokens = v
+                break
     return (input_tokens, output_tokens, cached_tokens)
 
 
@@ -116,6 +127,7 @@ async def record_llm_call_telemetry(
     sam_task_id: Optional[str] = None,
     source: str = "agent",
     user_id: Optional[str] = None,
+    duration_ms: Optional[int] = None,
 ) -> ToolResult:
     """Extract token usage from a SAM ``LlmResponse`` and append it to the ledger.
 
@@ -147,6 +159,7 @@ async def record_llm_call_telemetry(
         sam_task_id=sam_task_id,
         source=source,
         user_id=user_id,
+        duration_ms=duration_ms,
         # The tool calls + status text this turn produced (chat-pill content),
         # recorded alongside the token bill. Best-effort; never blocks the row.
         activity=_extract_activity(llm_response),

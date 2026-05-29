@@ -384,6 +384,29 @@ def install() -> None:
 
         agent_name = getattr(component, "agent_name", None) or "unknown"
 
+        # Stamp a per-call start time in a before-model hook so the recorder can
+        # compute wall-clock latency. Chained here (not in _llm_input_probe) so
+        # duration capture is independent of that probe's on/off flag.
+        try:
+            before_chain = agent.before_model_callback
+        except Exception:
+            before_chain = None
+
+        async def with_start_stamp(callback_context, llm_request):
+            result = None
+            if before_chain is not None:
+                try:
+                    rv = before_chain(callback_context, llm_request)
+                    if hasattr(rv, "__await__"):
+                        rv = await rv
+                    result = rv
+                except Exception as e:
+                    log.debug("[SA telemetry] before_model chain raised (suppressed): %s", e)
+            if result is not None:
+                return result  # chain short-circuited → no model call to time
+            _safe_state_set(callback_context, "_sa_llm_start_t", time.monotonic())
+            return None
+
         async def with_telemetry(callback_context, llm_response):
             # 1. Run SAM's chain first — preserves whatever response mutations
             #    it applies (artifact-block processing, max-token auto-continue,
@@ -410,6 +433,11 @@ def install() -> None:
                 sam_task_id = _resolve_task_id(callback_context)
                 model = _resolve_model_name(callback_context, llm_response)
                 in_tok, out_tok, _ = _extract_usage(llm_response)
+                # Wall-clock since the before-model stamp (this call's latency).
+                start_t = _safe_state_get(callback_context, "_sa_llm_start_t")
+                duration_ms = None
+                if isinstance(start_t, (int, float)):
+                    duration_ms = int((time.monotonic() - start_t) * 1000)
                 # Suppress SAM's occasional double-fire of this callback for one
                 # response (else the ledger double-bills tokens + activity).
                 if _already_recorded(callback_context, llm_response, eid,
@@ -425,6 +453,7 @@ def install() -> None:
                         sam_task_id=sam_task_id,
                         model=model,
                         user_id=uid,
+                        duration_ms=duration_ms,
                     )
             except Exception as e:
                 log.debug("[SA telemetry] capture failed (suppressed): %s", e)
@@ -432,9 +461,10 @@ def install() -> None:
             return chain_result
 
         try:
+            agent.before_model_callback = with_start_stamp
             agent.after_model_callback = with_telemetry
             log.info(
-                "[SA telemetry] after_model_callback chained for agent '%s'",
+                "[SA telemetry] before/after_model_callback chained for agent '%s'",
                 agent_name,
             )
         except Exception as e:

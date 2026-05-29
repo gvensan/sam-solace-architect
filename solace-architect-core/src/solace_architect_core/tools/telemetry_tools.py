@@ -52,6 +52,7 @@ async def record_token_usage(
     ts: Optional[str] = None,
     user_id: Optional[str] = None,
     activity: Optional[list] = None,
+    duration_ms: Optional[int] = None,
 ) -> ToolResult:
     """Append one LLM round-trip's token bill to the engagement's telemetry ledger.
 
@@ -95,6 +96,12 @@ async def record_token_usage(
         "total_tokens": int(input_tokens) + int(output_tokens),
         "source": source,
     }
+    # Wall-clock for this LLM round-trip (before_model → after_model), in
+    # milliseconds. Lets reporting show WHERE time goes per step/agent — the
+    # token counts alone can't (a big prefill and a slow gateway both inflate
+    # latency). Recorded only when measured so historical/test rows stay lean.
+    if duration_ms is not None:
+        row["duration_ms"] = int(duration_ms)
     # The agent's activity for this round-trip — the tool calls + status text
     # that render as chat pills ("Reading …", "Writing …"). Recorded only when
     # present so token-only rows stay lean. Size-capped by the caller.
@@ -164,6 +171,7 @@ def _aggregate(rows: list[dict], group_by: str,
         return {
             "input_tokens": 0, "output_tokens": 0,
             "cached_input_tokens": 0, "total_tokens": 0, "calls": 0,
+            "duration_ms": 0, "timed_calls": 0,
             "input_cost_usd": 0.0, "output_cost_usd": 0.0, "total_cost_usd": 0.0,
         }
 
@@ -178,6 +186,14 @@ def _aggregate(rows: list[dict], group_by: str,
             totals[field] += val
         bucket["calls"] += 1
         totals["calls"] += 1
+        # Latency: sum only over rows that carry it (timed_calls), so the UI can
+        # show a true average without pre-instrumentation rows dragging it to 0.
+        dur = r.get("duration_ms")
+        if dur is not None:
+            bucket["duration_ms"] += int(dur or 0)
+            bucket["timed_calls"] += 1
+            totals["duration_ms"] += int(dur or 0)
+            totals["timed_calls"] += 1
         # On-the-fly USD cost from price table. Unknown model → cost stays 0
         # for that row; the rest of the aggregation still works.
         cost = _cost_for_row(

@@ -473,6 +473,32 @@ async def test_record_then_read_token_usage_groups_by_agent():
 
 
 @pytest.mark.asyncio
+async def test_token_usage_records_and_aggregates_duration():
+    """duration_ms is stored when provided and summed over only the rows that
+    carry it (timed_calls), so pre-instrumentation rows don't skew the average."""
+    eid = "eng-tel-dur"
+    await telemetry_tools.record_token_usage(
+        eid, agent="SADomainAgent", model="m1",
+        input_tokens=100, output_tokens=10, step_id="design", duration_ms=1200,
+    )
+    await telemetry_tools.record_token_usage(
+        eid, agent="SADomainAgent", model="m1",
+        input_tokens=200, output_tokens=20, step_id="design", duration_ms=800,
+    )
+    # A row WITHOUT a duration (pre-instrumentation / dropped measurement).
+    await telemetry_tools.record_token_usage(
+        eid, agent="SADomainAgent", model="m1",
+        input_tokens=50, output_tokens=5, step_id="design",
+    )
+    r = await telemetry_tools.read_token_usage(eid, group_by="agent")
+    assert r.ok
+    row = {x["key"]: x for x in r.data["rows"]}["SADomainAgent"]
+    assert row["duration_ms"] == 2000      # 1200 + 800; the untimed row contributes 0
+    assert row["timed_calls"] == 2         # only the two timed rows
+    assert row["calls"] == 3               # all three count toward token totals
+
+
+@pytest.mark.asyncio
 async def test_read_token_usage_groups_by_step_model_day():
     eid = "eng-tel-2"
     await telemetry_tools.record_token_usage(
@@ -1172,3 +1198,25 @@ async def test_telemetry_records_activity_without_payloads(tmp_path, monkeypatch
     blob = __import__("json").dumps(rows[-1])
     assert "topic-design/topic-taxonomy.yaml" in blob
     assert "ZZZZ" not in blob
+
+
+def test_extract_usage_reads_cached_tokens_across_provider_dialects():
+    """A prompt-cache hit must be captured regardless of which usage shape the
+    gateway returns — so caching is visible the moment it's enabled upstream."""
+    from types import SimpleNamespace as NS
+    from solace_architect_core import agent_callbacks as ac
+    # OpenAI/Gemini shape: prompt_tokens_details.cached_tokens
+    u1 = NS(prompt_token_count=1000, candidates_token_count=50,
+            prompt_tokens_details=NS(cached_tokens=600))
+    assert ac._extract_usage(NS(usage_metadata=u1)) == (1000, 50, 600)
+    # Anthropic-native shape: cache_read_input_tokens on the usage object.
+    u2 = NS(prompt_token_count=1000, candidates_token_count=50,
+            prompt_tokens_details=None, cache_read_input_tokens=700)
+    assert ac._extract_usage(NS(usage_metadata=u2)) == (1000, 50, 700)
+    # Vertex/Gemini shape: cached_content_token_count.
+    u3 = NS(prompt_token_count=1000, candidates_token_count=50,
+            prompt_tokens_details=None, cached_content_token_count=400)
+    assert ac._extract_usage(NS(usage_metadata=u3)) == (1000, 50, 400)
+    # No caching anywhere → 0 (current production reality).
+    u4 = NS(prompt_token_count=1000, candidates_token_count=50, prompt_tokens_details=None)
+    assert ac._extract_usage(NS(usage_metadata=u4)) == (1000, 50, 0)
