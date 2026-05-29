@@ -17,7 +17,18 @@ engagement's artifacts into these inputs and injects the findings.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
+
+
+def _norm(s: Any) -> str:
+    """Normalise a name for cross-artifact matching: lowercase, drop every
+    non-alphanumeric. Phases rewrite punctuation differently (the integration
+    phase turns ``'Foo (CDC): Bar'`` into ``'Foo (CDC) - Bar'``), so an exact
+    string match manufactures false 'missing' findings; comparing the normalised
+    forms is robust to that drift while still distinguishing genuinely different
+    systems."""
+    return re.sub(r"[^a-z0-9]+", "", str(s).lower())
 
 # Top-level keys each design artifact must carry. Schema drift over time is
 # tolerated by listing alternative acceptable keys per artifact (any one hit
@@ -146,15 +157,34 @@ def _system_names(brief: dict) -> list[str]:
 
 
 def check_integration_coverage(brief: dict, integration_map: Any) -> list[dict]:
-    """Every backend system in the landscape must appear in the integration map."""
+    """Every backend system in the landscape must appear in the integration map.
+
+    Two resilience properties so a glitch can't manufacture spurious blockers:
+
+    * **Map absent / unparseable / no systems list → ONE advisory**, never one
+      blocking finding per system. A transient read miss or a not-yet-run
+      integration phase must not turn into N hard blockers (observed: a single
+      unreadable map produced 5 false "no integration strategy" blockers that
+      gated the whole pipeline).
+    * **Names are matched normalised** (see ``_norm``) and the system name is
+      read from ``system`` or ``name`` — so punctuation the integration phase
+      rewrites (``':' -> ' - '``) doesn't read as a missing strategy.
+    """
     out: list[dict] = []
     systems = _system_names(brief)
     if not systems:
         return out
-    mapped = {str(r.get("system")) for r in
-              ((integration_map or {}).get("systems") or []) if isinstance(r, dict)}
+    rows = integration_map.get("systems") if isinstance(integration_map, dict) else None
+    if not rows:
+        out.append(_finding(
+            "requirement-coverage", "advisory", "integration/integration-map.yaml",
+            "Integration coverage could not be verified — integration-map.yaml is "
+            "missing, unparseable, or has no systems list. (Re-run integration / "
+            "re-check the artifact; not treated as a blocker to avoid false gating.)"))
+        return out
+    mapped = {_norm(r.get("system") or r.get("name")) for r in rows if isinstance(r, dict)}
     for name in systems:
-        if name not in mapped:
+        if _norm(name) not in mapped:
             out.append(_finding(
                 "requirement-coverage", "blocking", "integration/integration-map.yaml",
                 f"Backend system {name!r} from the landscape has no integration strategy."))
@@ -168,8 +198,8 @@ def check_mesh_site_consistency(brief: dict, mesh: Any) -> list[dict]:
     sites = (req or {}).get("sites") if isinstance(req, dict) else None
     if not isinstance(sites, list) or len(sites) <= 1 or not isinstance(mesh, dict):
         return out
-    mesh_text = " ".join(_walk_strings(mesh)).lower()
-    missing = [s for s in sites if isinstance(s, str) and s.lower() not in mesh_text]
+    mesh_norm = _norm(" ".join(_walk_strings(mesh)))
+    missing = [s for s in sites if isinstance(s, str) and _norm(s) not in mesh_norm]
     if missing:
         out.append(_finding(
             "consistency", "advisory", "mesh-design/dmr-topology.yaml",

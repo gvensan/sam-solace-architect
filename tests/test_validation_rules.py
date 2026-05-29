@@ -71,6 +71,36 @@ def test_integration_coverage_clean_when_all_mapped():
     assert vr.check_integration_coverage(brief, {"systems": [{"system": "SAP"}]}) == []
 
 
+def test_integration_coverage_normalises_cross_phase_punctuation_drift():
+    """The integration phase rewrites punctuation (':' -> ' - '), so an exact
+    match would falsely flag the system as having no strategy. Normalised
+    matching must treat the two forms as the same system → no finding."""
+    brief = {"landscape": {"systems": [{"name": "Debezium (CDC): MySQL"}]}}
+    imap = {"systems": [{"system": "Debezium (CDC) - MySQL"}]}
+    assert vr.check_integration_coverage(brief, imap) == []
+
+
+def test_integration_coverage_missing_map_is_single_advisory_not_n_blockers():
+    """A missing / unparseable / systemless map must NOT manufacture one blocking
+    finding per system (that gated a whole pipeline on a transient read miss).
+    It yields exactly ONE advisory."""
+    brief = {"landscape": {"systems": [
+        {"name": "SAP"}, {"name": "Debezium (CDC): MySQL"}, {"name": "Oracle CDC"},
+        {"name": "Snowflake"}, {"name": "Amazon S3"}]}}
+    for bad_map in (None, {}, {"systems": []}, {"systems": None}, "not-a-dict"):
+        f = vr.check_integration_coverage(brief, bad_map)
+        assert len(f) == 1, f"{bad_map!r} should yield 1 finding, got {len(f)}"
+        assert f[0]["severity"] == "advisory", f"{bad_map!r} must be advisory, not blocking"
+
+
+def test_integration_coverage_reads_name_or_system_key():
+    """A map row may carry the name under 'system' or 'name' (schema drift);
+    either should match so we don't false-flag."""
+    brief = {"landscape": {"systems": [{"name": "SAP"}, {"name": "Oracle CDC"}]}}
+    imap = {"systems": [{"system": "SAP"}, {"name": "Oracle CDC"}]}
+    assert vr.check_integration_coverage(brief, imap) == []
+
+
 # ── mesh consistency ──────────────────────────────────────────────────────────
 
 def test_mesh_site_consistency_flags_missing_site():
