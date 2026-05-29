@@ -309,6 +309,28 @@ def _resolve_model_name(callback_context: Any, llm_response: Any) -> str:
     return "unknown"
 
 
+async def _run_before_chain_then_stamp(before_chain, callback_context, llm_request):
+    """Run the existing before-model chain with its ORIGINAL semantics, then —
+    only if the chain didn't short-circuit — stamp a start time for latency.
+
+    Exceptions from ``before_chain`` are deliberately NOT caught: that chain hosts
+    request-mutating / safety work (the WAF sanitizer, SAM's InjectInstructions),
+    so a failure there must still abort the model call (fail-closed) rather than
+    be downgraded to a silent log. Only the telemetry stamp is best-effort
+    (``_safe_state_set`` never raises). Module-level so the fail-closed contract
+    is unit-testable independently of the agent-bootstrap closure."""
+    result = None
+    if before_chain is not None:
+        rv = before_chain(callback_context, llm_request)
+        if hasattr(rv, "__await__"):
+            rv = await rv
+        result = rv
+    if result is not None:
+        return result  # chain short-circuited → no model call to time
+    _safe_state_set(callback_context, "_sa_llm_start_t", time.monotonic())
+    return None
+
+
 def install() -> None:
     """Monkey-patch SAM's ``initialize_adk_agent`` to chain our telemetry
     recorder onto every agent built afterwards.
@@ -393,19 +415,8 @@ def install() -> None:
             before_chain = None
 
         async def with_start_stamp(callback_context, llm_request):
-            result = None
-            if before_chain is not None:
-                try:
-                    rv = before_chain(callback_context, llm_request)
-                    if hasattr(rv, "__await__"):
-                        rv = await rv
-                    result = rv
-                except Exception as e:
-                    log.debug("[SA telemetry] before_model chain raised (suppressed): %s", e)
-            if result is not None:
-                return result  # chain short-circuited → no model call to time
-            _safe_state_set(callback_context, "_sa_llm_start_t", time.monotonic())
-            return None
+            return await _run_before_chain_then_stamp(
+                before_chain, callback_context, llm_request)
 
         async def with_telemetry(callback_context, llm_response):
             # 1. Run SAM's chain first — preserves whatever response mutations

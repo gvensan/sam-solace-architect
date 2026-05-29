@@ -11,6 +11,10 @@ genuine turns from being suppressed.
 
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
 import solace_architect_core._sam_telemetry_patch as patch
 
 
@@ -116,3 +120,48 @@ def test_task_id_prefers_explicit_state():
 
 def test_task_id_none_when_nothing_available():
     assert patch._resolve_task_id(_Ctx()) is None
+
+
+# --- before-model fail-closed contract (latency stamp must not swallow the chain) ---
+
+
+def test_before_chain_exception_propagates_fail_closed():
+    """A raising before-model chain must NOT be swallowed by the latency stamp —
+    it propagates so the model call aborts. That chain hosts request-mutating /
+    safety work (WAF sanitizer, SAM's InjectInstructions); downgrading a failure
+    to a silent log would send an unguarded request to the model."""
+    ctx = _Ctx()
+
+    async def boom(cc, req):
+        raise RuntimeError("pre-model boom")
+
+    with pytest.raises(RuntimeError, match="pre-model boom"):
+        asyncio.run(patch._run_before_chain_then_stamp(boom, ctx, object()))
+    # Never reached the telemetry step, so no start-stamp was written.
+    assert "_sa_llm_start_t" not in ctx.state
+
+
+def test_before_chain_short_circuit_passed_through_without_stamp():
+    """If the chain short-circuits (returns a response), pass it through and skip
+    the timing stamp — there is no model call to time."""
+    ctx = _Ctx()
+    sentinel = object()
+
+    async def short_circuit(cc, req):
+        return sentinel
+
+    out = asyncio.run(patch._run_before_chain_then_stamp(short_circuit, ctx, object()))
+    assert out is sentinel
+    assert "_sa_llm_start_t" not in ctx.state
+
+
+def test_before_chain_ok_stamps_start_time():
+    """Normal path: chain returns None → stamp the start time and proceed."""
+    ctx = _Ctx()
+
+    async def ok(cc, req):
+        return None
+
+    out = asyncio.run(patch._run_before_chain_then_stamp(ok, ctx, object()))
+    assert out is None
+    assert isinstance(ctx.state.get("_sa_llm_start_t"), float)
