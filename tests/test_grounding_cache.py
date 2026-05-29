@@ -50,6 +50,25 @@ def _mock_urlopen(monkeypatch, body: str):
     yield calls
 
 
+# Bodies whose stripped text clears the content quality gate (A2): a real doc
+# page is well over the min-length floor and carries no error/login marker.
+_SERVICE_CLASSES_BODY = (
+    "<html><body><h1>Service classes doc</h1>"
+    "<p>Solace event broker services are offered in several service classes that "
+    "determine connection scaling, sustained message throughput, spool size, and "
+    "high availability. Choose a class from your expected client connection count "
+    "and sustained message rate; Developer, Enterprise, and Mega map to increasing "
+    "capacity envelopes.</p></body></html>"
+)
+_BROKER_CLASSES_BODY = (
+    "<p>Event broker service classes define the capacity envelope for a Solace "
+    "Cloud messaging service: maximum client connections, sustained and peak "
+    "message rates, queue and spool limits, and whether the service runs as a "
+    "high-availability triplet. Pick the smallest class that meets your sizing "
+    "inputs and scale up as throughput grows.</p>"
+)
+
+
 # --- disk-cache layer ------------------------------------------------------
 
 def test_disk_cache_put_then_get_roundtrip():
@@ -82,7 +101,7 @@ def test_disk_layer_disabled_when_ttl_zero(monkeypatch):
 
 def test_fetch_persists_and_second_run_skips_network(monkeypatch):
     url = "https://docs.solace.com/Cloud/service-classes.htm"
-    with _mock_urlopen(monkeypatch, "<html><body>Service classes doc</body></html>") as calls:
+    with _mock_urlopen(monkeypatch, _SERVICE_CLASSES_BODY) as calls:
         r1 = asyncio.run(gt.fetch_canonical_source(url))
         assert r1.ok and "Service classes doc" in r1.data["content"]
         assert calls["n"] == 1
@@ -100,7 +119,7 @@ def test_topic_fetch_promotes_and_load_grounding_serves_it(monkeypatch):
     # 'feature index' resolves to a docs.solace.com URL via canonical-sources.md
     # and isn't in the curated topic-map, so it exercises the promotion path.
     topic = "feature index"
-    with _mock_urlopen(monkeypatch, "<p>Event broker service classes</p>"):
+    with _mock_urlopen(monkeypatch, _BROKER_CLASSES_BODY):
         r = asyncio.run(gt.fetch_canonical_source(topic))
     assert r.ok
     # The topic-driven fetch should have promoted the content into the store…
@@ -109,6 +128,85 @@ def test_topic_fetch_promotes_and_load_grounding_serves_it(monkeypatch):
     # …so load_grounding now serves it locally instead of recording a gap.
     lg = asyncio.run(gt.load_grounding(topic))
     assert lg.ok and "Event broker service classes" in lg.data
+
+
+# --- fetched-content quality gate (A2) -------------------------------------
+
+def test_fetch_rejects_soft_404_and_does_not_poison_cache(monkeypatch):
+    url = "https://docs.solace.com/missing.htm"
+    body = (
+        "<html><body><h1>Page not found</h1>"
+        "<p>The page you requested could not be found. It may have been moved or "
+        "removed. Please check the URL and try again, or return to the Solace "
+        "documentation home to search for the topic you were looking for. If you "
+        "believe this is an error, contact your administrator for assistance.</p>"
+        "</body></html>"
+    )
+    with _mock_urlopen(monkeypatch, body):
+        r = asyncio.run(gt.fetch_canonical_source(url))
+    assert not r.ok and "rejected" in r.error
+    # A rejected fetch must NOT be persisted — a future run/project re-fetches.
+    gt._FETCH_CACHE.clear()
+    assert gt._disk_cache_get(url) is None
+
+
+def test_fetch_rejects_near_empty_content(monkeypatch):
+    url = "https://docs.solace.com/empty.htm"
+    with _mock_urlopen(monkeypatch, "<html><body>   </body></html>"):
+        r = asyncio.run(gt.fetch_canonical_source(url))
+    assert not r.ok and "too short" in r.error
+
+
+def test_fetch_revalidates_poisoned_disk_entry(monkeypatch):
+    # A doc cached BEFORE the quality gate existed (here: a soft-404 stub) must
+    # not be served from disk — the read-path re-gate drops it and a fresh,
+    # gated network fetch replaces it.
+    url = "https://docs.solace.com/Cloud/poisoned.htm"
+    gt._disk_cache_put(url, "Page not found")  # pre-patch garbage on disk
+    with _mock_urlopen(monkeypatch, _SERVICE_CLASSES_BODY) as calls:
+        r = asyncio.run(gt.fetch_canonical_source(url))
+    assert r.ok and "Service classes doc" in r.data["content"]
+    assert calls["n"] == 1, "poisoned disk entry was served instead of re-fetching"
+    # …and the disk entry has been overwritten with the good content.
+    assert "Service classes doc" in gt._disk_cache_get(url).data["content"]
+
+
+def test_load_grounding_rejects_poisoned_promoted_entry():
+    # A promoted entry that fails the quality gate must not be served as
+    # grounding; load_grounding falls through to the unknown-topic gap path.
+    topic = "totally-unknown-topic"
+    gt._promote_grounding(topic, "https://docs.solace.com/x.htm", "Access denied")
+    r = asyncio.run(gt.load_grounding(topic))
+    assert not r.ok and "unknown topic" in r.error
+
+
+def test_read_grounding_file_reflects_edit_changing_size(tmp_path, monkeypatch):
+    # Cache invalidation keys on (mtime_ns, size); a content edit that changes
+    # size must be reflected even if the coarse second-mtime were unchanged.
+    monkeypatch.setattr(gt, "_grounding_dir", lambda: tmp_path)
+    f = tmp_path / "probe.md"
+    f.write_text("alpha", encoding="utf-8")
+    assert gt._read_grounding_file("probe.md") == "alpha"  # populates cache
+    f.write_text("alpha-beta-gamma", encoding="utf-8")     # size changes
+    assert gt._read_grounding_file("probe.md") == "alpha-beta-gamma"
+
+
+# --- exact-heading-first section extraction (A3) ---------------------------
+
+def test_extract_section_prefers_exact_heading_over_substring():
+    md = (
+        "# Event Portal Designer\nwrong section\n\n"
+        "# Event Portal\nright section\n\n"
+        "# Next\ntail\n"
+    )
+    out = gt._extract_section(md, "Event Portal")
+    assert "right section" in out and "wrong section" not in out
+
+
+def test_extract_section_substring_fallback_when_no_exact():
+    md = "# Smart Topic Architecture\nbody text\n\n# Other\nx\n"
+    out = gt._extract_section(md, "Topic Architecture")  # substring only
+    assert "body text" in out
 
 
 def test_load_grounding_unpromoted_fallback_still_directs_to_fetch():

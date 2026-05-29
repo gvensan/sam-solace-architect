@@ -5,6 +5,7 @@ Local file reads + Integration Hub catalog query + runtime web fetch (allowliste
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -68,18 +69,67 @@ def _grounding_dir() -> Path:
     return Path(solace_architect_core.__file__).parent / "grounding"
 
 
+# In-process cache for the static grounding files. They are immutable within a
+# run, yet load_grounding / grounding_pack_for_scope / load_preamble re-read and
+# re-parse them on every call (every scope kickoff, every agent turn). Cache the
+# text keyed by (mtime_ns, size) so an editable-core edit (sa-local-refresh.sh)
+# is still picked up, but steady-state reads avoid the disk hit. Using
+# nanosecond mtime + size (not whole-second st_mtime) means two edits within the
+# same wall-clock second on a coarse-granularity filesystem can't alias to the
+# same key and serve stale content.
+_FILE_CACHE: dict[str, tuple[tuple[int, int], str]] = {}
+
+
+def _read_grounding_file(filename: str) -> Optional[str]:
+    """Read a grounding/ file with an (mtime_ns, size)-keyed in-process cache.
+
+    Returns None if the file does not exist. Re-reads transparently when the
+    file changes, so a local refresh is reflected without a restart."""
+    path = _grounding_dir() / filename
+    try:
+        st = path.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+    hit = _FILE_CACHE.get(filename)
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    _FILE_CACHE[filename] = (key, text)
+    return text
+
+
 def _extract_section(md_text: str, heading: str) -> str:
-    """Extract a section from Markdown by H1/H2 heading text (case-insensitive)."""
+    """Extract a section from Markdown by H1-H6 heading text.
+
+    Prefer an EXACT (case-insensitive, whitespace-trimmed) heading match; fall
+    back to the first substring match only when no heading matches exactly. A
+    pure-substring match silently returns the wrong / a narrower section when a
+    longer heading contains the needle (e.g. ``Event Portal`` vs ``Event Portal
+    Designer``), so exact-first removes a class of wrong-content bugs (A3)."""
     lines = md_text.splitlines()
-    start = -1
-    start_level = 0
+    target = heading.strip().lower()
+    exact_idx, exact_level = -1, 0
+    substr_idx, substr_level = -1, 0
     for i, ln in enumerate(lines):
         m = re.match(r"^(#{1,6})\s+(.+?)\s*$", ln)
-        if m and heading.lower() in m.group(2).lower():
-            start = i
-            start_level = len(m.group(1))
-            break
-    if start < 0:
+        if not m:
+            continue
+        htext = m.group(2).strip().lower()
+        level = len(m.group(1))
+        if htext == target:
+            exact_idx, exact_level = i, level
+            break  # exact wins — can't do better
+        if substr_idx < 0 and target in htext:
+            substr_idx, substr_level = i, level
+    if exact_idx >= 0:
+        start, start_level = exact_idx, exact_level
+    elif substr_idx >= 0:
+        start, start_level = substr_idx, substr_level
+    else:
         return ""
     end = len(lines)
     for i in range(start + 1, len(lines)):
@@ -109,9 +159,15 @@ async def load_grounding(topic: str) -> ToolResult:
         # this doc in the system store. Serve it directly — this is the round-trip
         # the agent would otherwise spend on a fetch tool call (and its consuming
         # turn). Survives across projects, so the second project never re-fetches.
-        promoted = _promoted_grounding_get(topic)
+        promoted = await asyncio.to_thread(_promoted_grounding_get, topic)
         if promoted is not None:
-            return ToolResult(ok=True, data=promoted)
+            # Re-gate on read: an entry promoted before the quality gate existed
+            # (or by an older format) could be a soft-404 / login wall. If it
+            # fails now, ignore it and fall through to the fetch directive / gap
+            # path below rather than serving it as authoritative grounding.
+            valid, _why = _looks_like_valid_doc(promoted)
+            if valid:
+                return ToolResult(ok=True, data=promoted)
         if topic in _KNOWN_FALLBACK_TOPICS:
             url = _KNOWN_FALLBACK_TOPICS[topic]
             return ToolResult(
@@ -126,12 +182,11 @@ async def load_grounding(topic: str) -> ToolResult:
         return ToolResult(ok=False, error=f"unknown topic {topic!r}; available: {available}")
 
     filename, heading = _TOPIC_MAP[topic]
-    path = _grounding_dir() / filename
-    if not path.exists():
+    text = _read_grounding_file(filename)
+    if text is None:
         await record_grounding_gap(topic=topic, reason=f"grounding file missing: {filename}", agent="load_grounding")
         return ToolResult(ok=False, error=f"grounding file not found: {filename}")
 
-    text = path.read_text(encoding="utf-8")
     if heading:
         extracted = _extract_section(text, heading)
         if not extracted:
@@ -143,10 +198,10 @@ async def load_grounding(topic: str) -> ToolResult:
 
 async def load_jargon_list() -> ToolResult:
     """Load grounding/jargon-list.json (used to gloss EDA/Solace terms on first use)."""
-    path = _grounding_dir() / "jargon-list.json"
-    if not path.exists():
+    text = _read_grounding_file("jargon-list.json")
+    if text is None:
         return ToolResult(ok=False, error="grounding/jargon-list.json not found")
-    return ToolResult(ok=True, data=json.loads(path.read_text(encoding="utf-8")))
+    return ToolResult(ok=True, data=json.loads(text))
 
 
 async def load_preamble() -> ToolResult:
@@ -154,19 +209,18 @@ async def load_preamble() -> ToolResult:
     discipline that every agent is bound by. Called once per agent session and prepended to
     the role-specific system prompt. Single source of truth (Decision 83); editing this file
     propagates the change to all agents without touching any agent's config.yaml."""
-    path = _grounding_dir() / "agent-preamble.md"
-    if not path.exists():
+    text = _read_grounding_file("agent-preamble.md")
+    if text is None:
         await record_grounding_gap(topic="agent-preamble", reason="agent-preamble.md missing", agent="load_preamble")
         return ToolResult(ok=False, error="grounding/agent-preamble.md not found")
-    return ToolResult(ok=True, data=path.read_text(encoding="utf-8"))
+    return ToolResult(ok=True, data=text)
 
 
 async def query_integration_hub(backend_system: str) -> ToolResult:
     """Search integration-hub-catalog.md for matches against ``backend_system``."""
-    path = _grounding_dir() / "integration-hub-catalog.md"
-    if not path.exists():
+    text = _read_grounding_file("integration-hub-catalog.md")
+    if text is None:
         return ToolResult(ok=False, error="grounding/integration-hub-catalog.md not found")
-    text = path.read_text(encoding="utf-8")
 
     # Simple match: case-insensitive substring of the system name in each row.
     needle = backend_system.lower()
@@ -308,12 +362,8 @@ def grounding_pack_for_scope(scope: str, max_chars: int = 4000) -> str:
     if not entry:
         return ""  # broker-select / migration / unknown → fetch-based, no curated section
     filename, heading = entry
-    try:
-        path = _grounding_dir() / filename
-        if not path.exists():
-            return ""
-        text = path.read_text(encoding="utf-8")
-    except OSError:
+    text = _read_grounding_file(filename)
+    if text is None:
         return ""
     section = (_extract_section(text, heading) if heading else text) or ""
     section = section.strip()
@@ -323,6 +373,56 @@ def grounding_pack_for_scope(scope: str, max_chars: int = 4000) -> str:
         section = section[:max_chars].rstrip() + \
             "\n…(excerpt — call load_grounding/fetch_canonical_source for the full reference)"
     return section
+
+
+# --- fetched-content quality gate (A2) -------------------------------------
+# docs.solace.com can answer HTTP 200 with a soft-404, a consent/login wall, or
+# a near-empty SPA shell. Caching or PROMOTING that as grounding would serve
+# garbage as authoritative for the whole TTL window (and load_grounding would
+# hand it to an agent before recording any gap). Gate the stripped text before
+# it is cached/promoted: reject near-empty bodies outright, and reject SHORT
+# bodies that carry an error/login marker — a real doc page is large, so a
+# marker inside a long page is almost certainly legitimate prose.
+_MIN_DOC_CHARS = 200
+_SHORT_DOC_CHARS = 2000
+_SOFT_FAIL_MARKERS = (
+    "page not found",
+    "404 error",
+    "could not be found",
+    "the page you requested",
+    "sign in to continue",
+    "please log in",
+    "log in to continue",
+    "access denied",
+)
+
+
+def _looks_like_valid_doc(content: str) -> tuple[bool, str]:
+    """Return ``(ok, reason)``; ``reason`` is non-empty only when ``ok`` is False."""
+    n = len(content)
+    if n < _MIN_DOC_CHARS:
+        return False, f"content too short ({n} chars)"
+    if n < _SHORT_DOC_CHARS:
+        low = content.lower()
+        for marker in _SOFT_FAIL_MARKERS:
+            if marker in low:
+                return False, f"looks like an error/login page (matched {marker!r})"
+    return True, ""
+
+
+def _http_get_text(url: str, timeout: int) -> str:
+    """Blocking fetch + crude HTML→text strip. Runs in a worker thread (via
+    asyncio.to_thread in fetch_canonical_source) so it never freezes the event
+    loop for up to ``timeout`` seconds."""
+    req = urllib.request.Request(url, headers={"User-Agent": "solace-architect-core/0.1"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+    # Strip HTML to text crudely (Phase 1 — replace with a proper parser later)
+    text = re.sub(r"<script.*?</script>", "", body, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<style.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:50000]
 
 
 @coerce_args
@@ -348,10 +448,9 @@ async def fetch_canonical_source(url_or_topic: str, timeout: int = 30) -> ToolRe
     topic_in = None if url_or_topic.startswith(("http://", "https://")) else url_or_topic
     # If it doesn't look like a URL, look up in canonical-sources.md by header text.
     if not url.startswith(("http://", "https://")):
-        path = _grounding_dir() / "solace-canonical-sources.md"
-        if not path.exists():
+        text = _read_grounding_file("solace-canonical-sources.md")
+        if text is None:
             return ToolResult(ok=False, error="solace-canonical-sources.md missing")
-        text = path.read_text(encoding="utf-8")
         # Find first URL on a line that mentions the topic text
         for ln in text.splitlines():
             if url_or_topic.lower() in ln.lower():
@@ -381,29 +480,38 @@ async def fetch_canonical_source(url_or_topic: str, timeout: int = 30) -> ToolRe
     # Persistent disk layer (successes only): survives restarts and is shared
     # across users/projects, so the same stable doc is pulled from the network
     # at most once per TTL window regardless of how many runs need it.
-    disk = _disk_cache_get(url)
+    disk = await asyncio.to_thread(_disk_cache_get, url)
     if disk is not None:
-        _FETCH_CACHE[url] = (now, disk)  # warm the in-process layer
-        if topic_in:
-            _promote_grounding(topic_in, url, (disk.data or {}).get("content", ""))
-        return disk
+        disk_content = (disk.data or {}).get("content", "")
+        # Re-gate on read: a doc cached before the quality gate existed could be
+        # a soft-404 / login wall / empty shell. If it still fails the gate, do
+        # NOT serve or re-promote it — fall through to a fresh, gated fetch
+        # (which overwrites the bad disk entry on success).
+        valid, _why = _looks_like_valid_doc(disk_content)
+        if valid:
+            _FETCH_CACHE[url] = (now, disk)  # warm the in-process layer
+            if topic_in:
+                await asyncio.to_thread(_promote_grounding, topic_in, url, disk_content)
+            return disk
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "solace-architect-core/0.1"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-        # Strip HTML to text crudely (Phase 1 — replace with a proper parser later)
-        text = re.sub(r"<script.*?</script>", "", body, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<style.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<[^>]+>", " ", text)
-        text = re.sub(r"\s+", " ", text).strip()
-        content = text[:50000]
-        result = ToolResult(ok=True, data={"url": url, "content": content})
-        # Persist for cross-process / cross-project reuse, and promote a
-        # topic-driven fetch so load_grounding can serve it locally next time.
-        _disk_cache_put(url, content)
-        if topic_in:
-            _promote_grounding(topic_in, url, content)
+        # Blocking network + HTML strip runs in a worker thread so the asyncio
+        # event loop (and every other agent turn on it) is not frozen for up to
+        # `timeout` seconds (P1).
+        content = await asyncio.to_thread(_http_get_text, url, timeout)
+        # Quality gate: never cache/promote a soft-404, login wall, or empty
+        # shell as authoritative grounding (A2).
+        valid, why = _looks_like_valid_doc(content)
+        if not valid:
+            await record_grounding_gap(topic=url_or_topic, reason=f"fetched content rejected: {why}", agent="fetch_canonical_source")
+            result = ToolResult(ok=False, error=f"fetched content from {url} rejected: {why}")
+        else:
+            result = ToolResult(ok=True, data={"url": url, "content": content})
+            # Persist for cross-process / cross-project reuse, and promote a
+            # topic-driven fetch so load_grounding can serve it locally next time.
+            await asyncio.to_thread(_disk_cache_put, url, content)
+            if topic_in:
+                await asyncio.to_thread(_promote_grounding, topic_in, url, content)
     except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
         await record_grounding_gap(topic=url_or_topic, reason=f"fetch failed: {e}", agent="fetch_canonical_source")
         result = ToolResult(ok=False, error=f"fetch failed: {e}")
@@ -446,10 +554,9 @@ async def record_grounding_gap(*, topic: str, reason: str, agent: str, suggested
 
 async def check_canonical_urls() -> ToolResult:
     """CI-only: HEAD/GET every URL in solace-canonical-sources.md. Phase 1: skeleton."""
-    path = _grounding_dir() / "solace-canonical-sources.md"
-    if not path.exists():
+    text = _read_grounding_file("solace-canonical-sources.md")
+    if text is None:
         return ToolResult(ok=False, error="solace-canonical-sources.md missing")
-    text = path.read_text(encoding="utf-8")
     urls = sorted(set(re.findall(r"https?://[\w.\-/?=&#%+]+", text)))
     return ToolResult(ok=True, data={"url_count": len(urls), "urls": urls,
                                      "note": "Phase 1 skeleton — actual HEAD/GET probe in Phase 6 hardening"})
