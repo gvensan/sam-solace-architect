@@ -262,6 +262,16 @@ apps:
 
         4. After all 4 return (or were guarded as already-complete):
            `read_findings(engagement_id="<engagement-id>")`.
+        4b. NARRATIVE VERIFY + RECOVER — a reviewer's findings can land while its
+           narrative `write_artifact` is lost to the same transient stall. Call
+           `list_artifacts(engagement_id="<engagement-id>")` and, for each dimension
+           (architect, developer, ops, security) whose `source_agent` HAS findings but
+           whose `reviews/<dimension>-review.md` is MISSING, call
+           `backfill_review_narrative(engagement_id="<engagement-id>", dimension="<dimension>")`.
+           That rebuilds the narrative deterministically from the recorded findings — do
+           NOT re-dispatch the reviewer to fix a missing narrative (it already ran;
+           re-running just duplicates findings). backfill is a no-op when the narrative
+           is already present, so it is always safe to call for all four.
         5. `write_artifact(engagement_id="<engagement-id>",
            filename="reviews/review-summary.md", content=...)`. Include severity
            counts, per-source-agent counts, top 5-7 concerns, pointers to per-reviewer
@@ -405,6 +415,9 @@ apps:
         - tool_type: python
           component_module: "solace_architect_core.tools.artifact_tools"
           function_name: "list_artifacts"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.review_tools"
+          function_name: "backfill_review_narrative"
         # PeerAgentTool removed: not a registered builtin — the framework
         # auto-instantiates a PeerAgentTool per peer agent based on
         # inter_agent_communication.allow_list above. Listing it here as a

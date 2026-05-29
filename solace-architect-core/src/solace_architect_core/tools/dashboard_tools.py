@@ -200,12 +200,30 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
             })
         return out
 
-    review_reviewers = _checklist_from_artifacts([
-        ("architect",  "reviews/architect-review.md"),
-        ("developer",  "reviews/developer-review.md"),
-        ("ops",        "reviews/ops-review.md"),
-        ("security",   "reviews/security-review.md"),
-    ])
+    # Per-reviewer "done" derives from the AUTHORITATIVE signal — whether the
+    # reviewer recorded any finding (source_agent in findings.yaml) — with the
+    # narrative artifact (reviews/<id>-review.md) as a fallback. The narrative
+    # is a secondary write_artifact call that can drop (gateway flakiness)
+    # even though the reviewer fully ran and recorded findings; keying the dot
+    # solely off .md presence under-reported reviewers as pending while the
+    # orchestrator had correctly marked the review step DONE off all 4 returns.
+    _REVIEWER_AGENT = {
+        "architect": "SAArchitectReviewerAgent",
+        "developer": "SADeveloperReviewerAgent",
+        "ops":       "SAOpsReviewerAgent",
+        "security":  "SASecurityReviewerAgent",
+    }
+    _finding_agents = {f.get("source_agent") for f in findings}
+    review_reviewers = [
+        {
+            "id": rid,
+            "status": "done" if (
+                f"reviews/{rid}-review.md" in artifacts_for_checklists
+                or _REVIEWER_AGENT[rid] in _finding_agents
+            ) else "pending",
+        }
+        for rid in ("architect", "developer", "ops", "security")
+    ]
 
     # Event Portal: 3-stage pipeline (plan → live provisioning → AsyncAPI).
     # "asyncapi" stage is "done" when at least one spec exists under the

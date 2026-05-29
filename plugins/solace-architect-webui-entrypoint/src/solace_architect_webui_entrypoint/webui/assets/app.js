@@ -1432,16 +1432,15 @@
 
   // Sub-progress strip for any multi-step lifecycle tile (Design scopes, Review
   // reviewers, Event Portal stages, Blueprint sections). One CSS-styled circle
-  // per step; the "N/M" count gives a quick "how far along" signal without
-  // parsing the dots. `items` is the stats step list ([{id|scope, status}]).
-  // Returns "" for phases with fewer than two applicable steps so callers can
-  // splice it in unconditionally. Done Design dots deep-link to their artifacts.
+  // per step; the dots' fill/ring/hollow states carry the "how far along"
+  // signal on their own, so no numeric "N/M" count is shown. `items` is the
+  // stats step list ([{id|scope, status}]). Returns "" for phases with fewer
+  // than two applicable steps so callers can splice it in unconditionally.
+  // Done Design dots deep-link to their artifacts.
   function _renderPhaseDotStrip(items, eid, phase) {
     if (!Array.isArray(items)) return "";
     const applicable = items.filter(it => (it.status || "pending") !== "skipped");
     if (applicable.length < 2) return "";
-    const total = applicable.length;
-    const doneN = applicable.filter(it => it.status === "done").length;
     const dots = items.map(it => {
       const status = it.status || "pending";
       const state = _DOT_STATE[status] || "pending";
@@ -1455,7 +1454,6 @@
     }).join("");
     return `
       <div class="phase-dot-strip">
-        <span class="phase-dot-count">${doneN}/${total}</span>
         <span class="phase-dots">${dots}</span>
       </div>`;
   }

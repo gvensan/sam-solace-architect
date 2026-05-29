@@ -919,12 +919,16 @@ pre {
    always present (not just for the un-started case) and supports
    multiple variants and action buttons. */
 .progress-cta {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 24px;
+  /* Vertical stack: body → actions → secondary. A row layout floated the
+     short button group vertically-centered next to a tall body (long text +
+     blocker list), leaving large empty gaps; stacking reads cleanly for every
+     state (short in-progress card or long done-with-blockers card). */
+  display: flex; flex-direction: column; align-items: stretch; gap: 14px;
   margin: 16px 0 20px; padding: 18px 22px;
   background: linear-gradient(135deg, rgba(0,200,149,0.08), rgba(9,59,95,0.04));
   border: 1px solid var(--accent); border-radius: 10px;
 }
-.progress-cta-body { flex: 1; min-width: 0; }
+.progress-cta-body { min-width: 0; }
 
 /* Design-scope status list (only rendered inside the
    "Design in progress" CTA card). Fixed-height scrollable area with
@@ -1024,8 +1028,8 @@ pre {
   margin: 6px 0 0;
   letter-spacing: 0.02em;
 }
-.progress-cta-actions { flex-shrink: 0; }
-.progress-cta-actions-row { display: flex; gap: 8px; }
+.progress-cta-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.progress-cta-actions-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .progress-cta-actions .cta-btn { font-size: 14px; padding: 8px 14px; cursor: pointer; }
 .progress-cta-actions .cta-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 /* While a chat task is in flight, gate the progress-CTA action buttons
@@ -1357,10 +1361,6 @@ body[data-inflight="1"] .progress-cta-actions-row a.cta-btn {
 .phase-dot-strip {
   display: flex; align-items: center; gap: 6px; margin-top: 4px;
   font-size: 10px;
-}
-.phase-dot-count {
-  font-family: 'Space Mono', monospace; color: var(--muted, #888);
-  font-weight: 600;
 }
 .phase-dots { display: inline-flex; align-items: center; gap: 4px; line-height: 1; }
 .phase-dot {
