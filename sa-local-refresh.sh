@@ -66,17 +66,21 @@ usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^#\{0,1\} \{0,1\}//'; }
 # ── parse args ─────────────────────────────────────────────────────────────
 normalize() { case "$1" in solace-architect-*) echo "$1" ;; *) echo "solace-architect-$1" ;; esac; }
 
-editable=0
+# Editable is the DEFAULT for local dev: a force-reinstalled copy silently lags
+# the source tree, which has masqueraded as cryptic ImportErrors / phantom test
+# failures. Pass --copy for the (rare) prod-parity force-reinstall.
+editable=1
 skip_add=0
 selected=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    -e|--editable) editable=1; shift ;;
-    --skip-add)    skip_add=1; shift ;;
-    --plugin)      selected+=( "$(normalize "$2")" ); shift 2 ;;
-    -h|--help)     usage; exit 0 ;;
-    -*)            echo "Unknown flag: $1" >&2; usage; exit 1 ;;
-    *)             selected+=( "$(normalize "$1")" ); shift ;;
+    -e|--editable)        editable=1; shift ;;
+    --copy|--no-editable) editable=0; shift ;;
+    --skip-add)           skip_add=1; shift ;;
+    --plugin)             selected+=( "$(normalize "$2")" ); shift 2 ;;
+    -h|--help)            usage; exit 0 ;;
+    -*)                   echo "Unknown flag: $1" >&2; usage; exit 1 ;;
+    *)                    selected+=( "$(normalize "$1")" ); shift ;;
   esac
 done
 [ ${#selected[@]} -gt 0 ] || selected=( "${ALL_PLUGINS[@]}" )
