@@ -102,3 +102,71 @@ def test_backfill_no_findings_fails(_eng):
 def test_backfill_unknown_dimension_fails(_eng):
     res = asyncio.run(rt.backfill_review_narrative(_eng, "marketing"))
     assert not res.ok and "unknown dimension" in res.error
+
+
+# ---------- reconcile_reviewer_failure_open_items ----------
+
+def _failure_item(qid, reviewer_agent, status="open"):
+    return {"id": qid, "severity": "advisory", "source": "review",
+            "description": f"{reviewer_agent} failed operationally during Review "
+                           f"phase: peer dispatch timed out after 60 seconds. Retry recommended.",
+            "affecting_step": None, "status": status,
+            "source_agent": "SAOrchestratorAgent", "resolution_note": None}
+
+
+def test_reconcile_resolves_failure_items_for_completed_reviewers(_eng):
+    from solace_architect_core._storage import read_yaml
+    write_yaml(_eng, "meta/open-items.yaml", {"open_items": [
+        _failure_item("Q6", "SAArchitectReviewerAgent"),
+        _failure_item("Q7", "SADeveloperReviewerAgent"),
+    ]})
+    # Only architect actually finished — findings recorded AND the narrative
+    # artifact present (either originally written or backfilled). Developer
+    # never produced any findings.
+    _write_findings(_eng, _finding("F1", "SAArchitectReviewerAgent"))
+    write_text(_eng, "reviews/architect-review.md", "# Architecture Review\n…\n")
+    res = asyncio.run(rt.reconcile_reviewer_failure_open_items(_eng))
+    assert res.ok and res.data["resolved"] == 1 and res.data["resolved_ids"] == ["Q6"]
+    items = {i["id"]: i for i in read_yaml(_eng, "meta/open-items.yaml")["open_items"]}
+    assert items["Q6"]["status"] == "resolved"
+    assert "Auto-resolved" in items["Q6"]["resolution_note"]
+    assert "architect-review.md" in items["Q6"]["resolution_note"]
+    assert items["Q7"]["status"] == "open"  # no developer findings → kept
+
+
+def test_reconcile_keeps_retry_open_when_findings_present_but_narrative_absent(_eng):
+    """Partial-progress safety: a reviewer that recorded ≥1 finding but never
+    produced its reviews/<dim>-review.md (e.g. timed out mid-stream after one
+    finding) must NOT have its 'failed operationally' retry breadcrumb cleared
+    — that would silently mark an incomplete audit as recovered. The reviewer
+    workflow records findings (step 5) BEFORE writing the .md (step 6), so
+    findings-alone is a partial-progress signal, not a completion signal."""
+    from solace_architect_core._storage import read_yaml
+    write_yaml(_eng, "meta/open-items.yaml", {"open_items": [
+        _failure_item("Q9", "SAArchitectReviewerAgent"),
+    ]})
+    # One finding recorded — reviewer started — but no reviews/architect-review.md
+    # exists (the partial-progress case).
+    _write_findings(_eng, _finding("F1", "SAArchitectReviewerAgent"))
+    res = asyncio.run(rt.reconcile_reviewer_failure_open_items(_eng))
+    assert res.ok and res.data["resolved"] == 0
+    items = {i["id"]: i for i in read_yaml(_eng, "meta/open-items.yaml")["open_items"]}
+    assert items["Q9"]["status"] == "open"
+
+
+def test_reconcile_ignores_non_failure_and_closed_items(_eng):
+    write_yaml(_eng, "meta/open-items.yaml", {"open_items": [
+        {"id": "Q3", "status": "open", "severity": "advisory",
+         "description": "Legacy IBM MQ integration scope unclear.",
+         "source_agent": "SADiscoveryAgent"},
+        _failure_item("Q8", "SAOpsReviewerAgent", status="superseded"),
+    ]})
+    _write_findings(_eng, _finding("F1", "SAOpsReviewerAgent"))
+    res = asyncio.run(rt.reconcile_reviewer_failure_open_items(_eng))
+    # Q3 isn't an operational-failure item; Q8 isn't open → nothing resolved.
+    assert res.ok and res.data["resolved"] == 0
+
+
+def test_reconcile_safe_when_no_open_items(_eng):
+    res = asyncio.run(rt.reconcile_reviewer_failure_open_items(_eng))
+    assert res.ok and res.data["resolved"] == 0

@@ -154,6 +154,77 @@ async def backfill_review_narrative(engagement_id: str, dimension: str,
         return ToolResult(ok=False, error=f"backfill_review_narrative failed: {e}")
 
 
+# Reviewer agent names — used to match the orchestrator's operational
+# "<Reviewer> failed operationally during Review phase … Retry recommended"
+# open-items against the reviewer that (later) actually succeeded.
+_REVIEWER_AGENTS = {agent for (agent, _t, _p) in _DIMENSION_AGENT.values()}
+_AGENT_TO_DIMENSION = {agent: dim for dim, (agent, _t, _p) in _DIMENSION_AGENT.items()}
+
+
+@coerce_args
+async def reconcile_reviewer_failure_open_items(engagement_id: str,
+                                                user_id: Optional[str] = None,
+                                                tool_context: Any = None) -> ToolResult:
+    """Resolve stale operational "<Reviewer> failed operationally … Retry
+    recommended" open-items once that reviewer has actually recorded findings.
+
+    When a reviewer's peer dispatch times out, SAOrchestratorAgent records an
+    ADVISORY operational open-item as a breadcrumb. If the reviewer is later
+    retried and succeeds (records findings + narrative), nothing closes that
+    breadcrumb — it lingers as a stale "open" item that misrepresents the
+    engagement (e.g. all four reviewers show "Retry recommended" while
+    findings.yaml proves all four ran). This deterministically resolves any such
+    item whose named reviewer now has findings. Safe + idempotent: only touches
+    items that (a) are still open, (b) carry the operational-failure marker, and
+    (c) name a reviewer present in findings; returns resolved=0 when nothing
+    matches.
+    """
+    from .._storage import read_yaml, write_yaml, safe_read_yaml, safe_artifact_path
+    from .._user_context import resolve_user_id as _resolve_user_id, scoped_user as _scoped_user
+
+    try:
+        with _scoped_user(_resolve_user_id(user_id, tool_context)):
+            findings = safe_read_yaml(engagement_id, "meta/findings.yaml",
+                                      default={"findings": []})["findings"]
+            finding_agents = {f.get("source_agent") for f in findings}
+            data = read_yaml(engagement_id, "meta/open-items.yaml",
+                             default={"open_items": []})
+            resolved = []
+            for it in data.get("open_items", []):
+                if it.get("status") != "open":
+                    continue
+                desc = (it.get("description") or "").lower()
+                if "failed operationally" not in desc:
+                    continue
+                named = next((a for a in _REVIEWER_AGENTS if a.lower() in desc), None)
+                if not (named and named in finding_agents):
+                    continue
+                # Require the reviewer's canonical narrative artifact before
+                # clearing the operational-retry breadcrumb. findings.yaml alone
+                # is a partial-progress signal: reviewers record findings
+                # (step 5) BEFORE writing reviews/<dim>-review.md (step 6), so a
+                # single finding from a mid-stream timeout would otherwise
+                # silently mark an incomplete audit as recovered.
+                # backfill_review_narrative writes this .md from findings when
+                # completion is genuine, so its presence here — original OR
+                # backfilled — is the durable completion signal.
+                dim = _AGENT_TO_DIMENSION.get(named)
+                if not dim or not safe_artifact_path(
+                        engagement_id, f"reviews/{dim}-review.md").exists():
+                    continue
+                it["status"] = "resolved"
+                it["resolution_note"] = (
+                    f"Auto-resolved: {named} produced reviews/{dim}-review.md "
+                    f"with findings recorded; operational retry no longer needed.")
+                resolved.append(it.get("id"))
+            if resolved:
+                write_yaml(engagement_id, "meta/open-items.yaml", data)
+        return ToolResult(ok=True, data={"resolved": len(resolved),
+                                         "resolved_ids": resolved})
+    except Exception as e:
+        return ToolResult(ok=False, error=f"reconcile_reviewer_failure_open_items failed: {e}")
+
+
 @coerce_args
 async def get_review_pack(engagement_id: str, dimension: str = "all",
                           user_id: Optional[str] = None,
