@@ -272,6 +272,12 @@ apps:
            NOT re-dispatch the reviewer to fix a missing narrative (it already ran;
            re-running just duplicates findings). backfill is a no-op when the narrative
            is already present, so it is always safe to call for all four.
+           Then call `reconcile_reviewer_failure_open_items(engagement_id="<engagement-id>")`
+           ONCE. If any reviewer that failed earlier in this phase (you recorded a
+           "<Reviewer> failed operationally … Retry recommended" advisory open-item) has
+           since succeeded and recorded findings, this resolves that now-stale breadcrumb
+           so completed reviewers don't keep showing a retry flag. Idempotent — resolves 0
+           when none apply, so it is always safe to call.
         5. `write_artifact(engagement_id="<engagement-id>",
            filename="reviews/review-summary.md", content=...)`. Include severity
            counts, per-source-agent counts, top 5-7 concerns, pointers to per-reviewer
@@ -418,6 +424,9 @@ apps:
         - tool_type: python
           component_module: "solace_architect_core.tools.review_tools"
           function_name: "backfill_review_narrative"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.review_tools"
+          function_name: "reconcile_reviewer_failure_open_items"
         # PeerAgentTool removed: not a registered builtin — the framework
         # auto-instantiates a PeerAgentTool per peer agent based on
         # inter_agent_communication.allow_list above. Listing it here as a
