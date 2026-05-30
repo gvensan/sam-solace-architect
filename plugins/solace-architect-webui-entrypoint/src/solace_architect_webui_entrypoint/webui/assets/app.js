@@ -795,9 +795,15 @@
         // SAValidationAgent with affecting_step="blueprint". When any are
         // open, Start Blueprint must be disabled. Without this gate, the
         // user can bypass validation guardrails on a DONE_WITH_CONCERNS
-        // verdict.
+        // verdict. Must filter on severity too: an ADVISORY item can also
+        // carry affecting_step="blueprint" (e.g. Q15 "integration coverage
+        // could not be verified — not treated as a blocker"); without the
+        // severity check it would falsely gate the next phase and contradict
+        // the backend's severity-aware open_items_blocking count.
         const blueprintBlockers = Array.isArray(openItems)
-          ? openItems.filter(i => i?.affecting_step === "blueprint" && i?.status === "open")
+          ? openItems.filter(i => i?.affecting_step === "blueprint"
+                                  && i?.status === "open"
+                                  && i?.severity === "blocking")
           : [];
 
         // One contextual CTA, always shown — content depends on lifecycle state.
@@ -2443,6 +2449,9 @@
         "clear the Event Portal entry in <code>meta/engagement-status.yaml</code>",
       ],
       cascadeNote: "Blueprint output is <strong>also wiped</strong>. The design-time <code>event-portal/event-portal-model.yaml</code> is preserved (it's a Design output, not a provisioning output).",
+      // Surfaced as a distinct warning in the confirm modal — Restart only
+      // wipes the LOCAL provisioning record; the live tenant is not touched.
+      liveTenantNote: "⚠️ <strong>The live Solace Cloud Event Portal tenant is not wiped.</strong> Domains, schemas, events, applications, and AsyncAPI exports created by previous runs <strong>remain in the tenant</strong>. On a re-run the agent is idempotent (reuses by name; won't duplicate), but it never deletes — so any orphaned or wrong objects must be cleaned up manually in EP Designer.",
       cascadeSteps: ["event-portal", "blueprint"],
     },
     "blueprint": {
@@ -2473,10 +2482,13 @@
           ${copy.bullets.map(b => `<li>${b}</li>`).join("")}
         </ul>
         <p>${copy.cascadeNote}</p>
+        ${copy.liveTenantNote ? `<p style="margin-top: 8px; padding: 8px 10px; background: rgba(217,83,79,0.08); border-left: 3px solid #d9534f; border-radius: 3px; font-size: 13px;">${copy.liveTenantNote}</p>` : ""}
         <p style="margin-top: 8px;">Earlier phases (intake, discovery, design, and any phases before
         ${escapeHtml(label)}) are <strong>not</strong> touched. Phase-authored decisions
         from ${escapeHtml(label)} and any cascaded phases are <strong>dropped</strong>;
-        orchestrator flow decisions are preserved.</p>
+        orchestrator flow decisions are preserved. Chat history for this
+        engagement is also <strong>cleared</strong> (it would otherwise reference
+        wiped findings/artifacts).</p>
         <p style="margin-top: 12px;">Type the project id <code>${escapeHtml(eid)}</code> to confirm:</p>
         <input id="${inputId}" type="text" autocomplete="off"
                style="width: 100%; padding: 8px 10px; font-family: 'Space Mono', monospace;

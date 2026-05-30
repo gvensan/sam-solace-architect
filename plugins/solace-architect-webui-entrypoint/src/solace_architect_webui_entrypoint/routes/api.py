@@ -33,6 +33,9 @@ from solace_architect_core.orchestrator import blueprint_render as _blueprint_re
 
 import asyncio
 import logging as _logging
+import os
+import re
+from pathlib import Path
 
 # Module logger for Design-orchestration diagnostics (which kickoff was built /
 # what action was decided). Lands in sa_logs/solace_architect_webui_entrypoint.log.
@@ -768,6 +771,39 @@ async def _unlink_category(engagement_id: str, category: str) -> list:
     return removed
 
 
+def _clear_engagement_chat_history(engagement_id: str) -> int:
+    """Delete the engagement's SSE replay buffer files (the per-session chat
+    history persisted under ``__system__/sse_replay/``).
+
+    Restart wipes derived state (artifacts, findings, decisions, telemetry); the
+    chat thread would otherwise reference findings/artifacts that no longer
+    exist, which is confusing. Per-engagement only — other engagements' chats
+    are untouched. Returns the count removed.
+
+    Anchored regex prevents the prefix-collision trap: ``supply-chain-tracking``
+    must NOT match files whose engagement is ``supply-chain-tracking-copy``. The
+    session-id format is ``chat-<eid>-<tab_id>`` and tab_ids are single
+    hyphen-free segments, so ``[^-]+\\.json$`` distinguishes them safely.
+    """
+    removed = 0
+    try:
+        root = Path(os.environ.get("SA_STORAGE_ROOT", "./sa-artifacts")).resolve()
+        replay_dir = root / "__system__" / "sse_replay"
+        if not replay_dir.exists():
+            return 0
+        pat = re.compile(rf"^chat-{re.escape(engagement_id)}-[^-]+\.json$")
+        for p in replay_dir.iterdir():
+            if p.is_file() and pat.match(p.name):
+                try:
+                    p.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return removed
+
+
 async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
     """Cascade-wipe every lifecycle phase strictly AFTER ``after_step``.
 
@@ -795,6 +831,10 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
     # of the cascaded phases — single pass for each file so we rewrite once.
     decisions_cleared = await _drop_decisions_for_phases(engagement_id, set(to_wipe))
     telemetry_rows_cleared = await _drop_telemetry_for_phases(engagement_id, set(to_wipe))
+    # Chat history (the engagement's SSE replay files) references state we're
+    # about to wipe — clear it so the thread doesn't stale-reference removed
+    # findings/artifacts. Per-engagement only; other engagements untouched.
+    chat_files_removed = _clear_engagement_chat_history(engagement_id)
 
     if "design" in to_wipe:
         for scope in _DESIGN_FOLDERS:
@@ -889,6 +929,7 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
         "cascaded_open_items_superseded": superseded,
         "cascaded_decisions_cleared": decisions_cleared,
         "cascaded_telemetry_rows_cleared": telemetry_rows_cleared,
+        "cascaded_chat_files_removed": chat_files_removed,
     }
 
 

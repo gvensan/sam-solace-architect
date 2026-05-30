@@ -60,6 +60,21 @@ def test_app_js_persists_layout_state_in_localstorage():
         assert key in js, f"missing localStorage key {key!r}"
 
 
+def test_app_js_phase_gate_filters_blockers_by_severity():
+    """The Validation→EventPortal/Blueprint gate must only treat severity=blocking
+    open-items as blockers. An advisory item with affecting_step="blueprint" (e.g.
+    Q15 "integration coverage could not be verified — not treated as a blocker")
+    must NOT disable the next phase. Regression guard for the false-gate bug where
+    blueprintBlockers filtered on affecting_step + status only."""
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    idx = js.find("const blueprintBlockers")
+    assert idx != -1, "blueprintBlockers gate not found"
+    snippet = js[idx:idx + 320]
+    assert 'severity === "blocking"' in snippet, (
+        "blueprintBlockers must filter on severity === 'blocking' so advisory "
+        "open-items can't false-gate the next phase")
+
+
 def test_intake_form_has_required_action_buttons():
     """V1-ported intake has Save draft, Download Markdown/YAML, Submit to architect."""
     html = (PKG_ROOT / "webui" / "intake" / "index.html").read_text()
@@ -438,3 +453,15 @@ def test_dot_strip_and_restart_hidden_for_not_yet_started_phase():
     # Restart is gated on phaseStarted for the active case.
     assert "const phaseStarted = (id) =>" in js
     assert "isDone || isNeedsCtx || (isActive && phaseStarted(s.id))" in js
+
+
+def test_event_portal_restart_warns_about_live_tenant():
+    """EP Restart only wipes LOCAL state; the live Solace Cloud tenant is not
+    touched. The confirm modal must surface this so a user doesn't think Restart
+    rolled back the live writes — orphaned objects can only be cleaned in EP
+    Designer."""
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    assert "liveTenantNote" in js
+    assert "live Solace Cloud Event Portal tenant is not wiped" in js
+    # The modal renders the warning when present (conditional paragraph).
+    assert "${copy.liveTenantNote" in js

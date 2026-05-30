@@ -758,6 +758,29 @@ from solace_architect_webui_entrypoint.routes.api import (
 )
 
 
+def test_reset_clears_engagement_chat_history_anchored_no_prefix_collision(tmp_path):
+    """A Restart wipes the engagement's SSE replay files (chat history) so the
+    thread doesn't stale-reference findings/artifacts that no longer exist.
+    Critical: the engagement-id prefix-collision trap — 'supply-chain-tracking'
+    must NOT match files belonging to 'supply-chain-tracking-copy'."""
+    from solace_architect_webui_entrypoint.routes.api import _clear_engagement_chat_history
+    sse = tmp_path / "artifacts" / "__system__" / "sse_replay"
+    sse.mkdir(parents=True)
+    # Target engagement's chats (single hyphen-free tab_id at the end).
+    (sse / "chat-supply-chain-tracking-cf037e1d.json").write_text("{}")
+    (sse / "chat-supply-chain-tracking-1779.json").write_text("{}")
+    # Prefix-colliding engagement — must NOT be wiped.
+    (sse / "chat-supply-chain-tracking-copy-XYZ.json").write_text("{}")
+    # Unrelated engagement.
+    (sse / "chat-neo-supply-chain-tracking-abc.json").write_text("{}")
+    removed = _clear_engagement_chat_history("supply-chain-tracking")
+    assert removed == 2
+    assert not (sse / "chat-supply-chain-tracking-cf037e1d.json").exists()
+    assert not (sse / "chat-supply-chain-tracking-1779.json").exists()
+    assert (sse / "chat-supply-chain-tracking-copy-XYZ.json").exists()
+    assert (sse / "chat-neo-supply-chain-tracking-abc.json").exists()
+
+
 def test_validation_findings_block_splits_authoritative_from_candidates():
     """Mechanical findings render under AUTHORITATIVE (record verbatim); judgment
     findings (confirm=True) render under CANDIDATES with confirm-before-block
