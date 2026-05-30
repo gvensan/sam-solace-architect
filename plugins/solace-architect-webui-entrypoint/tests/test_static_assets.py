@@ -425,3 +425,16 @@ def test_phase_dot_strip_uniform_circles_for_all_multistep_phases():
     css = (PKG_ROOT / "webui" / "assets" / "styles.css").read_text()
     for state in (".phase-dot.done", ".phase-dot.active", ".phase-dot.skipped"):
         assert state in css, f"missing dot state style: {state!r}"
+
+
+def test_dot_strip_and_restart_hidden_for_not_yet_started_phase():
+    """An 'active because it's NEXT' tile (e.g. Event Portal sitting on top of a
+    freshly-finished Validation, all stages pending) must NOT show a row of empty
+    circles that reads as 'done but broken', and must NOT offer Restart on a
+    phase that has produced no output — those gaps were the readability bug."""
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    # Dot strip hides when every step is still pending.
+    assert 'applicable.some(it => (it.status || "pending") !== "pending")' in js
+    # Restart is gated on phaseStarted for the active case.
+    assert "const phaseStarted = (id) =>" in js
+    assert "isDone || isNeedsCtx || (isActive && phaseStarted(s.id))" in js

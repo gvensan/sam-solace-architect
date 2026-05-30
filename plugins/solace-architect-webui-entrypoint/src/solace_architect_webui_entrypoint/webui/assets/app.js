@@ -1352,6 +1352,18 @@
       "event-portal": stats?.event_portal_stages || [],
       blueprint: stats?.blueprint_sections || [],
     };
+    // A phase counts as "started" when at least one of its applicable steps is
+    // non-pending (done / running / next). Phases without a known step list
+    // (intake, discovery, validation) fall back to true so existing behaviour
+    // is unchanged for them.
+    const phaseStarted = (id) => {
+      const steps = phaseStepLists[id];
+      if (!Array.isArray(steps) || !steps.length) return true;
+      return steps.some(s => {
+        const st = s.status || "pending";
+        return st !== "pending" && st !== "skipped";
+      });
+    };
     // Lifecycle steps shown across the top of the Progress view.
     // Order matches PHASE_NEXT: intake → discovery → design → review →
     // validation → event-portal → blueprint.
@@ -1394,7 +1406,15 @@
           // Skipped steps can't be restarted (they never ran); intake never
           // has a Restart (it's a form). Otherwise active/done/needs-context
           // can all be cleaned up via Restart.
-          const canRestart = (isActive || isDone || isNeedsCtx) && s.id !== "intake";
+          // Restart is meaningful only for a phase that has actually produced
+          // output (done / needs-context) OR is the active step AND has started
+          // (≥1 sub-step done/running). For a phase that's "active" only because
+          // it's NEXT (e.g. Event Portal sitting on top of a freshly-finished
+          // Validation), nothing has been written yet, so Restart would be a
+          // visible no-op — don't offer it; the user wants "Start" instead.
+          const canRestart = (
+            isDone || isNeedsCtx || (isActive && phaseStarted(s.id))
+          ) && s.id !== "intake";
           return `
             <div class="${cls.trim()}" data-step="${s.id}">
               <div class="progress-icon">
@@ -1441,6 +1461,11 @@
     if (!Array.isArray(items)) return "";
     const applicable = items.filter(it => (it.status || "pending") !== "skipped");
     if (applicable.length < 2) return "";
+    // Hide for a not-yet-started phase: when every applicable step is still
+    // pending, an "active because it's next" tile would otherwise show a row
+    // of empty circles that reads as "done but broken". Show the strip only
+    // once at least one step is done or running.
+    if (!applicable.some(it => (it.status || "pending") !== "pending")) return "";
     const dots = items.map(it => {
       const status = it.status || "pending";
       const state = _DOT_STATE[status] || "pending";
