@@ -2330,7 +2330,7 @@
       } catch (err) {
         btn.disabled = false;
         btn.textContent = "Restart Discovery";
-        alert(`Restart failed: ${err.message}`);
+        alertModal(`Restart failed: ${err.message}`, { title: "Restart failed", tone: "error" });
       }
     });
   }
@@ -2401,7 +2401,7 @@
       } catch (err) {
         btn.disabled = false;
         btn.textContent = "Restart Design";
-        alert(`Restart failed: ${err.message}`);
+        alertModal(`Restart failed: ${err.message}`, { title: "Restart failed", tone: "error" });
       }
     });
   }
@@ -2530,7 +2530,7 @@
       } catch (err) {
         btn.disabled = false;
         btn.textContent = `Restart ${label}`;
-        alert(`Restart failed: ${err.message}`);
+        alertModal(`Restart failed: ${err.message}`, { title: "Restart failed", tone: "error" });
       }
     });
   }
@@ -2541,10 +2541,15 @@
   const modalRoot = document.getElementById("modal-root");
   const modalCard = document.getElementById("modal-card");
 
+  // Single-slot onClose callback. The themed alert/confirm/prompt helpers below
+  // register one so Cancel-via-backdrop-click or Escape resolves the promise as
+  // a cancel — without it, a dismissed confirm would hang the caller forever.
+  let _modalOnClose = null;
   function openModal(innerHtml, opts = {}) {
     modalCard.innerHTML = innerHtml;
     modalRoot.classList.remove("hidden");
     modalRoot.setAttribute("aria-hidden", "false");
+    _modalOnClose = typeof opts.onClose === "function" ? opts.onClose : null;
     if (opts.focus) {
       const target = modalCard.querySelector(opts.focus);
       target?.focus();
@@ -2554,6 +2559,79 @@
     modalRoot.classList.add("hidden");
     modalRoot.setAttribute("aria-hidden", "true");
     modalCard.innerHTML = "";
+    const cb = _modalOnClose;
+    _modalOnClose = null;
+    if (cb) { try { cb(); } catch (_e) { /* ignore */ } }
+  }
+
+  // Themed dialog helpers — every place that previously called window.alert /
+  // window.confirm / window.prompt now goes through these so the dashboard
+  // never falls back to an unstyled OS popup mid-flow.
+  function alertModal(message, opts = {}) {
+    return new Promise((resolve) => {
+      const title = opts.title || "Heads up";
+      const tone = opts.tone === "error" ? " modal-tone-error" : "";
+      const body = opts.html ? message : escapeHtml(String(message || ""));
+      openModal(`
+        <div class="modal-section${tone}">
+          <h2>${escapeHtml(title)}</h2>
+          <div class="modal-message">${body}</div>
+          <div class="modal-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+            <button id="_alertmodal_ok" class="cta-btn">OK</button>
+          </div>
+        </div>`, { onClose: () => resolve(), focus: "#_alertmodal_ok" });
+      document.getElementById("_alertmodal_ok")?.addEventListener("click", () => closeModal());
+    });
+  }
+
+  function confirmModal(message, opts = {}) {
+    return new Promise((resolve) => {
+      const title = opts.title || "Confirm";
+      const confirmLabel = opts.confirmLabel || "Confirm";
+      const cancelLabel = opts.cancelLabel || "Cancel";
+      const dangerCls = opts.danger ? " cta-btn-danger" : "";
+      const tone = opts.danger ? " modal-tone-danger" : "";
+      const body = opts.html ? message : escapeHtml(String(message || ""));
+      let resolved = false;
+      const settle = (v) => { if (!resolved) { resolved = true; resolve(v); } };
+      openModal(`
+        <div class="modal-section${tone}">
+          <h2>${escapeHtml(title)}</h2>
+          <div class="modal-message">${body}</div>
+          <div class="modal-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+            <button id="_confirmmodal_cancel" class="cta-btn cta-btn-secondary">${escapeHtml(cancelLabel)}</button>
+            <button id="_confirmmodal_ok" class="cta-btn${dangerCls}">${escapeHtml(confirmLabel)}</button>
+          </div>
+        </div>`, { onClose: () => settle(false), focus: "#_confirmmodal_cancel" });
+      document.getElementById("_confirmmodal_ok")?.addEventListener("click", () => { settle(true); closeModal(); });
+      document.getElementById("_confirmmodal_cancel")?.addEventListener("click", () => { settle(false); closeModal(); });
+    });
+  }
+
+  function promptModal(message, defaultValue = "", opts = {}) {
+    return new Promise((resolve) => {
+      const title = opts.title || "Input required";
+      const confirmLabel = opts.confirmLabel || "OK";
+      let resolved = false;
+      const settle = (v) => { if (!resolved) { resolved = true; resolve(v); } };
+      openModal(`
+        <div class="modal-section">
+          <h2>${escapeHtml(title)}</h2>
+          <div class="modal-message">${escapeHtml(String(message || ""))}</div>
+          <input id="_promptmodal_input" type="text"
+                 value="${escapeHtml(String(defaultValue || ""))}"
+                 style="width:100%;padding:8px 10px;font-family:'Space Mono',monospace;font-size:13px;border:1px solid var(--border);border-radius:4px;margin-top:10px;">
+          <div class="modal-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+            <button id="_promptmodal_cancel" class="cta-btn cta-btn-secondary">Cancel</button>
+            <button id="_promptmodal_ok" class="cta-btn">${escapeHtml(confirmLabel)}</button>
+          </div>
+        </div>`, { onClose: () => settle(null), focus: "#_promptmodal_input" });
+      const input = document.getElementById("_promptmodal_input");
+      const confirmIt = () => { settle(input?.value ?? ""); closeModal(); };
+      document.getElementById("_promptmodal_ok")?.addEventListener("click", confirmIt);
+      document.getElementById("_promptmodal_cancel")?.addEventListener("click", () => { settle(null); closeModal(); });
+      input?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); confirmIt(); } });
+    });
   }
   modalRoot.addEventListener("click", (e) => {
     if (e.target.closest("[data-modal-close]")) closeModal();
@@ -2615,7 +2693,10 @@
     });
 
     modalCard.querySelector('[data-action="archive"]')?.addEventListener("click", async () => {
-      if (!confirm(`Archive "${project.name}"? It will be hidden from the sidebar — toggle "Show archived" to find it again.`)) return;
+      const ok = await confirmModal(
+        `Archive "${project.name}"? It will be hidden from the sidebar — toggle "Show archived" to find it again.`,
+        { title: "Archive project", confirmLabel: "Archive", danger: true });
+      if (!ok) return;
       try {
         const r = await fetch(`/api/projects/${encodeURIComponent(project.id)}/archive`, { method: "POST" });
         if (!r.ok) throw new Error(await r.text());
@@ -3597,11 +3678,11 @@
       btn.addEventListener("click", async () => {
         const step = btn.getAttribute("data-override-step");
         const label = btn.getAttribute("data-override-label");
-        const ok = window.confirm(
+        const ok = await confirmModal(
           `Mark ${label} as DONE? This advances the dashboard to the next phase ` +
           `even though the agent didn't record completion itself. Only do this when ` +
-          `you've verified the work actually is complete.`
-        );
+          `you've verified the work actually is complete.`,
+          { title: `Mark ${label} as DONE`, confirmLabel: "Mark done", danger: true });
         if (!ok) return;
         btn.disabled = true;
         const originalText = btn.textContent;
@@ -3626,7 +3707,7 @@
         } catch (e) {
           btn.disabled = false;
           btn.textContent = originalText;
-          alert(`Failed to mark ${label} done: ${e.message}. Check sam.log.`);
+          alertModal(`Failed to mark ${label} done: ${e.message}. Check sam.log.`, { title: "Mark-done failed", tone: "error" });
         }
       });
     });
@@ -4425,16 +4506,15 @@
     card.querySelectorAll(".finding-row").forEach(row => {
       const fid = row.dataset.findingId;
       row.querySelectorAll("[data-action]").forEach(btn => {
-        btn.addEventListener("click", () => {
+        btn.addEventListener("click", async () => {
           if (btn.disabled) return;
           const action = btn.dataset.action;
           // For Discuss, prompt the user for the question inline.
           let kickoff;
           if (action === "Discuss") {
-            const q = window.prompt(
+            const q = await promptModal(
               `Discuss finding ${fid} — what's your question for the reviewer?`,
-              ""
-            );
+              "", { title: `Discuss finding ${fid}`, confirmLabel: "Send" });
             if (!q || !q.trim()) return;
             kickoff = `Discuss finding ${fid}: ${q.trim()}`;
           } else {
@@ -4712,7 +4792,7 @@
       } catch (err) {
         btn.disabled = false;
         btn.textContent = orig;
-        alert(`Mark-done failed: ${err.message}`);
+        alertModal(`Mark-done failed: ${err.message}`, { title: "Mark-done failed", tone: "error" });
       }
     });
   }
@@ -8097,7 +8177,7 @@
       });
       d = await r.json();
     } catch (e) {
-      alert(`Render failed: ${e.message}`);
+      alertModal(`Render failed: ${e.message}`, { title: "Render failed", tone: "error" });
       _resetExportCard(btn, card, originalLabel);
       return;
     }
@@ -8108,8 +8188,10 @@
     const url = d?.urls?.find(u => u.toLowerCase().endsWith(".html")) || d?.urls?.[0] || null;
     if (!url) {
       const detail = d?.error || "no renderer registered or audience pack not available yet";
-      alert(`Couldn't render '${audience}' pack: ${detail}\n\n` +
-            `If SAM was just upgraded, restart SAM so the renderer registers at boot.`);
+      alertModal(
+        `Couldn't render '${audience}' pack: ${detail}\n\n` +
+        `If SAM was just upgraded, restart SAM so the renderer registers at boot.`,
+        { title: "Couldn't render pack", tone: "error" });
       _resetExportCard(btn, card, originalLabel);
       return;
     }
@@ -8140,7 +8222,7 @@
       });
       d = await r.json();
     } catch (e) {
-      alert(`Render failed: ${e.message}`);
+      alertModal(`Render failed: ${e.message}`, { title: "Render failed", tone: "error" });
       return;
     }
     const urls = d?.urls || [];
@@ -8149,7 +8231,7 @@
     const url = urls.find(u => u.toLowerCase().endsWith(ext)) || urls[0];
     if (!url) {
       const detail = d?.error || "renderer didn't produce the requested format";
-      alert(`Couldn't render '${audience}' as ${format.toUpperCase()}: ${detail}`);
+      alertModal(`Couldn't render '${audience}' as ${format.toUpperCase()}: ${detail}`, { title: "Couldn't render", tone: "error" });
       return;
     }
     // For PDF, force a download via an <a download> click rather than opening.
@@ -8168,13 +8250,13 @@
       r = await fetch(`/api/engagements/${encodeURIComponent(eid)}/exports/zip`);
       d = await r.json();
     } catch (e) {
-      alert(`Download failed: ${e.message}`);
+      alertModal(`Download failed: ${e.message}`, { title: "Download failed", tone: "error" });
       return;
     }
     const url = d?.zip_url || null;
     if (!url) {
       const detail = d?.error || "package not assembled yet — run Blueprint first";
-      alert(`Couldn't download package: ${detail}`);
+      alertModal(`Couldn't download package: ${detail}`, { title: "Download failed", tone: "error" });
       return;
     }
     window.open(url, "_blank");

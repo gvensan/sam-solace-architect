@@ -455,6 +455,41 @@ def test_dot_strip_and_restart_hidden_for_not_yet_started_phase():
     assert "isDone || isNeedsCtx || (isActive && phaseStarted(s.id))" in js
 
 
+def test_no_native_browser_dialogs_remain_in_app_js():
+    """Every confirm / alert / prompt in the dashboard must go through the
+    themed modal helpers (alertModal / confirmModal / promptModal), not the
+    OS-native popup. A stray native dialog breaks the app's visual language
+    and bypasses backdrop/Escape conventions the themed modals enforce."""
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    # The themed helpers exist.
+    for fn in ("function alertModal(", "function confirmModal(", "function promptModal("):
+        assert fn in js, f"missing themed helper: {fn!r}"
+    # No raw native dialog calls. A call site looks like `alert(` (paren) /
+    # `confirm(` / `window.prompt(` — filter out identifier-like substrings,
+    # comments, and the themed helpers themselves.
+    import re
+    PATTERNS = (
+        (re.compile(r"\balert\("), "alertModal"),
+        (re.compile(r"\bwindow\.confirm\("), "confirmModal"),
+        (re.compile(r"\bwindow\.prompt\("), "promptModal"),
+    )
+    for line_no, line in enumerate(js.splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.startswith("//") or stripped.startswith("*"):
+            continue
+        for pat, themed in PATTERNS:
+            if pat.search(line) and themed not in line:
+                raise AssertionError(
+                    f"app.js:{line_no} still uses a native dialog — replace with "
+                    f"{themed}:\n  {line.strip()}"
+                )
+    # Themed tone classes exist for error / danger so the modals visually
+    # signal severity rather than every dialog looking the same.
+    css = (PKG_ROOT / "webui" / "assets" / "styles.css").read_text()
+    for cls in (".modal-tone-error", ".modal-tone-danger", ".modal-message"):
+        assert cls in css, f"missing themed-dialog tone style: {cls!r}"
+
+
 def test_event_portal_restart_warns_about_live_tenant():
     """EP Restart only wipes LOCAL state; the live Solace Cloud tenant is not
     touched. The confirm modal must surface this so a user doesn't think Restart
