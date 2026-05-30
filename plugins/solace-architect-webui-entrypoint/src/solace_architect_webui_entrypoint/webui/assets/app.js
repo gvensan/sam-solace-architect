@@ -2277,7 +2277,8 @@
         </ul>
         <p>Your intake form is <strong>not</strong> touched. External Solace Cloud
         Event Portal objects (if you provisioned any) are <strong>not</strong> deprovisioned —
-        only the local artifacts are cleared.</p>
+        only the local artifacts are cleared. Chat history for this engagement is also
+        <strong>cleared</strong> (it would otherwise reference wiped findings/artifacts).</p>
         <p style="margin-top: 12px;">Type the project id <code>${escapeHtml(eid)}</code>
         to confirm:</p>
         <input id="restart-confirm-input" type="text" autocomplete="off"
@@ -2307,6 +2308,11 @@
         ["discovery", "design", "review", "validation", "event-portal", "blueprint"]
           .forEach(step => _clearPhaseHint(eid, step));
         setAutoMode(eid, false);
+        // The server-side cascade wipes the SSE replay buffer, but the visible
+        // chat is rehydrated from browser localStorage on next load — clear it
+        // here so the wipe is end-to-end. (Server- and browser-side stores
+        // both keyed on engagement id.)
+        _clearEngagementChatLocal(eid);
         closeModal();
         // Refresh the view so the lifecycle banner + Progress page reflect
         // the cleared state.
@@ -2359,7 +2365,9 @@
         decisions in <code>meta/decisions.yaml</code> are <strong>dropped</strong>
         (a fresh design pass starts with a clean ledger); orchestrator flow
         decisions are preserved. External Solace Cloud Event Portal objects
-        (if any) are <strong>not</strong> deprovisioned.</p>
+        (if any) are <strong>not</strong> deprovisioned. Chat history for this engagement
+        is also <strong>cleared</strong> (it would otherwise reference wiped
+        findings/artifacts).</p>
         <p style="margin-top: 12px;">Type the project id <code>${escapeHtml(eid)}</code>
         to confirm:</p>
         <input id="restart-design-confirm-input" type="text" autocomplete="off"
@@ -2389,6 +2397,7 @@
         ["design", "review", "validation", "event-portal", "blueprint"]
           .forEach(step => _clearPhaseHint(eid, step));
         setAutoMode(eid, false);
+        _clearEngagementChatLocal(eid);
         closeModal();
         render();
         // Auto-dispatch the Design kickoff so Restart Design produces an
@@ -2517,6 +2526,7 @@
         // the next completion.
         copy.cascadeSteps.forEach(step => _clearPhaseHint(eid, step));
         setAutoMode(eid, false);
+        _clearEngagementChatLocal(eid);
         closeModal();
         render();
         // Auto-dispatch the kickoff for THIS phase, mirroring Restart
@@ -3291,6 +3301,21 @@
     try { localStorage.setItem(CHAT_HISTORY_KEY(sid), JSON.stringify(messages.slice(-500))); }
     catch { /* quota / private mode — silently skip */ }
   }
+  // Wipe this engagement's localStorage chat-log entry (the engagement-wide
+  // store; tab-id is stripped from the key by CHAT_HISTORY_KEY). If the user
+  // is currently viewing this engagement's chat, also clear the visible log
+  // immediately. Called from every Restart success path — the server-side
+  // SSE-replay wipe alone leaves the visible chat intact because the panel
+  // rehydrates from localStorage on next load — and from the "Clear chat"
+  // affordance on the chat-panel header.
+  function _clearEngagementChatLocal(eid) {
+    if (!eid) return;
+    try { localStorage.removeItem(`solace-architect-chat-log:chat-${eid}`); }
+    catch (_e) { /* quota / private mode — ignore */ }
+    if (chatSessionId && chatSessionId.startsWith(`chat-${eid}-`)) {
+      if (chatLog) chatLog.innerHTML = "";
+    }
+  }
   function hasChatHistory(sid) {
     return loadChatHistory(sid).length > 0;
   }
@@ -3929,6 +3954,29 @@
     if (!chatEventSource) openSseStream(chatSessionId);
   }
   document.getElementById("chat-load-history")?.addEventListener("click", loadHistoryForCurrentContext);
+  // "Clear chat" — wipes the visible log + the engagement's localStorage
+  // chat-log entry. Project artifacts, decisions, findings, and phase
+  // progress are untouched (that's what Restart-on-a-phase is for). Distinct
+  // from "New session": New session starts a fresh SSE session id while
+  // PRESERVING the persisted log (so Load history can pull it back); Clear
+  // chat permanently removes the persisted log for this engagement.
+  document.getElementById("chat-clear")?.addEventListener("click", async () => {
+    const eid = currentProjectId();
+    if (!eid) {
+      try { await alertModal("Open a project before clearing chat.", { title: "No project active" }); }
+      catch (_e) { /* themed-modal helper unavailable — silent no-op */ }
+      return;
+    }
+    const ok = await confirmModal(
+      "Clear this chat for the current engagement?\n\n" +
+      "Only the visible conversation is wiped. Project artifacts, decisions, " +
+      "findings, and phase progress are kept. To actually re-run a phase, use " +
+      "its Restart button instead.",
+      { title: "Clear chat", confirmLabel: "Clear chat", danger: true });
+    if (!ok) return;
+    _clearEngagementChatLocal(eid);
+    updateLoadHistoryButton();
+  });
 
   // Helper: drop the in-memory ADK session for this engagement and start a
   // brand-new one. On-disk artifacts/decisions/scope_progress are
