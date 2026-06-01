@@ -21,15 +21,18 @@ def test_api_routes_table_is_a_nonempty_list():
 
 
 def test_every_route_is_well_formed():
-    """Each route is (method, path, async-callable)."""
-    for method, path, handler in API_ROUTES:
+    """Each route is (method, path, async-callable[, admin_required])."""
+    for route in API_ROUTES:
+        method, path, handler = route[0], route[1], route[2]
         assert method in ("GET", "POST", "PUT", "DELETE", "PATCH")
         assert path.startswith("/api/") or path.startswith("/reports/")
         assert callable(handler)
+        if len(route) > 3:
+            assert isinstance(route[3], bool)  # optional admin-required flag
 
 
 def test_required_dashboard_endpoints_present():
-    paths = {p for _, p, _ in API_ROUTES}
+    paths = {r[1] for r in API_ROUTES}
     required = [
         "/api/projects",
         "/api/engagements/{engagement_id}/overview",
@@ -46,7 +49,7 @@ def test_required_dashboard_endpoints_present():
 
 
 def test_method_for_known_routes():
-    by_path = {(p, m) for m, p, _ in API_ROUTES}
+    by_path = {(r[1], r[0]) for r in API_ROUTES}
     assert ("/api/projects", "POST") in by_path                              # create
     assert ("/api/projects", "GET") in by_path                               # list
     assert ("/api/intake/submit", "POST") in by_path
@@ -579,7 +582,7 @@ def _seed_minimal_brief(eid):
 
 
 def test_design_orchestrator_routes_registered():
-    paths = {(p, m) for m, p, _ in API_ROUTES}
+    paths = {(r[1], r[0]) for r in API_ROUTES}
     assert ("/api/engagements/{engagement_id}/design/advance", "POST") in paths
     assert ("/api/engagements/{engagement_id}/design/state", "GET") in paths
 

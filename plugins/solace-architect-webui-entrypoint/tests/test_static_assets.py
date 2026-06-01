@@ -19,11 +19,33 @@ def test_required_static_files_present():
     required = [
         webui / "index.html",
         webui / "intake" / "index.html",
+        webui / "admin" / "grounding.html",
         webui / "assets" / "styles.css",
         webui / "assets" / "app.js",
     ]
     for p in required:
         assert p.exists(), f"missing static asset: {p.relative_to(PKG_ROOT)}"
+
+
+def test_admin_grounding_page_wires_to_admin_api():
+    """The managed-grounding console must target the admin-gated API surface and
+    offer the add/approve/preview controls (regression guard for the UI wiring)."""
+    html = (PKG_ROOT / "webui" / "admin" / "grounding.html").read_text()
+    assert '/api/admin/grounding' in html, "page must call the admin grounding API"
+    # Core controls present.
+    for marker in ('id="add-btn"', 'loadRefs()', 'setStatus(', 'preview(', 'editRef(', 'loadGaps()', 'refreshAll('):
+        assert marker in html, f"admin grounding page missing {marker!r}"
+    # Handles the 403 (non-admin) response gracefully.
+    assert "403" in html, "page should surface an admin-only message on 403"
+
+
+def test_dashboard_exposes_admin_grounding_link_gated_on_is_admin():
+    """The dashboard header has the managed-grounding link, shown only for admins."""
+    html = (PKG_ROOT / "webui" / "index.html").read_text()
+    assert 'id="admin-grounding-link"' in html
+    assert 'href="/admin/grounding"' in html
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    assert "admin-grounding-link" in js and "is_admin" in js
 
 
 def test_dashboard_shell_has_route_aware_nav():

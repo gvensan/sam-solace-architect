@@ -17,7 +17,7 @@ from solace_architect_core.tools import (
     artifact_tools, decision_tools, project_tools,
     dashboard_tools, intake_tools, blueprint_tools,
     telemetry_tools, lifecycle_tools, session_tools,
-    workflow_tools, grounding_tools,
+    workflow_tools, grounding_tools, managed_grounding_tools,
 )
 from solace_architect_core._storage import (
     read_jsonl, read_yaml, safe_artifact_path, write_text, write_yaml,
@@ -2257,6 +2257,97 @@ async def _design_advance_impl(
 
 
 # Route table — consumed by lifecycle.py to register with the SAM HTTP runtime.
+# ---------------------------------------------------------------------------
+# Admin: managed global grounding references (admin-only).
+#
+# These routes are declared with a trailing ``True`` admin flag in API_ROUTES;
+# component._adapt_api_handler enforces it via _is_admin_user() and returns 403
+# for non-admins. The gate is DECLARATIVE (one flag per route) rather than a
+# per-handler check, so a new admin route can't accidentally ship ungated.
+# The agent read path (load_managed_grounding) is intentionally NOT here — it is
+# an agent tool, and only ever serves already-approved content.
+# ---------------------------------------------------------------------------
+
+def _is_admin_user() -> bool:
+    """True when the current request's authenticated user is an admin.
+
+    Reads the per-request ``current_user`` contextvar the auth middleware sets
+    from the validated session cookie. Anonymous / dev-bypass users are never
+    admin, so the managed-grounding admin surface requires auth enabled + an
+    admin account (see `python -m ...admin make-admin <user>`)."""
+    return bool((get_current_user() or {}).get("is_admin"))
+
+
+def _admin_actor() -> str:
+    u = get_current_user() or {}
+    return u.get("name") or u.get("id") or "admin"
+
+
+async def admin_grounding_list(status: Optional[str] = None, **_) -> Any:
+    res = await managed_grounding_tools.list_managed_references(status or None)
+    return res.data if res.ok else {"error": res.error}
+
+
+async def admin_grounding_add(ref_type: Optional[str] = None, source: Optional[str] = None,
+                              title: Optional[str] = None, **_) -> Any:
+    res = await managed_grounding_tools.add_managed_reference(
+        ref_type or "", source or "", title=title, added_by=_admin_actor())
+    return res.data if res.ok else {"error": res.error}
+
+
+async def admin_grounding_get(ref_id: str = "", **_) -> Any:
+    res = await managed_grounding_tools.get_managed_reference(ref_id)
+    return res.data if res.ok else {"error": res.error}
+
+
+async def admin_grounding_set_status(ref_id: str = "", status: Optional[str] = None, **_) -> Any:
+    res = await managed_grounding_tools.set_managed_reference_status(
+        ref_id, status or "", actor=_admin_actor())
+    return res.data if res.ok else {"error": res.error}
+
+
+async def admin_grounding_refresh(ref_id: str = "", **_) -> Any:
+    res = await managed_grounding_tools.refresh_managed_reference(ref_id, actor=_admin_actor())
+    return res.data if res.ok else {"error": res.error}
+
+
+async def admin_grounding_edit(ref_id: str = "", title: Optional[str] = None,
+                               content: Optional[str] = None, **_) -> Any:
+    res = await managed_grounding_tools.edit_managed_reference(
+        ref_id, title=title, content=content, actor=_admin_actor())
+    return res.data if res.ok else {"error": res.error}
+
+
+async def admin_grounding_refresh_all(**_) -> Any:
+    res = await managed_grounding_tools.refresh_all_managed_references(actor=_admin_actor())
+    return res.data if res.ok else {"error": res.error}
+
+
+async def admin_grounding_remove(ref_id: str = "", **_) -> Any:
+    res = await managed_grounding_tools.remove_managed_reference(ref_id)
+    return res.data if res.ok else {"error": res.error}
+
+
+async def admin_grounding_gaps(**_) -> Any:
+    """Surface the runtime grounding-gaps ledger as 'suggested references to add',
+    aggregated by topic (most-requested first)."""
+    try:
+        rows = read_jsonl("__system__", "meta/grounding-gaps.jsonl")
+    except (FileNotFoundError, OSError):
+        rows = []
+    agg: dict = {}
+    for r in rows:
+        topic = r.get("topic") or "(unknown)"
+        e = agg.setdefault(topic, {"topic": topic, "count": 0,
+                                   "last_reason": None, "last_agent": None, "last_seen": None})
+        e["count"] += 1
+        e["last_reason"] = r.get("reason")
+        e["last_agent"] = r.get("agent")
+        e["last_seen"] = r.get("recorded_at")
+    suggestions = sorted(agg.values(), key=lambda e: e["count"], reverse=True)
+    return {"gaps": suggestions, "count": len(suggestions)}
+
+
 API_ROUTES = [
     # Project lifecycle
     ("GET",  "/api/projects",                                list_engagements),
@@ -2318,4 +2409,15 @@ API_ROUTES = [
     # Token telemetry (Decision 84)
     ("GET",  "/api/engagements/{engagement_id}/token-usage",  engagement_token_usage),
     ("GET",  "/api/me/token-usage",                           user_token_usage),
+    # Admin: managed global grounding references (admin-only — 4th tuple element
+    # is the admin-required flag enforced in component._adapt_api_handler).
+    ("GET",    "/api/admin/grounding/refs",                   admin_grounding_list,       True),
+    ("POST",   "/api/admin/grounding/refs",                   admin_grounding_add,        True),
+    ("POST",   "/api/admin/grounding/refresh-all",            admin_grounding_refresh_all, True),
+    ("GET",    "/api/admin/grounding/gaps",                   admin_grounding_gaps,       True),
+    ("GET",    "/api/admin/grounding/refs/{ref_id}",          admin_grounding_get,        True),
+    ("POST",   "/api/admin/grounding/refs/{ref_id}/status",   admin_grounding_set_status, True),
+    ("POST",   "/api/admin/grounding/refs/{ref_id}/edit",     admin_grounding_edit,       True),
+    ("POST",   "/api/admin/grounding/refs/{ref_id}/refresh",  admin_grounding_refresh,    True),
+    ("DELETE", "/api/admin/grounding/refs/{ref_id}",          admin_grounding_remove,     True),
 ]

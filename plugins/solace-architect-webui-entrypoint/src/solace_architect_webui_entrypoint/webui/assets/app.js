@@ -239,6 +239,10 @@
       const chip = document.getElementById("user-chip");
       const logoutBtn = document.getElementById("logout-btn");
       const settingsLink = document.getElementById("settings-link");
+      const adminGroundingLink = document.getElementById("admin-grounding-link");
+      // Admin-only: managed-grounding console. Shown only for is_admin users;
+      // the page + its APIs are independently admin-gated server-side.
+      adminGroundingLink?.classList.toggle("hidden", !d.user?.is_admin);
       if (d.authenticated) {
         chip.textContent = d.user.name;
         chip.title = d.user.email || "";

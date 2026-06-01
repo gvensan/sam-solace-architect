@@ -54,7 +54,7 @@ from solace_architect_webui_entrypoint.auth import (
 from solace_architect_webui_entrypoint.auth.middleware import SESSION_COOKIE
 from solace_architect_webui_entrypoint.auth.sessions import validate_session
 from solace_architect_webui_entrypoint.auth.db import user_to_claims
-from solace_architect_webui_entrypoint.routes.api import API_ROUTES
+from solace_architect_webui_entrypoint.routes.api import API_ROUTES, _is_admin_user
 
 log = logging.getLogger(__name__)
 
@@ -337,6 +337,7 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 self._app.router.add_get("/settings", self._serve_index)
                 self._app.router.add_get("/intake", self._serve_intake_form)
                 self._app.router.add_get("/intake/{tail:.*}", self._serve_intake_form)
+                self._app.router.add_get("/admin/grounding", self._serve_admin_grounding)
                 self._app.router.add_static("/assets/", static_dir / "assets", show_index=False)
                 # SSE chat stream + chat POST + agent discovery
                 self._app.router.add_get("/api/chat/stream/{session_id}", self._sse_chat_stream)
@@ -381,9 +382,14 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                     "/api/engagements/{engagement_id}/exports/raw/{filename:.+}",
                     self._serve_export_file,
                 )
-                # Declarative JSON API routes
-                for method, path, handler in API_ROUTES:
-                    self._app.router.add_route(method, path, self._adapt_api_handler(handler))
+                # Declarative JSON API routes. A 4th tuple element (optional)
+                # marks the route admin-only; the adapter returns 403 for
+                # non-admins before the handler runs.
+                for route in API_ROUTES:
+                    method, path, handler = route[0], route[1], route[2]
+                    admin_required = route[3] if len(route) > 3 else False
+                    self._app.router.add_route(
+                        method, path, self._adapt_api_handler(handler, admin_required))
 
                 self._runner = web.AppRunner(self._app)
                 loop.run_until_complete(self._runner.setup())
@@ -685,6 +691,15 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         return web.FileResponse(_webui_static_dir() / "intake" / "index.html",
                                 headers={"Cache-Control": "no-store"})
 
+    async def _serve_admin_grounding(self, request: web.Request) -> web.Response:
+        """Serve the managed-grounding admin console. Admin-only: non-admins are
+        redirected to the dashboard (the page's data APIs are also 403-gated, so
+        this is a UX guard, not the security boundary)."""
+        if not _is_admin_user():
+            raise web.HTTPFound("/")
+        return web.FileResponse(_webui_static_dir() / "admin" / "grounding.html",
+                                headers={"Cache-Control": "no-store"})
+
     async def _serve_export_file(self, request: web.Request) -> web.Response:
         """Serve a rendered export artifact (HTML/PDF/ZIP) as raw bytes.
 
@@ -719,27 +734,10 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
             )
         return web.FileResponse(path, headers={"Cache-Control": "no-store"})
 
-    def _adapt_api_handler(self, handler):
-        """Wrap a coroutine ``handler(**kwargs)`` as an aiohttp route handler."""
-        async def adapted(request: web.Request) -> web.Response:
-            # Gather kwargs from path + query + JSON body
-            kwargs: Dict[str, Any] = dict(request.match_info)
-            kwargs.update(dict(request.query))
-            if request.can_read_body and request.content_length:
-                try:
-                    body = await request.json()
-                    if isinstance(body, dict):
-                        kwargs.update(body)
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            try:
-                result = await handler(**kwargs)
-            except TypeError as e:
-                return web.json_response({"error": f"bad parameters: {e}"}, status=400,
-                                         headers={"Cache-Control": "no-store"})
-            return web.json_response(result, headers={"Cache-Control": "no-store"},
-                                     dumps=_safe_json_dumps)
-        return adapted
+    def _adapt_api_handler(self, handler, admin_required: bool = False):
+        """Adapt a route handler for aiohttp. Delegates to the module-level
+        ``make_api_handler`` (testable end-to-end with just the auth middleware)."""
+        return make_api_handler(handler, admin_required)
 
     async def _chat_message(self, request: web.Request) -> web.Response:
         """User posts a chat message → translate + dispatch via SAM A2A."""
@@ -1316,3 +1314,37 @@ def _serialize_event(obj: Any) -> Any:
 
 def _safe_json_dumps(obj: Any) -> str:
     return json.dumps(obj, default=str)
+
+
+def make_api_handler(handler, admin_required: bool = False):
+    """Wrap a coroutine ``handler(**kwargs)`` as an aiohttp route handler.
+
+    Module-level (not a method) so it composes with just the auth middleware in
+    tests — the admin-gate path is then exercised end-to-end through a real
+    request rather than only at the predicate level.
+
+    When ``admin_required`` is set, reject non-admin requests with 403 before the
+    handler runs (admin status comes from the per-request current_user contextvar
+    the auth middleware populates from the session cookie)."""
+    async def adapted(request: web.Request) -> web.Response:
+        if admin_required and not _is_admin_user():
+            return web.json_response({"error": "admin access required"}, status=403,
+                                     headers={"Cache-Control": "no-store"})
+        # Gather kwargs from path + query + JSON body
+        kwargs: Dict[str, Any] = dict(request.match_info)
+        kwargs.update(dict(request.query))
+        if request.can_read_body and request.content_length:
+            try:
+                body = await request.json()
+                if isinstance(body, dict):
+                    kwargs.update(body)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        try:
+            result = await handler(**kwargs)
+        except TypeError as e:
+            return web.json_response({"error": f"bad parameters: {e}"}, status=400,
+                                     headers={"Cache-Control": "no-store"})
+        return web.json_response(result, headers={"Cache-Control": "no-store"},
+                                 dumps=_safe_json_dumps)
+    return adapted

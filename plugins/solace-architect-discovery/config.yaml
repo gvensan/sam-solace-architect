@@ -386,6 +386,9 @@ apps:
           component_module: "solace_architect_core.tools.grounding_tools"
           function_name: "load_grounding"
         - tool_type: python
+          component_module: "solace_architect_core.tools.managed_grounding_tools"
+          function_name: "load_managed_grounding"
+        - tool_type: python
           component_module: "solace_architect_core.tools.grounding_tools"
           function_name: "fetch_canonical_source"
         - tool_type: python

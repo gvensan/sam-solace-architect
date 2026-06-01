@@ -213,6 +213,19 @@ async def load_preamble() -> ToolResult:
     if text is None:
         await record_grounding_gap(topic="agent-preamble", reason="agent-preamble.md missing", agent="load_preamble")
         return ToolResult(ok=False, error="grounding/agent-preamble.md not found")
+    # Append the active admin-curated managed-grounding digest (if any) so every
+    # agent receives org references at session start — GUARANTEED reach, not
+    # dependent on the agent choosing to call load_managed_grounding(). Read the
+    # digest file directly (lazy import of the constants) to avoid a circular
+    # import: managed_grounding_tools imports _looks_like_valid_doc from here.
+    try:
+        from . import managed_grounding_tools as _mgt
+        from .._storage import read_text as _read_text
+        digest = await asyncio.to_thread(_read_text, _mgt._SYS, _mgt._DIGEST)
+    except (FileNotFoundError, OSError):
+        digest = ""
+    if digest and digest.strip():
+        text = f"{text}\n\n---\n\n{digest}"
     return ToolResult(ok=True, data=text)
 
 

@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Solace Architect — Managed Grounding</title>
+<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg:#f7f8fa; --surface:#fff; --border:#d8dce3; --border-strong:#b6bcc9;
+    --text:#1d2433; --muted:#5a6377; --accent:#00c895; --accent-dark:#009974;
+    --warn:#d97706; --error:#c53030; --ok:#16a34a; --chip-bg:#eef2f7;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+         background:var(--bg); color:var(--text); font-size:14px; }
+  a { color:var(--accent-dark); }
+  header { background:var(--surface); border-bottom:1px solid var(--border);
+           padding:14px 24px; display:flex; align-items:center; gap:16px; }
+  header h1 { font-size:17px; margin:0; }
+  header .spacer { flex:1; }
+  main { max-width:980px; margin:0 auto; padding:24px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:10px;
+          padding:18px 20px; margin-bottom:20px; }
+  .card h2 { font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted);
+             margin:0 0 14px; }
+  label { display:block; font-weight:600; margin:10px 0 4px; }
+  input[type=text], input[type=url], textarea, select {
+    width:100%; padding:9px 11px; border:1px solid var(--border-strong); border-radius:7px;
+    font:inherit; background:var(--surface); color:var(--text); }
+  textarea { min-height:120px; resize:vertical; }
+  .row { display:flex; gap:14px; flex-wrap:wrap; }
+  .row > div { flex:1; min-width:200px; }
+  .seg { display:inline-flex; border:1px solid var(--border-strong); border-radius:7px; overflow:hidden; }
+  .seg button { background:var(--surface); border:0; padding:8px 16px; cursor:pointer; font:inherit; }
+  .seg button.on { background:var(--accent); color:#06281f; font-weight:600; }
+  .btn { background:var(--accent); color:#06281f; border:0; border-radius:7px; padding:9px 16px;
+         font:inherit; font-weight:600; cursor:pointer; }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
+  .btn.secondary { background:var(--chip-bg); color:var(--text); }
+  .btn.danger { background:#fde8e8; color:var(--error); }
+  .btn.sm { padding:5px 10px; font-size:12px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:9px 8px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; }
+  .badge { display:inline-block; padding:2px 9px; border-radius:99px; font-size:11px; font-weight:700;
+           text-transform:uppercase; letter-spacing:.03em; }
+  .badge.active { background:#dcfce7; color:#15803d; }
+  .badge.pending { background:#fef3c7; color:#a16207; }
+  .badge.disabled { background:#e5e7eb; color:#4b5563; }
+  .muted { color:var(--muted); font-size:12px; }
+  .actions { display:flex; gap:6px; flex-wrap:wrap; }
+  .budget { height:8px; background:var(--chip-bg); border-radius:99px; overflow:hidden; margin-top:6px; }
+  .budget > span { display:block; height:100%; background:var(--accent); }
+  .banner { padding:12px 16px; border-radius:8px; margin-bottom:18px; font-weight:600; }
+  .banner.err { background:#fde8e8; color:var(--error); }
+  .banner.ok { background:#dcfce7; color:#15803d; }
+  .gap-item { display:flex; justify-content:space-between; align-items:center; gap:10px;
+              padding:8px 0; border-bottom:1px solid var(--border); }
+  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.45); display:none;
+             align-items:center; justify-content:center; padding:24px; z-index:50; }
+  .overlay.show { display:flex; }
+  .modal { background:var(--surface); border-radius:12px; max-width:760px; width:100%;
+           max-height:82vh; display:flex; flex-direction:column; }
+  .modal header { border-radius:12px 12px 0 0; }
+  .modal pre { margin:0; padding:18px 20px; overflow:auto; white-space:pre-wrap; word-break:break-word;
+               font-size:13px; line-height:1.5; }
+  .empty { color:var(--muted); padding:14px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Managed Grounding</h1>
+  <span class="muted">Admin-curated references applied across all projects</span>
+  <span class="spacer"></span>
+  <a href="/">← Dashboard</a>
+</header>
+
+<main>
+  <div id="banner"></div>
+
+  <!-- Add reference -->
+  <div class="card">
+    <h2>Add a reference</h2>
+    <div class="seg" id="type-seg">
+      <button type="button" data-type="url" class="on">Site / doc URL</button>
+      <button type="button" data-type="text">Pasted text</button>
+    </div>
+    <div id="src-url">
+      <label for="url">URL (docs / wiki / standards page)</label>
+      <input type="url" id="url" placeholder="https://…">
+    </div>
+    <div id="src-text" style="display:none">
+      <label for="paste">Paste reference text or Markdown</label>
+      <textarea id="paste" placeholder="Org standards, landscape notes, constraints…"></textarea>
+    </div>
+    <label for="title">Title (optional)</label>
+    <input type="text" id="title" placeholder="e.g. Acme event standards">
+    <div style="margin-top:14px">
+      <button class="btn" id="add-btn">Add reference</button>
+      <span class="muted" id="add-hint">Added references start as <b>pending</b> — review, then approve to activate.</span>
+    </div>
+  </div>
+
+  <!-- References -->
+  <div class="card">
+    <h2 style="display:flex;align-items:center;gap:10px">References
+      <span style="flex:1"></span>
+      <button class="btn secondary sm" id="refresh-all-btn" onclick="refreshAll()">Refresh all URLs</button>
+    </h2>
+    <div class="muted" id="budget-label"></div>
+    <div class="budget"><span id="budget-bar" style="width:0%"></span></div>
+    <table style="margin-top:14px">
+      <thead><tr><th>Title</th><th>Status</th><th>Chars</th><th>Source</th><th>Actions</th></tr></thead>
+      <tbody id="refs-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <!-- Gaps -->
+  <div class="card">
+    <h2>Suggested references (from grounding gaps)</h2>
+    <div class="muted">Topics agents looked for but couldn't find — candidates to cover with a reference.</div>
+    <div id="gaps-list" style="margin-top:10px"><div class="empty">Loading…</div></div>
+  </div>
+</main>
+
+<!-- Preview modal -->
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <header><h1 id="preview-title">Preview</h1><span class="spacer"></span>
+      <button class="btn secondary sm" onclick="closePreview()">Close</button></header>
+    <pre id="preview-body"></pre>
+  </div>
+</div>
+
+<script>
+const API = "/api/admin/grounding";
+let refType = "url";
+let refsById = {};
+
+function banner(msg, kind) {
+  const b = document.getElementById("banner");
+  if (!msg) { b.innerHTML = ""; return; }
+  b.innerHTML = `<div class="banner ${kind || 'ok'}">${escapeHtml(msg)}</div>`;
+}
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+}
+async function api(path, opts) {
+  const res = await fetch(API + path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts));
+  if (res.status === 403) { banner("Admin access required — sign in as an admin user.", "err"); throw new Error("403"); }
+  return res.json();
+}
+
+// type toggle
+document.getElementById("type-seg").addEventListener("click", e => {
+  const btn = e.target.closest("button[data-type]"); if (!btn) return;
+  refType = btn.dataset.type;
+  document.querySelectorAll("#type-seg button").forEach(b => b.classList.toggle("on", b === btn));
+  document.getElementById("src-url").style.display  = refType === "url"  ? "" : "none";
+  document.getElementById("src-text").style.display = refType === "text" ? "" : "none";
+});
+
+document.getElementById("add-btn").addEventListener("click", async () => {
+  const title = document.getElementById("title").value.trim();
+  const source = refType === "url"
+    ? document.getElementById("url").value.trim()
+    : document.getElementById("paste").value;
+  if (!source.trim()) { banner("Enter a URL or some text first.", "err"); return; }
+  const btn = document.getElementById("add-btn"); btn.disabled = true; btn.textContent = "Adding…";
+  try {
+    const r = await api("/refs", { method: "POST", body: JSON.stringify({ ref_type: refType, source, title }) });
+    if (r.error) { banner("Could not add: " + r.error, "err"); }
+    else {
+      banner(`Added “${r.title}” (${r.char_count} chars) as pending — review and approve below.`, "ok");
+      document.getElementById("url").value = ""; document.getElementById("paste").value = "";
+      document.getElementById("title").value = "";
+      await loadRefs();
+    }
+  } catch (e) { /* 403 already shown */ }
+  finally { btn.disabled = false; btn.textContent = "Add reference"; }
+});
+
+async function loadRefs() {
+  let data;
+  try { data = await api("/refs"); } catch (e) { return; }
+  const body = document.getElementById("refs-body");
+  const refs = data.refs || [];
+  refsById = Object.fromEntries(refs.map(r => [r.id, r]));
+  const pct = data.digest_cap ? Math.min(100, Math.round(100 * (data.active_chars || 0) / data.digest_cap)) : 0;
+  document.getElementById("budget-bar").style.width = pct + "%";
+  document.getElementById("budget-label").textContent =
+    `Active digest budget: ${data.active_chars || 0} / ${data.digest_cap} chars (${pct}%)`;
+  if (!refs.length) { body.innerHTML = `<tr><td colspan="5" class="empty">No references yet.</td></tr>`; return; }
+  body.innerHTML = refs.map(r => {
+    const acts = [];
+    acts.push(`<button class="btn secondary sm" onclick="preview('${r.id}')">Preview</button>`);
+    acts.push(`<button class="btn secondary sm" onclick="editRef('${r.id}')">Edit</button>`);
+    if (r.status !== "active")
+      acts.push(`<button class="btn sm" onclick="setStatus('${r.id}','active')">Approve</button>`);
+    if (r.status === "active")
+      acts.push(`<button class="btn secondary sm" onclick="setStatus('${r.id}','disabled')">Disable</button>`);
+    if (r.type === "url")
+      acts.push(`<button class="btn secondary sm" onclick="refresh('${r.id}')">Refresh</button>`);
+    acts.push(`<button class="btn danger sm" onclick="remove('${r.id}')">Remove</button>`);
+    const meta = `added by ${escapeHtml(r.added_by)} · ${escapeHtml((r.added_at||'').replace('T',' '))}`
+      + (r.type === "url" && r.last_fetched_at ? ` · fetched ${escapeHtml((r.last_fetched_at||'').replace('T',' '))}` : "");
+    return `<tr>
+      <td><b>${escapeHtml(r.title)}</b><div class="muted">${meta}</div></td>
+      <td><span class="badge ${r.status}">${r.status}</span></td>
+      <td>${r.char_count}</td>
+      <td class="muted" style="max-width:220px;word-break:break-all">${escapeHtml(r.source)}</td>
+      <td><div class="actions">${acts.join("")}</div></td></tr>`;
+  }).join("");
+}
+
+async function setStatus(id, status) {
+  const r = await api(`/refs/${id}/status`, { method: "POST", body: JSON.stringify({ status }) });
+  if (r.error) banner(r.error, "err"); else banner(`Reference ${status === 'active' ? 'activated' : 'disabled'}.`, "ok");
+  loadRefs();
+}
+async function refresh(id) {
+  banner("Re-fetching…", "ok");
+  const r = await api(`/refs/${id}/refresh`, { method: "POST", body: "{}" });
+  banner(r.error ? ("Refresh failed: " + r.error) : "Re-fetched.", r.error ? "err" : "ok");
+  loadRefs();
+}
+async function refreshAll() {
+  const btn = document.getElementById("refresh-all-btn");
+  btn.disabled = true; btn.textContent = "Refreshing…";
+  try {
+    const r = await api("/refresh-all", { method: "POST", body: "{}" });
+    if (r.error) banner(r.error, "err");
+    else banner(`Re-fetched ${r.refreshed} URL reference(s)` + (r.failed ? `, ${r.failed} failed` : "") + ".",
+                r.failed ? "err" : "ok");
+    await loadRefs();
+  } catch (e) { /* 403 already shown */ }
+  finally { btn.disabled = false; btn.textContent = "Refresh all URLs"; }
+}
+async function remove(id) {
+  if (!confirm("Remove this reference? This cannot be undone.")) return;
+  const r = await api(`/refs/${id}`, { method: "DELETE" });
+  if (r.error) banner(r.error, "err"); else banner("Removed.", "ok");
+  loadRefs();
+}
+async function editRef(id) {
+  const r = refsById[id]; if (!r) return;
+  const title = prompt("New title for this reference:", r.title || "");
+  if (title === null || !title.trim() || title === r.title) return;
+  const resp = await api(`/refs/${id}/edit`, { method: "POST", body: JSON.stringify({ title }) });
+  if (resp.error) banner(resp.error, "err"); else banner("Title updated.", "ok");
+  loadRefs();
+}
+async function preview(id) {
+  const r = await api(`/refs/${id}`);
+  if (r.error) { banner(r.error, "err"); return; }
+  document.getElementById("preview-title").textContent = r.title || "Preview";
+  document.getElementById("preview-body").textContent = r.content || "(empty)";
+  document.getElementById("overlay").classList.add("show");
+}
+function closePreview() { document.getElementById("overlay").classList.remove("show"); }
+document.getElementById("overlay").addEventListener("click", e => {
+  if (e.target.id === "overlay") closePreview();
+});
+
+async function loadGaps() {
+  let data; try { data = await api("/gaps"); } catch (e) { return; }
+  const el = document.getElementById("gaps-list");
+  const gaps = data.gaps || [];
+  if (!gaps.length) { el.innerHTML = `<div class="empty">No grounding gaps recorded yet.</div>`; return; }
+  el.innerHTML = gaps.map(g => `<div class="gap-item">
+    <div><b>${escapeHtml(g.topic)}</b> <span class="muted">· requested ${g.count}× · ${escapeHtml(g.last_reason || '')}</span></div>
+    <button class="btn secondary sm" onclick="prefillTitle('${escapeHtml(g.topic)}')">Use as title</button>
+  </div>`).join("");
+}
+function prefillTitle(topic) {
+  document.getElementById("title").value = topic;
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+loadRefs();
+loadGaps();
+</script>
+</body>
+</html>
