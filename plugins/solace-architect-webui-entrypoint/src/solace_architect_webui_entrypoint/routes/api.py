@@ -596,14 +596,20 @@ async def reset_design(engagement_id: str) -> Any:
     # Also delete the orchestrator's design-state (the deterministic engine's
     # source of truth). Without this it survives the wipe and the next Start
     # would SKIP the (now artifact-less) completed scopes instead of starting
-    # fresh — so Restart wouldn't reliably mean "from scratch".
+    # fresh — so Restart wouldn't reliably mean "from scratch". Log loudly on
+    # any failure: a silent skip here is the bug that lets a stale state file
+    # outlive a Restart and convince the engine the work is already done.
     try:
         _dsp = safe_artifact_path(engagement_id, "meta/design-state.yaml")
         if _dsp.exists():
             _dsp.unlink()
             removed.append("meta/design-state.yaml")
-    except Exception:
-        pass
+    except Exception as _e:
+        _log.error(
+            "[reset_design] failed to delete meta/design-state.yaml for eid=%s: %r — "
+            "the engine's source of truth may now be out of sync with disk; "
+            "the load-time reconcile (reconcile_with_artifacts) will repair it on "
+            "next advance, but please investigate the root cause", engagement_id, _e)
 
     # Clear the design step status + telemetry. (clear_step_status removes the
     # whole design step entry, incl. scope_progress. Domain-sourced open-items
@@ -2178,7 +2184,21 @@ async def _design_advance_impl(
     if "event-portal" in applicable:
         _ensure_event_portal_artifact(engagement_id)
 
-    # Reconcile: any scope whose structured artifact already exists is DONE.
+    # Reconcile (DOWN): any scope marked done whose primary artifact is missing
+    # gets demoted back to pending. Prevents the engine from short-circuiting to
+    # action=complete on a state-vs-artifact desync (e.g., a partial reset that
+    # cleared scope files but left meta/design-state.yaml, or a clone that
+    # copied state without artifacts). Without this, Start Design would lie
+    # ("all done") despite zero work having happened.
+    _st, _demoted = _design_state.reconcile_with_artifacts(
+        st, lambda sc: _scope_artifact_exists(engagement_id, sc))
+    if _demoted:
+        _log.warning(
+            "[design-orchestrator] reconciled stale design-state for eid=%s — "
+            "demoted scopes %s back to pending (state claimed done but no "
+            "artifact on disk)", engagement_id, _demoted)
+
+    # Reconcile (UP): any scope whose structured artifact already exists is DONE.
     # This is how the orchestrator learns "done" — from the durable artifact,
     # never a self-report — and it heals an engagement that ran partway under
     # the classic engine.
@@ -2328,6 +2348,14 @@ async def admin_grounding_remove(ref_id: str = "", **_) -> Any:
     return res.data if res.ok else {"error": res.error}
 
 
+async def admin_grounding_platform_list(**_) -> Any:
+    """List the vendored platform-grounding files (read-only). The admin UI
+    shows these alongside admin-curated managed refs so an admin can see
+    what's already covered before deciding whether to add a managed ref."""
+    res = grounding_tools.list_platform_grounding()
+    return res.data if res.ok else {"error": res.error}
+
+
 async def admin_grounding_gaps(**_) -> Any:
     """Surface the runtime grounding-gaps ledger as 'suggested references to add',
     aggregated by topic (most-requested first)."""
@@ -2415,6 +2443,7 @@ API_ROUTES = [
     ("POST",   "/api/admin/grounding/refs",                   admin_grounding_add,        True),
     ("POST",   "/api/admin/grounding/refresh-all",            admin_grounding_refresh_all, True),
     ("GET",    "/api/admin/grounding/gaps",                   admin_grounding_gaps,       True),
+    ("GET",    "/api/admin/grounding/platform",               admin_grounding_platform_list, True),
     ("GET",    "/api/admin/grounding/refs/{ref_id}",          admin_grounding_get,        True),
     ("POST",   "/api/admin/grounding/refs/{ref_id}/status",   admin_grounding_set_status, True),
     ("POST",   "/api/admin/grounding/refs/{ref_id}/edit",     admin_grounding_edit,       True),

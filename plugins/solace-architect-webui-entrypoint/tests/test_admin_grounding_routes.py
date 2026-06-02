@@ -108,3 +108,29 @@ def test_gaps_handler_aggregates_ledger_by_topic():
     topics = {g["topic"]: g for g in res["gaps"]}
     assert topics["vpn-design"]["count"] == 2 and topics["insights"]["count"] == 1
     assert res["gaps"][0]["topic"] == "vpn-design"   # most-requested first
+
+
+def test_platform_list_handler_returns_vendored_files():
+    """The platform-grounding list surfaces the vendored files in core's
+    grounding/ dir. Don't pin file count (the set evolves with core), but
+    verify the contract: the shared agent-preamble is always present, every
+    row has the expected metadata fields, and the consumer hint is populated
+    for known files."""
+    with _as(_ADMIN):
+        res = _run(api.admin_grounding_platform_list())
+    assert "files" in res and res["count"] == len(res["files"])
+    names = {f["name"] for f in res["files"]}
+    assert "agent-preamble.md" in names, "the shared preamble must always be listed"
+    for f in res["files"]:
+        assert {"name", "size_bytes", "modified_at", "consumer"}.issubset(f.keys())
+        assert isinstance(f["size_bytes"], int) and f["size_bytes"] >= 0
+    preamble = next(f for f in res["files"] if f["name"] == "agent-preamble.md")
+    assert "load_preamble" in preamble["consumer"]   # human-readable hint flowed through
+
+
+def test_platform_list_route_carries_admin_flag():
+    """Lock down: the route must be in API_ROUTES, GET, and admin-required —
+    otherwise it ships as a public information leak about what's grounded."""
+    route = next((r for r in api.API_ROUTES if r[1] == "/api/admin/grounding/platform"), None)
+    assert route is not None, "platform-list route not registered"
+    assert route[0] == "GET" and len(route) > 3 and route[3] is True

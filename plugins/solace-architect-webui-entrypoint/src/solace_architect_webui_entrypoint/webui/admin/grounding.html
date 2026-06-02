@@ -116,6 +116,16 @@
     </table>
   </div>
 
+  <!-- Platform grounding (read-only) -->
+  <div class="card">
+    <h2>Platform grounding</h2>
+    <div class="muted">Vendored reference files baked into core — read-only here. To edit, PR <code>solace-architect-core/.../grounding/</code>. Use this list to see what's already covered before adding a managed reference.</div>
+    <table style="margin-top:14px">
+      <thead><tr><th>File</th><th>Size</th><th>Modified</th><th>Consumer</th></tr></thead>
+      <tbody id="platform-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
   <!-- Gaps -->
   <div class="card">
     <h2>Suggested references (from grounding gaps)</h2>
@@ -279,7 +289,21 @@ function prefillTitle(topic) {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+async function loadPlatform() {
+  let data; try { data = await api("/platform"); } catch (e) { return; }
+  const body = document.getElementById("platform-body");
+  const files = data.files || [];
+  if (!files.length) { body.innerHTML = `<tr><td colspan="4" class="empty">No platform grounding files found.</td></tr>`; return; }
+  const fmt = n => n < 1024 ? `${n} B` : n < 1024*1024 ? `${(n/1024).toFixed(1)} KB` : `${(n/1024/1024).toFixed(2)} MB`;
+  body.innerHTML = files.map(f => `<tr>
+    <td><b>${escapeHtml(f.name)}</b></td>
+    <td>${fmt(f.size_bytes)}</td>
+    <td class="muted">${escapeHtml((f.modified_at || '').replace('T',' '))}</td>
+    <td class="muted">${escapeHtml(f.consumer || '—')}</td></tr>`).join("");
+}
+
 loadRefs();
+loadPlatform();
 loadGaps();
 </script>
 </body>

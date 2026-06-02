@@ -229,6 +229,52 @@ async def load_preamble() -> ToolResult:
     return ToolResult(ok=True, data=text)
 
 
+# Human-readable hint mapping each vendored grounding filename to its primary
+# consumer. Surfaced by ``list_platform_grounding`` in the admin UI so an admin
+# can see what's already covered before adding a managed reference. Hardcoded
+# (not derived from _TOPIC_MAP) because the description targets humans and
+# multi-topic files would otherwise render as a list-of-topics dump.
+_PLATFORM_CONSUMERS: dict[str, str] = {
+    "agent-preamble.md":                 "load_preamble — every agent at session start",
+    "jargon-list.json":                  "load_jargon_list",
+    "antipatterns.md":                   "load_grounding(topic='antipatterns')",
+    "gaps.md":                           "agent-side checklist of known gaps",
+    "integration-hub-catalog.md":        "query_integration_hub",
+    "naming-conventions.md":             "load_grounding(topic='naming-conventions')",
+    "solace-canonical-sources.md":       "fetch_canonical_source URL allowlist seed",
+    "solace-platform-reference.md":      "load_grounding (most topics map here)",
+    "solace-reference-architectures.md": "load_grounding(topic='reference-architectures')",
+    "README.md":                         "documentation only — not read by agents",
+}
+
+
+def list_platform_grounding() -> ToolResult:
+    """List the vendored platform-grounding files (read-only — they live in the
+    package's grounding/ directory). One row per file: name, size, last-modified
+    ISO timestamp, and a short hint about which tool consumes it. Used by the
+    admin UI to surface the platform pool alongside admin-curated managed refs
+    and grounding gaps so an admin can see what's already covered."""
+    base = _grounding_dir()
+    rows: list[dict] = []
+    if not base.exists():
+        return ToolResult(ok=True, data={"files": rows, "count": 0})
+    for p in sorted(base.iterdir()):
+        if not p.is_file() or p.name.startswith("."):
+            continue
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        rows.append({
+            "name": p.name,
+            "size_bytes": st.st_size,
+            "modified_at": datetime.fromtimestamp(st.st_mtime, timezone.utc)
+                                  .isoformat(timespec="seconds"),
+            "consumer": _PLATFORM_CONSUMERS.get(p.name, "—"),
+        })
+    return ToolResult(ok=True, data={"files": rows, "count": len(rows)})
+
+
 async def query_integration_hub(backend_system: str) -> ToolResult:
     """Search integration-hub-catalog.md for matches against ``backend_system``."""
     text = _read_grounding_file("integration-hub-catalog.md")

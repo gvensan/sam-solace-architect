@@ -418,3 +418,96 @@ def test_reset_scope_revives_exhausted_budget():
     ds.reset_scope(st, "topic-design")
     a = ds.decide_next(st)
     assert a["action"] == "dispatch" and a["scope"] == "topic-design" and a["attempt"] == 1
+
+
+# ── reconcile_with_artifacts ─────────────────────────────────────────────
+# Guards the state↔artifact desync that bit neo-supply-chain-tracking
+# (design-state.yaml said all scopes done; disk said no artifacts existed →
+# the engine returned action=complete on Start Design without any work). The
+# fix is a load-time reconcile that demotes done-but-evidence-less scopes.
+
+
+def test_reconcile_demotes_done_scopes_with_no_evidence():
+    """The canonical bug: state claims done, no artifact on disk → must demote
+    so the engine actually runs the scope on the next decide_next."""
+    st = ds.init_state(SCOPES)
+    for s in SCOPES:
+        ds.complete_scope(st, s)
+    assert ds.is_complete(st)              # before reconcile: lies "complete"
+    st2, demoted = ds.reconcile_with_artifacts(st, evidence_exists=lambda _s: False)
+    assert demoted == SCOPES               # ordered, every scope demoted
+    assert not ds.is_complete(st2)
+    for s in SCOPES:
+        sc = next(x for x in st2["scopes"] if x["name"] == s)
+        assert sc["status"] == ds.PENDING
+        assert sc["attempts"] == 0         # fresh retry budget
+        assert "evidence missing" in sc["note"]
+    # decide_next now dispatches the FIRST scope (no longer "complete").
+    assert ds.decide_next(st2)["action"] == "dispatch"
+
+
+def test_reconcile_preserves_scopes_with_evidence():
+    """No-op for the steady-state case: every done scope has its artifact, so
+    nothing should change. Critical — we don't want the integrity check to
+    erase legitimate work."""
+    st = ds.init_state(SCOPES)
+    for s in SCOPES:
+        ds.complete_scope(st, s)
+    st2, demoted = ds.reconcile_with_artifacts(st, evidence_exists=lambda _s: True)
+    assert demoted == []
+    assert ds.is_complete(st2)
+
+
+def test_reconcile_only_touches_terminal_advance_scopes():
+    """Pending/running/blocked scopes have nothing to reconcile — only DONE
+    and DONE_WITH_CONCERNS scopes can be 'wrongly done'."""
+    st = ds.init_state(SCOPES)
+    ds.complete_scope(st, "topic-design", with_concerns=True)
+    ds.begin_scope(st, "broker-select")     # → RUNNING
+    # protocol-select stays PENDING.
+    st2, demoted = ds.reconcile_with_artifacts(st, evidence_exists=lambda _s: False)
+    assert demoted == ["topic-design"]      # only the terminal-advance one
+    assert ds.scope_status(st2, "broker-select") == ds.RUNNING
+    assert ds.scope_status(st2, "protocol-select") == ds.PENDING
+
+
+def test_reconcile_partial_disk_state_demotes_only_orphans():
+    """Mixed reality: some scopes have artifacts, some don't. Only the
+    evidence-less ones get demoted."""
+    st = ds.init_state(SCOPES)
+    for s in SCOPES:
+        ds.complete_scope(st, s)
+    have_evidence = {"topic-design"}
+    st2, demoted = ds.reconcile_with_artifacts(
+        st, evidence_exists=lambda s: s in have_evidence)
+    assert demoted == ["broker-select", "protocol-select"]
+    assert ds.scope_status(st2, "topic-design") == ds.DONE
+    assert ds.scope_status(st2, "broker-select") == ds.PENDING
+
+
+def test_reconcile_treats_predicate_exception_as_evidence_present():
+    """A predicate that raises (transient I/O, broken path lookup) must not
+    demote a scope — silent demotion on a flaky check would be worse than
+    the original bug."""
+    st = ds.init_state(SCOPES)
+    ds.complete_scope(st, "topic-design")
+    def raiser(_s):
+        raise OSError("disk gremlin")
+    st2, demoted = ds.reconcile_with_artifacts(st, evidence_exists=raiser)
+    assert demoted == []
+    assert ds.scope_status(st2, "topic-design") == ds.DONE
+
+
+def test_reconcile_noop_does_not_bump_updated_at():
+    """A no-op reconcile (every done scope has evidence) must not bump
+    updated_at — otherwise every advance call would look like a fresh write
+    to monitors and dashboards. (We don't assert the demote-branch bumps:
+    _now_iso has 1-second granularity, so a same-second mutation may keep
+    the same string. The per-scope updated_at on the demoted row is the
+    audit-trail field that matters; the doc-level bump is just an mtime.)"""
+    st = ds.init_state(SCOPES)
+    ds.complete_scope(st, "topic-design")
+    before = st["updated_at"]
+    st_noop, demoted_noop = ds.reconcile_with_artifacts(
+        st, evidence_exists=lambda _s: True)
+    assert demoted_noop == [] and st_noop["updated_at"] == before

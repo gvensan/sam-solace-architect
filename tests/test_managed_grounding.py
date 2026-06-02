@@ -342,6 +342,32 @@ def test_fetch_follows_safe_redirect_once(monkeypatch):
     assert res.ok and n_calls["v"] == 2
 
 
+# --- platform-grounding list (admin UI read-only surface) ----------------
+
+def test_list_platform_grounding_returns_vendored_files():
+    """The platform pool — vendored grounding/ docs — must be discoverable by
+    the admin UI without an SA storage seed. Pin only the contract (rows + the
+    always-present agent-preamble) since the actual file set evolves over time."""
+    from solace_architect_core.tools import grounding_tools as gt
+    res = gt.list_platform_grounding()
+    assert res.ok and res.data["count"] == len(res.data["files"])
+    names = {f["name"] for f in res.data["files"]}
+    assert "agent-preamble.md" in names
+    for f in res.data["files"]:
+        assert {"name", "size_bytes", "modified_at", "consumer"} <= set(f.keys())
+        assert isinstance(f["size_bytes"], int) and f["size_bytes"] >= 0
+        assert "T" in f["modified_at"]   # ISO 8601
+
+
+def test_list_platform_grounding_missing_dir_is_soft(monkeypatch, tmp_path):
+    """If the vendored directory ever goes missing (broken install), the admin
+    UI must still load — empty list, no crash."""
+    from solace_architect_core.tools import grounding_tools as gt
+    monkeypatch.setattr(gt, "_grounding_dir", lambda: tmp_path / "does-not-exist")
+    res = gt.list_platform_grounding()
+    assert res.ok and res.data == {"files": [], "count": 0}
+
+
 def test_fetch_caps_redirect_hops(monkeypatch):
     """Defense-in-depth: an attacker (or misconfigured CDN) that bounces the
     request forever must not hang the worker thread or exhaust the SSRF

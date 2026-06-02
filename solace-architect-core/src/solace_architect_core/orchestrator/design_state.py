@@ -285,6 +285,52 @@ def decide_next(state: dict) -> dict:
     }
 
 
+# ── integrity check (state ↔ artifact reconciliation) ──────────────────────
+
+
+def reconcile_with_artifacts(
+    state: dict, evidence_exists,
+) -> tuple[dict, list[str]]:
+    """Demote scopes claiming ``done`` but missing on-disk evidence.
+
+    The Design engine treats this state document as the source of truth for
+    "what's already complete". But the on-disk scope artifacts are the actual
+    work product, and the two can drift — a partial reset, a manual file
+    delete, an aborted clone, or a path-resolution bug that silently skipped a
+    state wipe can leave a scope marked ``done`` with no evidence to back it.
+    Returning ``action=complete`` in that situation lies to the user (no work
+    was done) and skips the phase entirely.
+
+    For each scope in ``_TERMINAL_ADVANCE``, call ``evidence_exists(scope_name)``
+    (a caller-supplied predicate so we don't import the route handler's
+    scope→artifact map here). If the predicate returns False, the scope is
+    demoted back to PENDING with attempts reset to 0 and a note explaining the
+    reconciliation. Returns ``(state, demoted)`` where ``demoted`` is the
+    ordered list of scope names changed (empty when nothing drifted). Caller
+    decides whether to ``save_state``.
+    """
+    demoted: list[str] = []
+    for sc in state.get("scopes", []):
+        if sc.get("status") not in _TERMINAL_ADVANCE:
+            continue
+        try:
+            if evidence_exists(sc["name"]):
+                continue
+        except Exception:
+            # An evidence-predicate that itself blew up is not enough to
+            # downgrade a scope — better to leave state untouched than
+            # silently demote on a transient I/O hiccup.
+            continue
+        sc["status"] = PENDING
+        sc["attempts"] = 0
+        sc["note"] = "artifact evidence missing — auto-reconciled"
+        sc["updated_at"] = _now_iso()
+        demoted.append(sc["name"])
+    if demoted:
+        state["updated_at"] = _now_iso()
+    return state, demoted
+
+
 # ── storage (the only I/O) ────────────────────────────────────────────────────
 
 
