@@ -226,13 +226,62 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
     ]
 
     # Event Portal: 3-stage pipeline (plan → live provisioning → AsyncAPI).
-    # "asyncapi" stage is "done" when at least one spec exists under the
-    # asyncapi/ subdirectory (one per provisioned application).
+    # The earlier model derived each stage's status from raw artifact existence
+    # alone — technically correct, but misleading when a restart recovered past
+    # a transient failure or when the agent explicitly deferred a stage. The
+    # current shape:
+    #   plan:        done if plan.yaml exists.
+    #                Else SKIPPED (not pending) if provisioned.yaml exists —
+    #                live provisioning CANNOT happen without a dry-run plan
+    #                being executed, so a missing plan.yaml when provisioning
+    #                succeeded means the plan ran but wasn't persisted (e.g.,
+    #                a failed first attempt + restart that jumped to provision).
+    #                Else pending.
+    #   provisioned: done if provisioned.yaml exists, else pending.
+    #   asyncapi:    done if any file exists under asyncapi/.
+    #                Else SKIPPED if there's an open item flagging the export
+    #                as deferred/blocked (affected_artifact references the
+    #                asyncapi/ path) — agent recorded this work as a known
+    #                follow-up, not "still to do as part of this phase".
+    #                Else pending.
+    ep_provisioned_done = "event-portal/provisioned.yaml" in artifacts_for_checklists
     ep_asyncapi_done = any(a.startswith("event-portal/asyncapi/") for a in artifacts_for_checklists)
+
+    plan_stage: dict = {"id": "plan"}
+    if "event-portal/plan.yaml" in artifacts_for_checklists:
+        plan_stage["status"] = "done"
+    elif ep_provisioned_done:
+        plan_stage["status"] = "skipped"
+        plan_stage["skip_reason"] = (
+            "Skipped — live provisioning succeeded without a persisted "
+            "dry-run plan (typically a restart-recovery after a transient "
+            "failure).")
+    else:
+        plan_stage["status"] = "pending"
+
+    asyncapi_stage: dict = {"id": "asyncapi"}
+    if ep_asyncapi_done:
+        asyncapi_stage["status"] = "done"
+    else:
+        _defer = next(
+            (q for q in open_items
+             if q.get("status") == "open"
+             and "event-portal/asyncapi" in str(q.get("affected_artifact", ""))),
+            None,
+        )
+        if _defer:
+            _desc = (_defer.get("description") or "").strip()
+            asyncapi_stage["status"] = "skipped"
+            asyncapi_stage["skip_reason"] = (
+                f"Deferred to open item {_defer.get('id', '?')}: "
+                f"{_desc[:200]}{'…' if len(_desc) > 200 else ''}")
+        else:
+            asyncapi_stage["status"] = "pending"
+
     event_portal_stages = [
-        {"id": "plan",        "status": "done" if "event-portal/plan.yaml" in artifacts_for_checklists else "pending"},
-        {"id": "provisioned", "status": "done" if "event-portal/provisioned.yaml" in artifacts_for_checklists else "pending"},
-        {"id": "asyncapi",    "status": "done" if ep_asyncapi_done else "pending"},
+        plan_stage,
+        {"id": "provisioned", "status": "done" if ep_provisioned_done else "pending"},
+        asyncapi_stage,
     ]
 
     blueprint_sections = _checklist_from_artifacts([

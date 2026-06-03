@@ -68,6 +68,34 @@ def _pattern_positions(taxonomy: dict) -> dict[str, int]:
     return out
 
 
+# Trailing-parenthetical pattern. Catches the "supplier-edi-messages (will be
+# migrated to Solace JMS or REST)" shape — a description fragment carried into
+# the event/system NAME field by intake. Carries through to EP Designer where
+# it becomes part of the published event name + schema name + graph label.
+# Normalize at model-build time so downstream artifacts stay clean even when
+# upstream data is dirty; the stripped description is preserved as a
+# ``description`` field so the annotation isn't lost.
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def _clean_event_name(name: str) -> tuple[str, Optional[str]]:
+    """Strip a trailing parenthetical annotation from an event/system name.
+
+    Returns ``(clean_name, stripped_description_or_None)``. Whitespace-trimmed.
+    Idempotent: a name without a trailing parenthetical returns unchanged with
+    a None description. Only the LAST trailing parenthetical is stripped — an
+    inner ``foo (bar) baz`` is intentionally left alone (it isn't the bug we
+    saw, and stripping it would change semantics).
+    """
+    s = str(name or "").strip()
+    if not s:
+        return s, None
+    m = _TRAILING_PAREN_RE.search(s)
+    if not m:
+        return s, None
+    return s[:m.start()].strip(), m.group(0).strip(" ()").strip() or None
+
+
 def derive_events(taxonomy: dict, brief: dict) -> list[dict]:
     """Event catalog from the taxonomy's example topics (parsed by the declared
     pattern positions) unioned with each landscape system's declared events."""
@@ -91,13 +119,26 @@ def derive_events(taxonomy: dict, brief: dict) -> list[dict]:
                 "version": "v1", "source": "taxonomy"})
 
     # Union in events declared on landscape systems (e.g. "shipment-status-updated").
+    # Names are normalized: trailing parentheticals (description fragments that
+    # intake sometimes lets through) are stripped from the name and preserved as
+    # a description on the event row.
     for s in _system_list(brief):
         for ev in (s.get("events") or []):
             if not ev:
                 continue
-            key = _norm(ev)
+            clean, desc = _clean_event_name(ev)
+            if not clean:
+                continue
+            key = _norm(clean)
             if key not in events:
-                events[key] = {"name": str(ev), "version": "v1", "source": "landscape"}
+                row: dict = {"name": clean, "version": "v1", "source": "landscape"}
+                if desc:
+                    row["description"] = desc
+                events[key] = row
+            elif desc and not events[key].get("description"):
+                # An earlier taxonomy-derived row may have no description; let
+                # the landscape's annotation backfill it.
+                events[key]["description"] = desc
     return list(events.values())
 
 
@@ -111,19 +152,32 @@ def _system_list(brief: dict) -> list[dict]:
 
 def derive_applications(brief: dict) -> list[dict]:
     """Each landscape system becomes an application; role decides publish vs
-    subscribe of its declared events."""
+    subscribe of its declared events.
+
+    Names are normalized — both the application's own name and every event in
+    publishes/subscribes — so an EP graph that derived from a dirty intake
+    still gets canonical (no-parenthetical) names. The stripped description
+    is preserved on the app row as ``description`` for downstream consumers
+    that want to surface it (e.g. an EP Designer description field).
+    """
     apps: list[dict] = []
     for s in _system_list(brief):
         role = (s.get("role") or "").lower()
-        evs = [str(e) for e in (s.get("events") or []) if e]
+        evs = [c for c in
+               ((_clean_event_name(e)[0] for e in (s.get("events") or [])))
+               if c]
         publishes = evs if role in ("producer", "both") else []
         subscribes = evs if role in ("consumer", "both") else []
-        apps.append({
-            "name": s.get("name") or "(unnamed)",
+        app_name, app_desc = _clean_event_name(s.get("name") or "(unnamed)")
+        row: dict = {
+            "name": app_name,
             "role": role or None,
             "publishes": publishes,
             "subscribes": subscribes,
-        })
+        }
+        if app_desc:
+            row["description"] = app_desc
+        apps.append(row)
     return apps
 
 
@@ -184,6 +238,39 @@ def derive_event_portal_model(taxonomy: Optional[dict], brief: dict) -> dict:
     for ev in events:
         ev["schema"] = schema_by_event.get(ev.get("name"))
     apps = derive_applications(brief)
+
+    # Surface "consumer-with-no-subscriptions" data-completeness gaps.
+    # Discovery sometimes asks for the system list + role but forgets to elicit
+    # the per-consumer event subscriptions, leaving the EP model with
+    # floating consumer apps (zero edges in the EP Designer graph). They still
+    # provision OK as standalone apps, but the user sees a disconnected graph
+    # and reasonably calls it "messed up". List them here so validation /
+    # provisioning can record open items and the user can see what's missing.
+    gaps: list[dict] = []
+    for app in apps:
+        role = (app.get("role") or "")
+        if role in ("consumer", "both") and not app.get("subscribes"):
+            gaps.append({
+                "kind": "consumer_without_subscriptions",
+                "application": app["name"],
+                "severity": "advisory",
+                "detail": (f"Application {app['name']!r} is a {role} but the brief "
+                           "declares no subscribed events. The EP graph will show it "
+                           "as a floating node with no edges. Update the brief's "
+                           "landscape.systems[].events for this system and re-run "
+                           "Design + Event Portal."),
+            })
+
+    note = ("Starting EP model derived deterministically from topic-taxonomy "
+            "(domain + noun/verb vocabulary) + landscape (apps + pub/sub roles). "
+            "Schemas are PLACEHOLDER stubs (one per event) — replace payloads "
+            "with the real fields. EP agent: push these via the EP MCP and "
+            "reconcile; do NOT re-derive.")
+    if gaps:
+        _names = ", ".join(g["application"] for g in gaps)
+        note += (f" ⚠ {len(gaps)} consumer(s) without subscriptions ({_names}) — "
+                 "the EP graph will show them as floating nodes; see model.gaps.")
+
     return {
         "domains": domains,
         "schemas": schemas,
@@ -191,9 +278,6 @@ def derive_event_portal_model(taxonomy: Optional[dict], brief: dict) -> dict:
         "events": events,
         "counts": {"domains": len(domains), "schemas": len(schemas),
                    "applications": len(apps), "events": len(events)},
-        "note": ("Starting EP model derived deterministically from topic-taxonomy "
-                 "(domain + noun/verb vocabulary) + landscape (apps + pub/sub roles). "
-                 "Schemas are PLACEHOLDER stubs (one per event) — replace payloads "
-                 "with the real fields. EP agent: push these via the EP MCP and "
-                 "reconcile; do NOT re-derive."),
+        "gaps": gaps,
+        "note": note,
     }

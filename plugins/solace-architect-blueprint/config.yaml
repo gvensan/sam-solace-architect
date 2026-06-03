@@ -117,6 +117,30 @@ apps:
         `exports/engagement-package.zip`. If `architecture.md` is present, only the ZIP
         export + `set_step_status` remain.
 
+        # HARD RULE — every write/append payload ≤ 800 words / 5 KB
+        This is the single most-broken thing in Blueprint. Oversize
+        `write_artifact(content=…)` payloads truncate at the gateway, the
+        function-call JSON arrives incomplete (just engagement_id +
+        artifact_name + user_id with no content), the framework retries
+        the same oversize call, and Blueprint hangs in a 3-min-per-attempt
+        loop. NEVER emit a write/append whose `content` is more than 800
+        words (~5 KB). Before calling write_artifact / append_artifact:
+          1. Count the words in `content` mentally. If > 800, STOP.
+          2. Take the first ≤ 800 words, ship that.
+          3. Continue the remainder in the next turn via append_artifact.
+        Even if a section seems to need to be longer for "completeness",
+        chunk it. A complete section delivered as 4 appended chunks is
+        infinitely better than a complete section that never writes.
+
+        # Skeleton-first pattern (per-section)
+        The first `write_artifact` call for any blueprint/*.md file MUST
+        be a SKELETON only: H1 title + 1-sentence intro + the H2 headers
+        for the planned sub-sections, no body prose. Target ≤ 150 words
+        total. Then each subsequent turn appends ONE H2 sub-section's body
+        via `append_artifact`, ≤ 800 words. This makes the FIRST call
+        atomic-tiny (impossible to truncate), and every subsequent append
+        is well below the threshold.
+
         # Workflow (one task = one full assembly)
         Pull engagement_id from `[Active engagement: …]` header; use on every storage call.
 
@@ -141,23 +165,33 @@ apps:
            status="applied")` (status: "Reading decisions and applied findings…").
         3. `read_artifact(...)` for each design/review/validation md/yaml needed (status:
            "Reading <name>…").
-        4. Compose architecture narrative — DETAILED and customer-grade, built in small
-           chunks so no single call is large (large prose generations are what the
-           upstream gateway stalls on). Write each document as a first `write_artifact`
-           chunk (≤ ~4 KB) then `append_artifact` ≤ ~4 KB sections — ONE write/append per
-           turn — until it's thorough. Include rationale, trade-offs, alternatives, and
-           cited grounding; the structured YAMLs carry the raw data, the narrative makes
-           it understandable. Files, in order:
-             `blueprint/architecture-overview.md` → `architecture-decisions.md`
-             (D-id rationale table) → `architecture-components.md` (per-component) →
-             `architecture.md` (TOC, LAST).
-           NEVER batch writes — one write/append per turn. Safety valve: if a section
-           keeps stalling after retries, append a compact note and move on rather than
-           looping — but aim for a complete, informative document.
-        5. Compose ops runbook — same one-per-turn pattern:
+        4. Compose architecture narrative — detailed and customer-grade, BUILT IN
+           SMALL CHUNKS per the HARD RULE above. For each file:
+             a. Status: "Writing <file> skeleton…".
+                `write_artifact(<file>, content=<H1 + 1-sentence intro + H2 headers>)`.
+                Skeleton ≤ 150 words. End turn.
+             b. For each H2 section, in order, ONE PER TURN:
+                Status: "Appending <section> to <file>…".
+                `append_artifact(<file>, content=<that section's body>)`.
+                Body ≤ 800 words. If you have more to say, save it for the
+                next append turn (e.g. "Decisions — D1-D4" then
+                "Decisions — D5-D8"). End turn.
+             c. Once all H2 sections are appended, move to the next file.
+           Files in canonical order:
+             `blueprint/architecture-overview.md` →
+             `architecture-decisions.md` (D-id rationale table) →
+             `architecture-components.md` (per-component) →
+             `architecture.md` (TOC — links to the above; SKELETON-only is fine since it IS a TOC).
+           NEVER batch writes — one write/append per turn. Include rationale,
+           trade-offs, alternatives, and cited grounding distributed across
+           the appended sections; the structured YAMLs carry raw data, the
+           narrative makes it understandable. Safety valve: if a section
+           keeps stalling after 2 retries, append a compact placeholder note
+           and move on rather than looping forever.
+        5. Compose ops runbook — same skeleton-first-then-append-per-section pattern:
            `blueprint/runbook-deploy.md` (deploy/upgrade), `runbook-failures.md`,
-           `runbook-dr.md`, then `runbook.md` (TOC, LAST). Status before each: "Writing
-           runbook-<section>.md…".
+           `runbook-dr.md`, then `runbook.md` (TOC, LAST). Status before each tool
+           call: "Writing <file> skeleton…" / "Appending <section> to <file>…".
         6. `check_diagram_availability(engagement_id)`; for each available, write
            `blueprint/diagrams/<name>.mermaid` (status: "Writing diagram <name>…").
         7. Render 5 audience packs in sequence:
@@ -183,9 +217,14 @@ apps:
         - `blueprint/packs/<audience>.md` + `.pdf` (5 audiences)
         - `exports/engagement-package.zip`
 
-        # Per-call size budget
-        Every `write_artifact(content=…)` payload < ~1500 words / 8KB. Split longer docs
-        into section files. Master TOC files MUST be short and link to section files.
+        # Per-call size budget (see also HARD RULE at the top)
+        Every `write_artifact(content=…)` AND `append_artifact(content=…)`
+        payload ≤ 800 words / 5 KB. This is the tightened cap after the
+        neo-supply-chain-tracking hang (2026-06-03) — the old 1500-word /
+        8-KB cap was producing payloads that consistently truncated mid-
+        stream at the upstream gateway. 800 words gives ~40% headroom and
+        has been empirically reliable. Master TOC files MUST be short and
+        link to section files.
 
         # Narration
         Emit `agent_status_message` before each major step. ≤80 chars, present-tense,

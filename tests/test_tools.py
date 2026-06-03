@@ -350,6 +350,94 @@ async def test_compute_intake_preview_matches_plan_shape():
 # ---------- dashboard_tools ----------
 
 @pytest.mark.asyncio
+async def test_event_portal_stages_steady_state_pending_when_nothing_run():
+    """Baseline: no EP artifacts on disk → all three substeps pending. Locks
+    the no-EP-work-yet shape so subsequent restart-recovery / deferral logic
+    can't accidentally light up stages that haven't actually started."""
+    p = await project_tools.create_project(name="EpPending")
+    eid = p.data["id"]
+    await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml",
+                                        "systems: []\nrequirements: {}\npreferences: {provision_event_portal: true}")
+    r = await dashboard_tools.compute_overview_stats(eid)
+    stages = {s["id"]: s for s in r.data["event_portal_stages"]}
+    assert stages["plan"]["status"] == "pending"
+    assert stages["provisioned"]["status"] == "pending"
+    assert stages["asyncapi"]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_event_portal_plan_skipped_when_provisioned_without_plan_yaml():
+    """The neo-supply-chain-tracking case: dry-run failed once, restart jumped
+    straight to live provisioning, plan.yaml was never persisted. The plan
+    substep must NOT show as pending forever — it should report SKIPPED with
+    a reason that explains the restart-recovery. Without this fix users see
+    'Live provisioning DONE / Dry-run plan PENDING' which is nonsensical
+    (provisioning can't happen without a plan)."""
+    p = await project_tools.create_project(name="EpRestartRecovery")
+    eid = p.data["id"]
+    await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml",
+                                        "systems: []\nrequirements: {}\npreferences: {provision_event_portal: true}")
+    # Live provisioning succeeded — provisioned.yaml exists, plan.yaml does not.
+    await artifact_tools.write_artifact(eid, "event-portal/provisioned.yaml",
+                                        "applications: []\ndomains: []\n")
+    r = await dashboard_tools.compute_overview_stats(eid)
+    stages = {s["id"]: s for s in r.data["event_portal_stages"]}
+    assert stages["plan"]["status"] == "skipped"
+    # Reason names the restart-recovery path so an admin can audit it.
+    assert "restart-recovery" in stages["plan"]["skip_reason"]
+    assert stages["provisioned"]["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_event_portal_asyncapi_skipped_when_open_item_defers_it():
+    """The other neo-supply-chain-tracking case: the agent intentionally
+    deferred AsyncAPI export to an open item (e.g., 'event versions need
+    schemas before export'). The substep must show SKIPPED with the open
+    item's id + description as the skip_reason — not bare PENDING, which
+    misleads the user into thinking the agent forgot to run it."""
+    p = await project_tools.create_project(name="EpAsyncDeferred")
+    eid = p.data["id"]
+    await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml",
+                                        "systems: []\nrequirements: {}\npreferences: {provision_event_portal: true}")
+    await artifact_tools.write_artifact(eid, "event-portal/provisioned.yaml",
+                                        "applications: []\ndomains: []\n")
+    # The agent explicitly flagged the export as blocked-and-deferred.
+    item = await decision_tools.record_open_item(
+        eid, severity="advisory", source="review",
+        description="AsyncAPI export blocked — event versions need schemas first",
+        affected_artifact="event-portal/asyncapi/*.yaml",
+        source_agent="SAEventPortalAgent",
+    )
+    item_id = item.data["id"]
+    r = await dashboard_tools.compute_overview_stats(eid)
+    stages = {s["id"]: s for s in r.data["event_portal_stages"]}
+    assert stages["asyncapi"]["status"] == "skipped"
+    assert item_id in stages["asyncapi"]["skip_reason"]
+    assert "AsyncAPI export blocked" in stages["asyncapi"]["skip_reason"]
+
+
+@pytest.mark.asyncio
+async def test_event_portal_asyncapi_done_overrides_open_item():
+    """Defensive: if asyncapi specs DO exist on disk, the substep is done —
+    a stale open item never demotes a completed stage."""
+    p = await project_tools.create_project(name="EpAsyncSpecs")
+    eid = p.data["id"]
+    await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml",
+                                        "systems: []\nrequirements: {}\npreferences: {provision_event_portal: true}")
+    await artifact_tools.write_artifact(eid, "event-portal/asyncapi/app-a.yaml", "asyncapi: 2.5.0\n")
+    # A still-open item references the path — must NOT demote the done stage.
+    await decision_tools.record_open_item(
+        eid, severity="advisory", source="review",
+        description="(stale) AsyncAPI export needs re-review",
+        affected_artifact="event-portal/asyncapi/*.yaml",
+        source_agent="SAEventPortalAgent",
+    )
+    r = await dashboard_tools.compute_overview_stats(eid)
+    stages = {s["id"]: s for s in r.data["event_portal_stages"]}
+    assert stages["asyncapi"]["status"] == "done"
+
+
+@pytest.mark.asyncio
 async def test_overview_counts_decisions_and_open_items():
     p = await project_tools.create_project(name="Dash")
     eid = p.data["id"]

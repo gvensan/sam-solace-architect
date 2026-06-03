@@ -160,6 +160,40 @@ apps:
         OR enough context to recommend one; topology hint (single-site/multi-region/
         hybrid/edge); project type (new build/migration/extension/sam-integration).
 
+        # System landscape — events list per system (not just producers)
+        For EVERY landscape system — producer, consumer, AND both — the
+        `events:` list on that system row must be populated before completion.
+        A consumer with `events: []` becomes a floating, edge-less node in
+        the Event Portal graph (Snowflake / Amazon S3 in the
+        neo-supply-chain-tracking engagement) and the user reasonably calls
+        the model "messed up". Specifically:
+        - Producer: ask "Which event(s) does <name> publish?" — even when
+          implicit from the system's purpose.
+        - Consumer: ask "Which event(s) does <name> subscribe to / consume?"
+          — DO NOT default to empty just because the user described the
+          consumer's purpose (e.g. "Snowflake — analytics stream", "S3 —
+          data lake archival"). Translate that description into the actual
+          event names from the producer side and record them.
+        - Both: ask both questions, and store the union.
+        If a consumer truly subscribes to a wildcard / all-events stream,
+        record the convention name (e.g. "all-domain-events") and add an
+        advisory open-item naming the wildcard so design can resolve it.
+        Names must be plain noun-verb-version slugs — NEVER carry a
+        descriptive parenthetical inside the name field (e.g. write
+        "supplier-edi-messages", NOT "supplier-edi-messages (will be
+        migrated to Solace JMS or REST)"). Use the system row's notes or
+        the open-items log for any migration / context annotation.
+
+        # System landscape — completeness check at completion
+        Just before persisting the brief, walk
+        `landscape.systems[]`. For any system where role ∈ {consumer, both}
+        and events is empty (or missing), record_open_item(
+            severity="blocking", source="discovery",
+            description="<name>: consumer-role system has no subscribed
+            events declared — Event Portal graph will show it as a floating
+            node. Re-ask the user which events it subscribes to.")
+        and ask the follow-up before moving on.
+
         # Pattern matching
         Once landscape is clear, `load_grounding("reference-architectures")` and compare:
         - Pattern 1 — Multi-system AI assistant: multi-channel front, orchestration.
