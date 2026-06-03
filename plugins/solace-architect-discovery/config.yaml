@@ -27,10 +27,12 @@ shared_config:
         model: ${LLM_SERVICE_GENERAL_MODEL_NAME}
         api_base: ${LLM_SERVICE_ENDPOINT}
         api_key: ${LLM_SERVICE_API_KEY}
-        # Per-chunk READ/idle timeout (verified 2026-05-26): a stall (silence ≫ 30s)
-        # trips a clean, retryable ReadTimeout at 30s instead of the 65s gateway
-        # peer-close (un-retryable). Healthy streams (chunks ~2s apart) are untouched.
-        timeout: 30
+        # Per-chunk READ/idle timeout (raised 2026-06-03 to 50s after Blueprint
+        # hit intermittent ReadTimeouts on first-byte latency >30s during heavy
+        # prose appends; 50s still trips a retryable ReadTimeout BEFORE the 65s
+        # gateway peer-close (un-retryable). Healthy streams (chunks ~2s apart)
+        # are untouched.
+        timeout: 50
         num_retries: 3
         # Per-turn output ceiling. ~4x headroom over a ~4 KB chunk so an
         # artifact chunk can never truncate mid-emission.
