@@ -40,6 +40,35 @@ def _dedup_step_states(states: list[dict]) -> dict[str, dict]:
     return best
 
 
+def _overlay_running_when_phase_active(items: list, step_status: str,
+                                       *, status_key: str = "status") -> list:
+    """Mark the first ``pending`` sub-step as ``running`` when the phase's
+    lifecycle step is ``IN_PROGRESS``.
+
+    The phase substep models (EP, Review, Blueprint section checklist) derive
+    their per-stage status from on-disk artifact existence alone — done if the
+    artifact exists, else pending. That's accurate after the phase completes,
+    but during the phase it leaves every still-to-write stage labelled pending
+    even while an agent is actively working on it. The user sees the chat
+    creating schemas (EP) or reviewers running (Review) and reasonably asks
+    "why isn't anything updated to running?". This helper closes that gap
+    without changing the underlying done/pending derivation: it overlays the
+    one extra signal we have — the lifecycle step status — on top.
+
+    No-op when the step is idle (NOT_STARTED, DONE, BLOCKED, NEEDS_CONTEXT,
+    etc.) so a completed phase still shows clean done/skipped, never running.
+    Terminal sub-step states (done/skipped) are always preserved — running only
+    overlays onto the FIRST pending row. Mutates ``items`` in place and returns
+    it for fluent use."""
+    if (step_status or "").upper() != "IN_PROGRESS":
+        return items
+    for it in items:
+        if (it.get(status_key) or "").lower() == "pending":
+            it[status_key] = "running"
+            break
+    return items
+
+
 def _phase_of(step: dict) -> str:
     agent = step.get("agent") or ""
     scope = step.get("scope") or ""
@@ -181,6 +210,17 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
         else:
             design_scopes.append({"scope": scope_id, "status": "pending"})
 
+    # Defensive fallback for Design: the orchestrator usually populates
+    # scope_progress.next / scope_states so an active scope renders as
+    # running or next via the loop above. If it didn't (engine snapshot
+    # incomplete, sync lag), but the Design step is still IN_PROGRESS,
+    # mark the first pending scope as running so the dashboard isn't
+    # silently all-pending. Never overrides a row already marked running
+    # or next — the orchestrator's signal stays authoritative when present.
+    if not any((s.get("status") or "") in ("running", "next") for s in design_scopes):
+        _design_status = (_design_step.get("status") or "")
+        _overlay_running_when_phase_active(design_scopes, _design_status)
+
     # Per-reviewer / per-section / per-stage status arrays for the
     # review / blueprint / event-portal in-progress dashboard panels.
     # Derived from on-disk artifact presence (the only source of truth
@@ -224,6 +264,12 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
         }
         for rid in ("architect", "developer", "ops", "security")
     ]
+    # Overlay 'running' on the first pending reviewer when Review is active.
+    # Reviewers run in parallel, so this points at the leftmost not-yet-reported
+    # one rather than tracking each agent's individual state (we don't have
+    # per-reviewer in-flight signal in dashboard state today).
+    _review_status = (((status_doc.get("steps") or {}).get("review") or {}).get("status") or "")
+    _overlay_running_when_phase_active(review_reviewers, _review_status)
 
     # Event Portal: 3-stage pipeline (plan → live provisioning → AsyncAPI).
     # The earlier model derived each stage's status from raw artifact existence
@@ -283,6 +329,13 @@ async def compute_overview_stats(engagement_id: str) -> ToolResult:
         {"id": "provisioned", "status": "done" if ep_provisioned_done else "pending"},
         asyncapi_stage,
     ]
+    # When the EP step itself is IN_PROGRESS, overlay 'running' onto the first
+    # pending stage so the user can see what the agent is actually working on
+    # (the chat shows createSchema / createApplicationVersion calls but the
+    # provisioned.yaml hasn't landed yet — without this overlay the row reads
+    # pending and looks idle).
+    _ep_step_status = (((status_doc.get("steps") or {}).get("event-portal") or {}).get("status") or "")
+    _overlay_running_when_phase_active(event_portal_stages, _ep_step_status)
 
     blueprint_sections = _checklist_from_artifacts([
         ("architecture-overview",   "blueprint/architecture-overview.md"),

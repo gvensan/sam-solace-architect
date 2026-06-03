@@ -417,6 +417,145 @@ async def test_event_portal_asyncapi_skipped_when_open_item_defers_it():
 
 
 @pytest.mark.asyncio
+async def test_event_portal_overlays_running_on_first_pending_when_in_progress():
+    """Active phase + first non-done substep must read 'running', not pending.
+    Matches the neo-supply-chain-tracking complaint: EP was actively running
+    createSchema/createApplicationVersion calls while the dashboard's
+    'Live provisioning' row was stuck showing PENDING — the user reasonably
+    asked 'why isn't the correct step updated with status of running?'."""
+    p = await project_tools.create_project(name="EpRunning")
+    eid = p.data["id"]
+    await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml",
+                                        "systems: []\nrequirements: {}\npreferences: {provision_event_portal: true}")
+    # Plan done, provisioned not yet → during a live EP run we expect
+    # provisioned to flip to running while the agent is mid-create.
+    await artifact_tools.write_artifact(eid, "event-portal/plan.yaml", "plan: {}\n")
+    await lifecycle_tools.set_step_status(
+        eid, step="event-portal", status="IN_PROGRESS",
+        note="Provisioning…", agent="SAEventPortalAgent")
+    r = await dashboard_tools.compute_overview_stats(eid)
+    stages = {s["id"]: s for s in r.data["event_portal_stages"]}
+    assert stages["plan"]["status"] == "done"
+    assert stages["provisioned"]["status"] == "running"
+    assert stages["asyncapi"]["status"] == "pending"   # only first pending flips
+
+
+@pytest.mark.asyncio
+async def test_event_portal_idle_phase_leaves_pending_as_pending():
+    """Defensive: when the EP step is NOT in progress (idle / pre-start),
+    pending rows must NOT flip to running — otherwise a fresh project would
+    look like it's already working."""
+    p = await project_tools.create_project(name="EpIdle")
+    eid = p.data["id"]
+    await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml",
+                                        "systems: []\nrequirements: {}\npreferences: {provision_event_portal: true}")
+    # No IN_PROGRESS set — step is implicitly idle.
+    r = await dashboard_tools.compute_overview_stats(eid)
+    stages = {s["id"]: s for s in r.data["event_portal_stages"]}
+    for st in stages.values():
+        assert st["status"] != "running"
+
+
+@pytest.mark.asyncio
+async def test_review_overlays_running_on_first_pending_when_in_progress():
+    """Reviewers run in parallel and the dashboard doesn't track each one's
+    individual in-flight state. When Review is IN_PROGRESS but no reviewer
+    has reported yet, the first row should show running so the user knows
+    work is happening (not all-pending → looks idle)."""
+    p = await project_tools.create_project(name="ReviewRunning")
+    eid = p.data["id"]
+    await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml",
+                                        "systems: []\nrequirements: {}\npreferences: {}")
+    await lifecycle_tools.set_step_status(
+        eid, step="review", status="IN_PROGRESS",
+        note="Reviewers running…", agent="SAOrchestratorAgent")
+    r = await dashboard_tools.compute_overview_stats(eid)
+    reviewers = r.data["review_reviewers"]
+    statuses = [x["status"] for x in reviewers]
+    # First reviewer (architect) becomes running; the rest stay pending.
+    assert statuses[0] == "running"
+    assert all(s == "pending" for s in statuses[1:])
+
+
+@pytest.mark.asyncio
+async def test_review_running_overlay_does_not_clobber_done_reviewer():
+    """If architect already filed findings, the first-pending overlay must
+    skip past it and land on the next genuinely-pending reviewer. The order
+    matters — we don't want to flip the architect's done back to running."""
+    p = await project_tools.create_project(name="ReviewMixed")
+    eid = p.data["id"]
+    await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml",
+                                        "systems: []\nrequirements: {}\npreferences: {}")
+    # Architect reviewer has produced its narrative artifact (counted as done).
+    await artifact_tools.write_artifact(eid, "reviews/architect-review.md", "# Architect Review\n")
+    await lifecycle_tools.set_step_status(
+        eid, step="review", status="IN_PROGRESS",
+        note="3 reviewers left…", agent="SAOrchestratorAgent")
+    r = await dashboard_tools.compute_overview_stats(eid)
+    rmap = {x["id"]: x for x in r.data["review_reviewers"]}
+    assert rmap["architect"]["status"] == "done"          # not overridden
+    assert rmap["developer"]["status"] == "running"       # first pending
+    assert rmap["ops"]["status"] == "pending"
+    assert rmap["security"]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_design_running_fallback_when_scope_progress_incomplete():
+    """Design's primary running-signal is orchestrator scope_progress (next +
+    scope_states). If those weren't populated (engine snapshot lag) but the
+    Design step is IN_PROGRESS, the first pending scope should still show
+    running — the dashboard can't go silently all-pending while the chat
+    shows a worker is actively dispatching."""
+    p = await project_tools.create_project(name="DesignFallback")
+    eid = p.data["id"]
+    await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml",
+                                        "systems: []\nrequirements: {}\npreferences: {}")
+    # No scope_progress / scope_states populated.
+    await lifecycle_tools.set_step_status(
+        eid, step="design", status="IN_PROGRESS",
+        note="Dispatching topic-design…", agent="SAOrchestratorAgent")
+    r = await dashboard_tools.compute_overview_stats(eid)
+    scopes = r.data["design_scopes"]
+    assert scopes, "expected at least one design scope on a fresh project"
+    running_scopes = [s for s in scopes if s.get("status") == "running"]
+    assert len(running_scopes) == 1
+    # Fallback hits the FIRST pending scope (canonical order).
+    assert running_scopes[0]["scope"] == scopes[0]["scope"]
+
+
+@pytest.mark.asyncio
+async def test_design_running_fallback_yields_to_orchestrator_signal():
+    """If the orchestrator already marked a scope as running or next via
+    scope_progress, the fallback must NOT override or duplicate it — the
+    orchestrator's per-scope signal is authoritative."""
+    p = await project_tools.create_project(name="DesignAuthSignal")
+    eid = p.data["id"]
+    await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml",
+                                        "systems: []\nrequirements: {}\npreferences: {}")
+    # Orchestrator marks broker-select as the running scope.
+    await lifecycle_tools.set_step_status(
+        eid, step="design", status="IN_PROGRESS",
+        note="broker-select: deciding…", agent="SADomainAgent")
+    await lifecycle_tools.record_scope_progress(
+        eid, step="design", current_scope="broker-select", status="running",
+        next_scope=None, scopes_done=["topic-design"])
+    r = await dashboard_tools.compute_overview_stats(eid)
+    scopes_by_id = {s["scope"]: s for s in r.data["design_scopes"]}
+    # The orchestrator's signal puts broker-select into a non-pending state
+    # — either 'running' (if scope_states says so) or 'next' (queued). Both
+    # are authoritative orchestrator outputs that the fallback must NOT
+    # override or duplicate.
+    assert scopes_by_id["broker-select"]["status"] in ("running", "next")
+    # Defensive: the fallback (which would mark the first pending scope as
+    # running) didn't fire because the orchestrator already marked one
+    # — so no OTHER scope is running, AND the fallback didn't add a second
+    # running tile alongside broker-select's authoritative state.
+    running_or_next = [s for s in r.data["design_scopes"]
+                       if s.get("status") in ("running", "next")]
+    assert len(running_or_next) == 1
+
+
+@pytest.mark.asyncio
 async def test_event_portal_asyncapi_done_overrides_open_item():
     """Defensive: if asyncapi specs DO exist on disk, the substep is done —
     a stale open item never demotes a completed stage."""

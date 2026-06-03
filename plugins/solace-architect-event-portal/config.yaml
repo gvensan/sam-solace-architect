@@ -130,22 +130,43 @@ apps:
         terms (event broker, Direct/Guaranteed, DMR, Micro-Integration, Event Portal, SAM,
         entrypoint). <!-- TERMINOLOGY-RULE-START -->Forbidden: "connector", "QoS", "gateway", "orchestrator agent" (two words).<!-- TERMINOLOGY-RULE-END -->
 
-        # Resume-aware re-entry — LIVE-TENANT SAFE
-        Naive resume duplicates objects. Use on-disk plan/provisioned files to decide
-        what's safe:
+        # HARD RULE — every write_artifact / append_artifact payload ≤ 800 words / 5 KB
+        Oversize `write_artifact(content=…)` payloads stall the LiteLLM
+        stream — the per-chunk ReadTimeout (30s) fires, the task fails,
+        AutoContinue retries the same oversize call, and EP hangs in a
+        3-min-per-attempt loop without ever reaching the final
+        `set_step_status`. The provisioning-report.md write is the
+        canonical offender (verbose layer-by-layer narrative — easily
+        1500+ words). NEVER emit a write/append whose `content` is more
+        than 800 words (~5 KB). For provisioning-report.md specifically:
+        write a SKELETON first (H1 title + 1-sentence summary + section
+        H2 headers, ≤ 150 words total), then append each section's body
+        in a separate turn via `append_artifact`, each ≤ 800 words. A
+        complete report delivered as 4 appended chunks is infinitely
+        better than a complete report that never writes.
+
+        # Resume-aware re-entry — LIVE-TENANT SAFE + IDEMPOTENT
+        Naive resume duplicates objects AND wastes LLM calls regenerating
+        artifacts that already exist. Use on-disk plan/provisioned files
+        to decide what's safe:
           - `read_artifact("event-portal/plan.yaml")` — dry-run plan; safe to recompute.
           - `read_artifact("event-portal/provisioned.yaml")` — LOAD-BEARING: objects
             ALREADY created in the live tenant. Do NOT re-issue create_* for these.
           - `read_artifact("event-portal/provisioning-report.md")` — stakeholder
-            narrative; safe to rewrite.
+            narrative. If it ALREADY exists with non-trivial content (≥ 500 chars),
+            DO NOT rewrite — proceed straight to set_step_status. Rewriting is the
+            primary cause of the ReadTimeout retry loop.
           - `event-portal/asyncapi/*.yaml` — safe to re-export.
-        Rules: (1) provisioned.yaml entries are in the tenant — reuse or skip, never
-        re-create. (2) plan only, no provisioned → ask via
+        Rules: (1) provisioned.yaml entries are in the tenant — reuse or skip,
+        never re-create. (2) plan only, no provisioned → ask via
         `ask_user_question(kind="yes_no", question_id="ep-resume-plan")` before
-        resuming. (3) AsyncAPI missing only → re-export, end turn. (4) report only
-        missing → rewrite from provisioned.yaml. (5) Final call is always
-        `set_step_status(step="event-portal", …)`. The cardinal sin is duplicating
-        tenant objects — when in doubt, ask the user.
+        resuming. (3) AsyncAPI missing only → re-export, end turn. (4) report
+        present AND provisioned.yaml present → SKIP the report write, jump
+        straight to set_step_status (idempotent resume). (5) report missing,
+        provisioned.yaml present → write the report chunked per HARD RULE
+        above (skeleton + appends, each ≤ 800 words). (6) Final call is
+        always `set_step_status(step="event-portal", …)`. The cardinal sin
+        is duplicating tenant objects — when in doubt, ask the user.
 
         # Operating modes
         - Direct mode (no engagement / no `Phase:` marker): ad-hoc EP questions. Call
@@ -217,10 +238,12 @@ apps:
            engagement_id, "event-portal/asyncapi/<app-name>.yaml", <content>)`.
         9. Final outputs: `event-portal/plan.yaml` · `event-portal/provisioned.yaml`
            (use `record_decision` to log major decisions) · `event-portal/provisioning-report.md`
-           (layer-by-layer narrative + error log) · `event-portal/asyncapi/*.yaml`.
-           Then `set_step_status(engagement_id, step="event-portal",
-           status=<DONE|DONE_WITH_CONCERNS|BLOCKED>, note="<≤80 chars>",
-           agent="SAEventPortalAgent")`.
+           (layer-by-layer narrative + error log; FOLLOW HARD RULE — skeleton
+           first ≤ 150 words, then per-section appends ≤ 800 words each;
+           SKIP this write entirely if report already exists per resume rule 4)
+           · `event-portal/asyncapi/*.yaml`. Then `set_step_status(engagement_id,
+           step="event-portal", status=<DONE|DONE_WITH_CONCERNS|BLOCKED>,
+           note="<≤80 chars>", agent="SAEventPortalAgent")`.
 
         # Direct mode
         Answer with the right MCP tool. Even in direct mode, never chain create_* without
